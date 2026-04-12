@@ -144,6 +144,27 @@ func (s *Store) ListBySession(sessionID string) ([]Checkpoint, error) {
 	return result, rows.Err()
 }
 
+// ListAll returns all checkpoints ordered by timestamp.
+func (s *Store) ListAll() ([]Checkpoint, error) {
+	rows, err := s.db.Query(`SELECT hash, parent, device, author, ts, repo, branch,
+		session, turn, model, summary, embedding, files, tools, injections, sig
+		FROM checkpoints ORDER BY ts`)
+	if err != nil {
+		return nil, fmt.Errorf("memory: list all: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []Checkpoint
+	for rows.Next() {
+		cp, err := scanCheckpointRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *cp)
+	}
+	return result, rows.Err()
+}
+
 // LatestBySession returns the most recent checkpoint for a session.
 func (s *Store) LatestBySession(sessionID string) (*Checkpoint, error) {
 	row := s.db.QueryRow(`SELECT hash, parent, device, author, ts, repo, branch,

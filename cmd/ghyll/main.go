@@ -17,6 +17,8 @@ func main() {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: ghyll run [dir] [--model <model>]")
 		fmt.Fprintln(os.Stderr, "       ghyll config show")
+		fmt.Fprintln(os.Stderr, "       ghyll memory search <query>")
+		fmt.Fprintln(os.Stderr, "       ghyll memory log")
 		os.Exit(1)
 	}
 
@@ -32,6 +34,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
 				os.Exit(1)
 			}
+		}
+	case "memory":
+		if err := cmdMemoryMain(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
+			os.Exit(1)
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "ghyll: unknown command %q\n", args[0])
