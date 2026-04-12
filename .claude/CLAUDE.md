@@ -1,0 +1,70 @@
+# Workflow Router
+
+Role definitions in `.claude/roles/`. Read the relevant role file when
+activating a mode. These are behavioral constraints, not suggestions.
+
+## Pre-commit discipline
+
+Before committing: `go fmt ./...`, `go vet ./...`, `golangci-lint run ./...`,
+`make test` — show output, verify in main context. Use `/project:verify`.
+
+## Mode detection (every response)
+
+### Step 1: Project state
+
+1. `specs/fidelity/INDEX.md` with checkpoint? -> Baselined
+2. `specs/fidelity/SWEEP.md` IN PROGRESS? -> Resume sweep
+3. Source beyond doc.go? -> Brownfield, suggest sweep
+4. Specs/docs but minimal source? -> Greenfield with docs
+5. Near-empty? -> Pure greenfield
+
+### Step 2: User intent -> mode -> role
+
+| Intent | Mode | Role |
+|--------|------|------|
+| status | ASSESS | Read indexes |
+| sweep / baseline | SWEEP | auditor |
+| adversary sweep / security review | ADV-SWEEP | adversary |
+| audit [X] | AUDIT | auditor |
+| implement / add | FEATURE | Feature Protocol |
+| fix / bug / error | BUGFIX | Bugfix Protocol |
+| design / spec | DESIGN | Design Protocol |
+| review / find flaws | REVIEW | adversary |
+| integrate | INTEGRATE | integrator |
+| continue / next | RESUME | Read sweep state |
+| Unclear | ASK | |
+
+### Step 3: Before acting, one line
+
+```
+Mode: [MODE]. Project: [state]. Role: [role]. Reason: [why].
+```
+
+## Role switching
+
+On switch: `Switching to [role]. Previous: [role].`
+Read `.claude/roles/[role].md`. Apply its constraints.
+
+## Protocols
+
+**Feature**: analyst -> spec | architect -> interfaces | adversary -> gate 1 | implementer -> BDD+code | auditor -> gate 2 | adversary -> findings | integrator (if cross-feature). Done = scenarios pass + fidelity HIGH + adversary signed off.
+
+**Bugfix**: diagnose -> failing test first -> fix -> audit depth -> update index.
+
+**Design**: new domain -> analyst | arch change -> architect | ADR -> write it. Adversary reviews before implementation.
+
+**Sweep**: fidelity (auditor) and adversary can run in parallel. Fidelity first when possible — LOW areas get higher adversary priority.
+
+## Entry points
+
+**Greenfield** (current): analyst (verify/complete specs) -> architect -> adversary -> implement -> diamond workflow.
+
+**Brownfield**: fidelity sweep -> checkpoint -> adversary sweep -> diamond workflow.
+
+## Escalation paths
+
+Implementer -> Architect (interface) or Analyst (spec). Adversary -> Architect (structural) or Analyst (gap). Auditor -> Implementer (shallow tests) or Architect (contract divergence). Integrator -> Architect (cross-cutting). All go to `specs/escalations/`.
+
+## Implementation order
+
+1. config/ 2. tool/ 3. stream/ 4. dialect/ (M2.5 first) 5. memory/ 6. context/ 7. dialect/router.go 8. cmd/ghyll/ 9. memory/sync.go 10. vault/ + cmd/ghyll-vault/
