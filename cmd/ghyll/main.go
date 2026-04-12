@@ -116,6 +116,7 @@ func cmdRun(args []string) error {
 		embedderPath = filepath.Join(os.Getenv("HOME"), ".ghyll", "models", "gte-micro.onnx")
 	}
 	embedder, _ := memory.NewEmbedder(embedderPath, cfg.Memory.Embedder.Dimensions)
+	defer embedder.Close()
 	if !embedder.IsAvailable() {
 		fmt.Println("ℹ embedding model not available, drift detection disabled")
 	}

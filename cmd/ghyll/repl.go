@@ -68,7 +68,7 @@ func REPL(sess *Session, input io.Reader) {
 				sess.output("ℹ /deep ignored, model locked via --model flag")
 			} else {
 				sess.deepOverride = true
-				sess.output(fmt.Sprintf("switched to deep tier [%s]", "glm5"))
+				sess.output("switched to deep tier")
 			}
 			continue
 		case line == "/fast":

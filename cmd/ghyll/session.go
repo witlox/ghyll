@@ -249,7 +249,8 @@ func (s *Session) sendAndProcess() (string, error) {
 
 	// Checkpoint check
 	turn := s.ctxManager.Turn()
-	if turn > 0 && turn%s.cfg.Memory.CheckpointIntervalTurns == 0 {
+	interval := s.cfg.Memory.CheckpointIntervalTurns
+	if interval > 0 && turn > 0 && turn%interval == 0 {
 		_ = s.createCheckpoint(ghyllcontext.CheckpointRequest{
 			SessionID:   s.sessionID,
 			Turn:        turn,
