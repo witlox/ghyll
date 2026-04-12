@@ -20,14 +20,3 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
-
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "docker"
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "docker"

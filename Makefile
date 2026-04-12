@@ -69,9 +69,6 @@ embedder:
 	@echo "  Linux:  See https://github.com/microsoft/onnxruntime/releases"
 	@echo "  Set ONNXRUNTIME_LIB_PATH if not in default search path."
 
-docker-build:
-	docker build --build-arg VERSION=$(VERSION) -t ghyll:$(VERSION) .
-
 docs:
 	mdbook build
 
