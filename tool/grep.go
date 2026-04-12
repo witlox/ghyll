@@ -3,6 +3,7 @@ package tool
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
@@ -42,7 +43,8 @@ func Grep(ctx context.Context, pattern string, path string, timeout time.Duratio
 
 	// grep/rg exit code 1 = no matches (not an error)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return types.ToolResult{
 				Output:   "",
 				Duration: duration,
@@ -88,7 +90,8 @@ func GrepWithPath(ctx context.Context, pattern string, path string, timeout time
 	}
 
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return types.ToolResult{Output: "", Duration: duration}
 		}
 		return types.ToolResult{Output: stdout.String(), Error: stderr.String(), Duration: duration}

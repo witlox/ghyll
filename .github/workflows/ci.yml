@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  validate:
+    needs: build
+    uses: ./.github/workflows/validate.yml
+
+  test:
+    needs: validate
+    uses: ./.github/workflows/test.yml

@@ -4,4 +4,5 @@ bin/
 .DS_Store
 .claude/settings.local.json
 vendor/
-ghyll
+/ghyll
+coverage.out

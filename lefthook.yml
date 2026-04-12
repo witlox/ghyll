@@ -3,13 +3,19 @@ pre-commit:
   commands:
     fmt:
       glob: "*.go"
-      run: go fmt ./...
+      run: gofmt -l -w {staged_files}
+      stage_fixed: true
+    lint:
+      glob: "*.go"
+      run: golangci-lint run --timeout=5m
+    test:
+      run: make test
     vet:
       glob: "*.go"
       run: go vet ./...
-    lint:
-      glob: "*.go"
-      run: golangci-lint run ./...
-    test:
-      glob: "*.go"
-      run: make test
+
+pre-push:
+  parallel: true
+  commands:
+    build:
+      run: go build ./...

@@ -345,7 +345,7 @@ func (s *Syncer) git(args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %s", err, stderr.String())
+		return "", fmt.Errorf("%w: %s", err, stderr.String())
 	}
 	return stdout.String(), nil
 }
@@ -358,7 +358,7 @@ func (s *Syncer) gitInWorktree(args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %s", err, stderr.String())
+		return "", fmt.Errorf("%w: %s", err, stderr.String())
 	}
 	return stdout.String(), nil
 }

@@ -11,7 +11,14 @@ import (
 	"github.com/witlox/ghyll/vault"
 )
 
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Printf("ghyll-vault %s\n", version)
+		return
+	}
+
 	configPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "config.toml")
 	cfg, err := config.Load(configPath)
 	if err != nil {

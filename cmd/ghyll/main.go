@@ -11,6 +11,8 @@ import (
 	"github.com/witlox/ghyll/memory"
 )
 
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
 
@@ -19,7 +21,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ghyll config show")
 		fmt.Fprintln(os.Stderr, "       ghyll memory search <query>")
 		fmt.Fprintln(os.Stderr, "       ghyll memory log")
+		fmt.Fprintln(os.Stderr, "       ghyll version")
 		os.Exit(1)
+	}
+
+	if args[0] == "version" {
+		fmt.Printf("ghyll %s\n", version)
+		return
 	}
 
 	switch args[0] {

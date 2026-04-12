@@ -1,0 +1,36 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gosec
+    - errorlint
+    - bodyclose
+  settings:
+    gosec:
+      excludes:
+        - G115
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
+        - G602
+
+  exclusions:
+    rules:
+      - path: "(.+)_test\\.go"
+        linters: [gosec, errcheck, errorlint, bodyclose]
+      - path: "cmd/"
+        linters: [gosec, errorlint]
+      - path: "scripts/"
+        linters: [errcheck, errorlint, gosec]
+      - path: "tests/"
+        linters: [gosec, errcheck, errorlint]

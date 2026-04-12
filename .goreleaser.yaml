@@ -1,0 +1,60 @@
+version: 2
+project_name: ghyll
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ghyll
+    main: ./cmd/ghyll
+    binary: ghyll
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  - id: ghyll-vault
+    main: ./cmd/ghyll-vault
+    binary: ghyll-vault
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: witlox
+    name: ghyll
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
