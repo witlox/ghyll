@@ -14,15 +14,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@test.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
       - name: Run unit tests with coverage
         run: |
           go test -v -race -count=1 -coverprofile=unit.out \
-            -coverpkg=./config/...,./types/...,./tool/...,./stream/...,./dialect/...,./memory/...,./context/...,./vault/... \
-            ./config/... ./types/... ./tool/... ./stream/... ./dialect/... ./memory/... ./context/... ./vault/...
+            ./config/... ./types/... ./tool/... ./stream/... ./dialect/... \
+            ./memory/... ./context/... ./vault/...
 
       - name: Run session tests with coverage
         run: |
-          go test -v -race -count=1 -coverprofile=session.out \
+          go test -v -race -count=1 -timeout=120s -coverprofile=session.out \
             ./cmd/ghyll/...
 
       - name: Run acceptance tests
@@ -33,6 +39,7 @@ jobs:
         run: |
           go install github.com/wadey/gocovmerge@latest
           gocovmerge unit.out session.out > coverage.txt
+          go tool cover -func=coverage.txt | tail -1
 
       - uses: actions/upload-artifact@v7
         with:

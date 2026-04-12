@@ -82,7 +82,9 @@ func TestScenario_Tools_FileWrite(t *testing.T) {
 func TestScenario_Tools_GitOperation(t *testing.T) {
 	dir := t.TempDir()
 	// Init a git repo so we can run git commands
-	Bash(context.Background(), "git init "+dir, 5*time.Second)
+	Bash(context.Background(), "git init -b main "+dir, 5*time.Second)
+	Bash(context.Background(), "git -C "+dir+" config user.email test@test.com", 5*time.Second)
+	Bash(context.Background(), "git -C "+dir+" config user.name Test", 5*time.Second)
 	Bash(context.Background(), "git -C "+dir+" commit --allow-empty -m init", 5*time.Second)
 
 	result := Git(context.Background(), dir, []string{"log", "--oneline"}, 5*time.Second)

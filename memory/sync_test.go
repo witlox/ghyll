@@ -16,7 +16,7 @@ import (
 func initBareRepo(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "remote.git")
-	run(t, "", "git", "init", "--bare", dir)
+	run(t, "", "git", "init", "--bare", "-b", "main", dir)
 	return dir
 }
 
@@ -30,9 +30,10 @@ func initWorkRepo(t *testing.T, remote string) string {
 	readmePath := filepath.Join(dir, "README.md")
 	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
 		_ = os.WriteFile(readmePath, []byte("test\n"), 0644)
+		run(t, dir, "git", "checkout", "-b", "main")
 		run(t, dir, "git", "add", ".")
 		run(t, dir, "git", "commit", "-m", "init")
-		run(t, dir, "git", "push", "origin", "main")
+		run(t, dir, "git", "push", "-u", "origin", "main")
 	}
 	return dir
 }
