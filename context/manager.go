@@ -144,17 +144,6 @@ func (m *Manager) compact(activeModel string, endpoint string, compactionPrompt 
 	toSummarize := m.messages[:len(m.messages)-preserve]
 	preserved := m.messages[len(m.messages)-preserve:]
 
-	// Create checkpoint before compaction (invariant 22)
-	if m.deps.CreateCheckpoint != nil {
-		_ = m.deps.CreateCheckpoint(CheckpointRequest{
-			Turn:        m.turn,
-			ActiveModel: activeModel,
-			Summary:     "compaction at turn " + itoa(m.turn),
-			Messages:    m.messages,
-			Reason:      "compaction",
-		})
-	}
-
 	// Call compaction via callback (invariant 24a: separate API call)
 	summary, err := m.deps.CompactionCall(CompactionRequest{
 		TurnsToSummarize: toSummarize,
@@ -163,6 +152,18 @@ func (m *Manager) compact(activeModel string, endpoint string, compactionPrompt 
 	})
 	if err != nil {
 		return err
+	}
+
+	// Create checkpoint with the actual compaction summary (invariant 22).
+	// Uses the model's summary so drift detection can find it later.
+	if m.deps.CreateCheckpoint != nil {
+		_ = m.deps.CreateCheckpoint(CheckpointRequest{
+			Turn:        m.turn,
+			ActiveModel: activeModel,
+			Summary:     summary,
+			Messages:    m.messages,
+			Reason:      "compaction",
+		})
 	}
 
 	// Replace old turns with summary + preserved turns
@@ -182,20 +183,4 @@ func (m *Manager) ApplyBackfill(summaries []types.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(summaries, m.messages...)
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 10)
-	for n > 0 {
-		buf = append(buf, byte('0'+n%10))
-		n /= 10
-	}
-	// reverse
-	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
-		buf[i], buf[j] = buf[j], buf[i]
-	}
-	return string(buf)
 }

@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const maxToolDepth = 50
+
 // Session is the ghyll session state machine.
 type Session struct {
 	cfg          *config.Config
@@ -94,15 +96,16 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	s.resolveDialect()
 
 	// Create stream client
-	endpoint := sc.Cfg.Models[s.activeModel].Endpoint
-	s.streamClient = stream.NewClient(endpoint, &stream.ClientOptions{
+	modelCfg := sc.Cfg.Models[s.activeModel]
+	s.streamClient = stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
+		ModelName:     modelCfg.Dialect,
 	})
 
 	// Create context manager with callbacks
 	s.ctxManager = ghyllcontext.NewManager(ghyllcontext.ManagerConfig{
-		MaxContext:       sc.Cfg.Models[s.activeModel].MaxContext,
+		MaxContext:       modelCfg.MaxContext,
 		PreserveTurns:    3,
 		CompactThreshold: 0.9,
 	}, ghyllcontext.ManagerDeps{
@@ -172,6 +175,11 @@ func (s *Session) Turn(userInput string) (string, error) {
 }
 
 func (s *Session) sendAndProcess() (string, error) {
+	// Finding 1: guard against unbounded tool call recursion
+	if s.toolDepth > maxToolDepth {
+		return "", fmt.Errorf("tool call depth exceeded (%d), stopping", maxToolDepth)
+	}
+
 	sysPrompt := s.systemPrompt(s.workdir)
 	messages := s.buildMessages(s.ctxManager.Messages(), sysPrompt)
 	resp, err := s.streamClient.Send(messages)
@@ -244,6 +252,7 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 	bashTimeout := time.Duration(s.cfg.Tools.BashTimeoutSeconds) * time.Second
 	fileTimeout := time.Duration(s.cfg.Tools.FileTimeoutSeconds) * time.Second
 
+	// Finding 5: don't execute with empty args on parse failure
 	var args struct {
 		Command string `json:"command"`
 		Path    string `json:"path"`
@@ -251,7 +260,9 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 		Pattern string `json:"pattern"`
 		Args    string `json:"args"`
 	}
-	_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return types.ToolResult{Error: fmt.Sprintf("failed to parse tool arguments: %v", err)}
+	}
 
 	switch tc.Function.Name {
 	case "bash":
@@ -270,21 +281,54 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 	}
 }
 
+// Finding 2: handoff now creates checkpoint, uses HandoffSummary, preserves context
 func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	prevModel := s.activeModel
+
+	// Create handoff checkpoint on current model (invariant 10)
+	_ = s.createCheckpoint(ghyllcontext.CheckpointRequest{
+		SessionID:   s.sessionID,
+		Turn:        s.ctxManager.Turn(),
+		ActiveModel: s.activeModel,
+		Summary:     fmt.Sprintf("handoff: %s → %s", prevModel, decision.TargetModel),
+		Messages:    s.ctxManager.Messages(),
+		Reason:      "handoff",
+	})
+
+	// Get recent turns for handoff summary
+	msgs := s.ctxManager.Messages()
+	preserveN := 3
+	if preserveN > len(msgs) {
+		preserveN = len(msgs)
+	}
+	recentTurns := msgs[len(msgs)-preserveN:]
+
+	// Get the checkpoint we just created for the summary
+	var cp memory.Checkpoint
+	if s.store != nil {
+		if latest, err := s.store.LatestBySession(s.sessionID); err == nil {
+			cp = *latest
+		}
+	}
+
+	// Switch dialect
 	s.activeModel = decision.TargetModel
 	s.resolveDialect()
 
+	// Format handoff context using target dialect's HandoffSummary
+	handoffMsgs := s.handoffSummary(cp, recentTurns)
+
 	// Update stream client endpoint
-	endpoint := s.cfg.Models[s.activeModel].Endpoint
-	s.streamClient = stream.NewClient(endpoint, &stream.ClientOptions{
+	modelCfg := s.cfg.Models[s.activeModel]
+	s.streamClient = stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
+		ModelName:     modelCfg.Dialect,
 	})
 
-	// Update context manager config
+	// Create new context manager with handoff messages
 	s.ctxManager = ghyllcontext.NewManager(ghyllcontext.ManagerConfig{
-		MaxContext:       s.cfg.Models[s.activeModel].MaxContext,
+		MaxContext:       modelCfg.MaxContext,
 		PreserveTurns:    3,
 		CompactThreshold: 0.9,
 	}, ghyllcontext.ManagerDeps{
@@ -293,12 +337,16 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 		CreateCheckpoint: s.createCheckpoint,
 	})
 
+	// Populate with handoff summary
+	for _, msg := range handoffMsgs {
+		s.ctxManager.AddMessage(msg)
+	}
+
 	s.output(fmt.Sprintf("⟳ switched to %s from %s", s.activeModel, prevModel))
 	return nil
 }
 
 func (s *Session) compactionCall(req ghyllcontext.CompactionRequest) (string, error) {
-	// Build compaction messages
 	msgs := []map[string]any{
 		{"role": "system", "content": req.CompactionPrompt},
 	}
@@ -309,7 +357,6 @@ func (s *Session) compactionCall(req ghyllcontext.CompactionRequest) (string, er
 		})
 	}
 
-	// Send to model
 	client := stream.NewClient(req.ModelEndpoint, &stream.ClientOptions{
 		MaxRetries:    1,
 		BaseBackoffMs: 500,
@@ -326,7 +373,6 @@ func (s *Session) createCheckpoint(req ghyllcontext.CheckpointRequest) error {
 		return nil
 	}
 
-	// Get latest checkpoint for parent hash
 	parentHash := "0000000000000000000000000000000000000000000000000000000000000000"
 	if latest, err := s.store.LatestBySession(s.sessionID); err == nil {
 		parentHash = latest.Hash

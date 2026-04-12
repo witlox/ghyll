@@ -67,8 +67,9 @@ type Usage struct {
 
 // ClientOptions configures retry behavior.
 type ClientOptions struct {
-	MaxRetries    int // default 3
-	BaseBackoffMs int // default 1000
+	MaxRetries    int    // default 3
+	BaseBackoffMs int    // default 1000
+	ModelName     string // optional, sent as "model" in API request
 }
 
 // Client is the SSE streaming client for OpenAI-compatible endpoints.
@@ -94,6 +95,9 @@ func NewClient(endpoint string, opts *ClientOptions) *Client {
 		}
 		if opts.BaseBackoffMs > 0 {
 			c.opts.BaseBackoffMs = opts.BaseBackoffMs
+		}
+		if opts.ModelName != "" {
+			c.opts.ModelName = opts.ModelName
 		}
 	}
 	return c
@@ -144,8 +148,12 @@ func (c *Client) Send(messages []map[string]any) (*Response, error) {
 }
 
 func (c *Client) doRequest(messages []map[string]any) (*Response, error) {
+	modelName := c.opts.ModelName
+	if modelName == "" {
+		modelName = "default"
+	}
 	body := map[string]any{
-		"model":    "default",
+		"model":    modelName,
 		"messages": messages,
 		"stream":   true,
 	}

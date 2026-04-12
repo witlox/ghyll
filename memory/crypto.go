@@ -36,10 +36,8 @@ func CanonicalHash(cp *Checkpoint) string {
 		"tools":   cp.ToolsUsed,
 	}
 
-	// Only include non-nil/non-empty optional fields
-	if cp.Embedding != nil {
-		m["emb"] = cp.Embedding
-	}
+	// Embedding excluded from hash — it's for search, not integrity.
+	// Float serialization varies across platforms, which would break verification.
 	if len(cp.InjectionSig) > 0 {
 		m["injections"] = cp.InjectionSig
 	}

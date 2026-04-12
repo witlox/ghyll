@@ -21,6 +21,10 @@ func DetectInjectionSignals(msgs []types.Message, startTurn int) []InjectionSign
 	var signals []InjectionSignal
 
 	for i, msg := range msgs {
+		// Only scan user input and tool output — not the model's own responses
+		if msg.Role != "user" && msg.Role != "tool" {
+			continue
+		}
 		turn := startTurn + i
 		content := strings.ToLower(msg.Content)
 

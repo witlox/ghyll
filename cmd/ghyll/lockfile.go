@@ -15,23 +15,36 @@ type Lockfile struct {
 }
 
 // AcquireLock attempts to acquire the repo lockfile.
-// Returns error if another session is active.
+// Uses O_CREATE|O_EXCL for atomic creation to avoid TOCTOU race.
 func AcquireLock(repoDir string) (*Lockfile, error) {
 	path := filepath.Join(repoDir, ".ghyll.lock")
 
-	// Check for existing lock
-	if data, err := os.ReadFile(path); err == nil {
+	// Try atomic create first
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("acquire lock: %w", err)
+		}
+		// File exists — check if stale
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("acquire lock: read existing: %w", readErr)
+		}
 		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
 		if parseErr == nil && isProcessAlive(pid) {
 			return nil, fmt.Errorf("another ghyll session is active (pid %d)", pid)
 		}
-		// Stale lock — reclaim
+		// Stale lock — remove and retry atomically
+		_ = os.Remove(path)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("acquire lock after stale removal: %w", err)
+		}
 	}
 
 	// Write our PID
-	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
-		return nil, fmt.Errorf("acquire lock: %w", err)
-	}
+	_, _ = fmt.Fprintf(f, "%d", os.Getpid())
+	_ = f.Close()
 
 	return &Lockfile{path: path}, nil
 }
@@ -46,6 +59,5 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 checks if process exists without actually sending a signal
 	return process.Signal(syscall.Signal(0)) == nil
 }
