@@ -59,6 +59,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install zig (cross-compiler for CGO)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: latest
+
       - name: Create tag
         run: |
           VERSION="${{ needs.check-updates.outputs.version }}"
