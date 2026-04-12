@@ -83,20 +83,53 @@ Type a coding request and ghyll will use the model to help, executing tool calls
 
 ## Optional: Embedding Model
 
-For drift detection, download the ONNX embedding model:
+Drift detection requires an ONNX embedding model and the ONNX Runtime shared library.
+
+### Install ONNX Runtime
+
+```bash
+# macOS
+brew install onnxruntime
+
+# Linux (Ubuntu/Debian)
+# Download from https://github.com/microsoft/onnxruntime/releases
+# Extract and place libonnxruntime.so in /usr/local/lib
+```
+
+### Download the model
 
 ```bash
 make embedder
 ```
 
-Without it, ghyll works fine but won't detect conversation drift.
+This downloads the GTE-micro model (~60MB) to `~/.ghyll/models/gte-micro.onnx`.
+
+### Build with CGO
+
+The ONNX embedder requires CGO. The default `make build-bin` uses `CGO_ENABLED=0` (static binaries, no ONNX). To build with ONNX support:
+
+```bash
+CGO_ENABLED=1 go build -ldflags="-s -w" -o bin/ghyll ./cmd/ghyll
+```
+
+Without ONNX, ghyll works fine --- drift detection is disabled gracefully.
+
+## Configuration Reference
+
+A complete example configuration is at [`config/example.toml`](https://github.com/witlox/ghyll/blob/main/config/example.toml). Copy it to get started:
+
+```bash
+cp config/example.toml ~/.ghyll/config.toml
+```
+
+See [Configuration](configuration.md) for all options and defaults.
 
 ## Optional: Vault Server
 
 For team memory search across repos:
 
 ```bash
-# Add to config.toml:
+# Add to ~/.ghyll/config.toml:
 [vault]
 url = "https://vault.internal:9090"
 token = "team-shared-secret"

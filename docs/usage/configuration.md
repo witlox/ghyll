@@ -1,6 +1,11 @@
 # Configuration
 
-ghyll reads its configuration from `~/.ghyll/config.toml`.
+ghyll reads its configuration from `~/.ghyll/config.toml`. A complete example is provided at [`config/example.toml`](https://github.com/witlox/ghyll/blob/main/config/example.toml):
+
+```bash
+cp config/example.toml ~/.ghyll/config.toml
+# Edit endpoints to match your SGLang instances
+```
 
 ## Models
 
