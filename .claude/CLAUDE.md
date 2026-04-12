@@ -5,18 +5,17 @@ activating a mode. These are behavioral constraints, not suggestions.
 
 ## Pre-commit discipline
 
-Before committing: `go fmt ./...`, `go vet ./...`, `golangci-lint run ./...`,
-`make test` — show output, verify in main context. Use `/project:verify`.
+Before committing: `make` (runs lint + test + build). Use `/project:verify`
+for the full checklist. Lefthook enforces fmt, lint, test, vet on commit.
 
 ## Mode detection (every response)
 
 ### Step 1: Project state
 
-1. `specs/fidelity/INDEX.md` with checkpoint? -> Baselined
+1. `specs/fidelity/INDEX.md` with checkpoint? -> Baselined (current: CHECKPOINT)
 2. `specs/fidelity/SWEEP.md` IN PROGRESS? -> Resume sweep
-3. Source beyond doc.go? -> Brownfield, suggest sweep
-4. Specs/docs but minimal source? -> Greenfield with docs
-5. Near-empty? -> Pure greenfield
+3. Source code exists and tested? -> Brownfield with baseline
+4. Near-empty? -> Pure greenfield
 
 ### Step 2: User intent -> mode -> role
 
@@ -55,16 +54,10 @@ Read `.claude/roles/[role].md`. Apply its constraints.
 
 **Sweep**: fidelity (auditor) and adversary can run in parallel. Fidelity first when possible — LOW areas get higher adversary priority.
 
-## Entry points
+## Entry point
 
-**Greenfield** (current): analyst (verify/complete specs) -> architect -> adversary -> implement -> diamond workflow.
-
-**Brownfield**: fidelity sweep -> checkpoint -> adversary sweep -> diamond workflow.
+**Brownfield with baseline** (current state): all packages implemented, fidelity checkpoint complete (75 THOROUGH, 3 MODERATE, 5 NONE). Use diamond workflow for new features and bugfixes.
 
 ## Escalation paths
 
 Implementer -> Architect (interface) or Analyst (spec). Adversary -> Architect (structural) or Analyst (gap). Auditor -> Implementer (shallow tests) or Architect (contract divergence). Integrator -> Architect (cross-cutting). All go to `specs/escalations/`.
-
-## Implementation order
-
-1. config/ 2. tool/ 3. stream/ 4. dialect/ (M2.5 first) 5. memory/ 6. context/ 7. dialect/router.go 8. cmd/ghyll/ 9. memory/sync.go 10. vault/ + cmd/ghyll-vault/
