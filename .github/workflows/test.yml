@@ -40,6 +40,13 @@ jobs:
           path: coverage.txt
           retention-days: 7
 
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.txt
+          flags: unittests
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Check coverage threshold
         run: |
           COVERAGE=$(go tool cover -func=coverage.txt | grep total | awk '{print $3}' | tr -d '%')
