@@ -23,7 +23,7 @@ jobs:
           CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=ci" -o bin/ghyll ./cmd/ghyll
           CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=ci" -o bin/ghyll-vault ./cmd/ghyll-vault
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries
           path: bin/
