@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.25+
 - Git (for memory sync)
 - Access to SGLang endpoints serving GLM-5 and/or MiniMax M2.5
 - [Tarn](https://github.com/witlox/tarn) sandbox (recommended)

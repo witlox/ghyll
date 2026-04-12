@@ -17,7 +17,7 @@ This section documents ghyll's internal architecture. Each page covers a specifi
 |  |   router.go        context-depth routing      | |
 |  |   glm5.go          GLM-5 dialect              | |
 |  |   minimax_m25.go   MiniMax M2.5 dialect       | |
-|  |   handoff.go       checkpoint-based switch     | |
+|  |   parse.go         shared tool call parser      | |
 |  | context/           unified context manager    | |
 |  |   manager.go       compaction + backfill      | |
 |  |   drift.go         embedding similarity       | |

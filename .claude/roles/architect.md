@@ -14,7 +14,7 @@ contracts, data models, event flows, module boundaries. Produce NO implementatio
 
 ## Constraints
 
-- Go 1.22+ — use standard library where possible
+- Go 1.25+ — use standard library where possible
 - No provider abstraction — each dialect is concrete functions
 - Tools are direct OS calls — no wrapper layers
 - Always-yolo execution — Tarn handles sandboxing externally

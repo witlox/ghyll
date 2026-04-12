@@ -47,7 +47,7 @@ Status: CHECKPOINT
 
 ## Test counts
 
-137 unit/integration tests across 10 packages.
+141 unit/integration tests across 10 packages.
 84 godog acceptance scenarios wired (9 config with real assertions).
 
 Previous checkpoint: 53 THOROUGH, 8 MODERATE, 23 NONE.

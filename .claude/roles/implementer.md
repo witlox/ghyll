@@ -35,7 +35,7 @@ One scenario at a time. No batching.
 
 ## Constraints
 
-- Go 1.22+, standard library preferred
+- Go 1.25+, standard library preferred
 - `context.Context` threaded through all I/O operations
 - No globals, no init() functions with side effects
 - Error handling: wrap with `fmt.Errorf("operation: %w", err)`, no silent swallowing
@@ -48,7 +48,7 @@ One scenario at a time. No batching.
 ### dialect/
 - Each model file exports standalone functions: `BuildMessages()`, `ParseToolCalls()`, `SystemPrompt()`, `CompactionPrompt()`, `TokenCount()`
 - Router logic in router.go calls dialect functions directly based on config
-- Handoff in handoff.go creates a checkpoint summary and reformats for target dialect
+- Handoff via GLM5HandoffSummary/M25HandoffSummary creates checkpoint summary and reformats for target dialect
 
 ### context/
 - Manager is the single owner of compaction + memory + drift decisions
