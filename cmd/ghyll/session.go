@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	ghyllcontext "github.com/witlox/ghyll/context"
+	gocontext "context"
 	"github.com/witlox/ghyll/config"
+	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/dialect"
 	"github.com/witlox/ghyll/memory"
 	"github.com/witlox/ghyll/stream"
 	"github.com/witlox/ghyll/tool"
 	"github.com/witlox/ghyll/types"
-	gocontext "context"
 	"time"
 )
 
@@ -35,12 +35,12 @@ type Session struct {
 	workdir      string
 
 	// Dialect functions resolved for active model
-	systemPrompt    func(string) string
-	buildMessages   func([]types.Message, string) []map[string]any
-	parseToolCalls  func(json.RawMessage) ([]types.ToolCall, error)
+	systemPrompt     func(string) string
+	buildMessages    func([]types.Message, string) []map[string]any
+	parseToolCalls   func(json.RawMessage) ([]types.ToolCall, error)
 	compactionPrompt func() string
-	tokenCount      func([]types.Message) int
-	handoffSummary  func(memory.Checkpoint, []types.Message) []types.Message
+	tokenCount       func([]types.Message) int
+	handoffSummary   func(memory.Checkpoint, []types.Message) []types.Message
 
 	// Output callback for terminal display
 	output func(string)
@@ -63,15 +63,15 @@ type SessionConfig struct {
 // NewSession creates and initializes a session.
 func NewSession(sc SessionConfig) (*Session, error) {
 	s := &Session{
-		cfg:       sc.Cfg,
-		store:     sc.Store,
-		syncer:    sc.Syncer,
+		cfg:         sc.Cfg,
+		store:       sc.Store,
+		syncer:      sc.Syncer,
 		vaultClient: sc.VaultClient,
-		deviceKey: sc.DeviceKey,
-		embedder:  sc.Embedder,
-		workdir:   sc.Workdir,
-		sessionID: sc.SessionID,
-		output:    sc.Output,
+		deviceKey:   sc.DeviceKey,
+		embedder:    sc.Embedder,
+		workdir:     sc.Workdir,
+		sessionID:   sc.SessionID,
+		output:      sc.Output,
 	}
 
 	if s.output == nil {
@@ -106,8 +106,8 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		PreserveTurns:    3,
 		CompactThreshold: 0.9,
 	}, ghyllcontext.ManagerDeps{
-		TokenCount: s.tokenCount,
-		CompactionCall: s.compactionCall,
+		TokenCount:       s.tokenCount,
+		CompactionCall:   s.compactionCall,
 		CreateCheckpoint: s.createCheckpoint,
 	})
 
@@ -153,12 +153,12 @@ func (s *Session) Turn(userInput string) (string, error) {
 
 	// Routing decision
 	decision := dialect.Evaluate(dialect.RouterInputs{
-		ContextDepth:      s.tokenCount(s.ctxManager.Messages()),
-		ToolDepth:         s.toolDepth,
-		ModelLocked:       s.modelLocked,
-		DeepOverride:      s.deepOverride,
-		ActiveModel:       s.activeModel,
-		Config:            s.cfg.Routing,
+		ContextDepth: s.tokenCount(s.ctxManager.Messages()),
+		ToolDepth:    s.toolDepth,
+		ModelLocked:  s.modelLocked,
+		DeepOverride: s.deepOverride,
+		ActiveModel:  s.activeModel,
+		Config:       s.cfg.Routing,
 	})
 
 	if decision.Action == "escalate" || decision.Action == "de_escalate" {

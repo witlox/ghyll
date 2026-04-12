@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/witlox/ghyll/config"
+	"github.com/witlox/ghyll/memory"
 )
 
 func main() {
@@ -13,18 +16,19 @@ func main() {
 
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: ghyll run [dir] [--model <model>]")
+		fmt.Fprintln(os.Stderr, "       ghyll config show")
 		os.Exit(1)
 	}
 
 	switch args[0] {
 	case "run":
-		if err := runSession(args[1:]); err != nil {
+		if err := cmdRun(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
 			os.Exit(1)
 		}
 	case "config":
 		if len(args) > 1 && args[1] == "show" {
-			if err := showConfig(); err != nil {
+			if err := cmdConfigShow(); err != nil {
 				fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
 				os.Exit(1)
 			}
@@ -35,7 +39,7 @@ func main() {
 	}
 }
 
-func runSession(args []string) error {
+func cmdRun(args []string) error {
 	workdir := "."
 	var modelFlag string
 
@@ -56,37 +60,127 @@ func runSession(args []string) error {
 		return fmt.Errorf("resolve workdir: %w", err)
 	}
 
-	// Load config
+	// 1. Load config
 	configPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "config.toml")
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 
-	// Resolve active model
-	activeModel := cfg.Routing.DefaultModel
-	modelLocked := false
-	if modelFlag != "" {
-		activeModel = modelFlag
-		modelLocked = true
+	// 2. Acquire lockfile (invariant 31)
+	lock, err := AcquireLock(absDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	// 3. Load or generate device key (invariant 29)
+	keysDir := filepath.Join(os.Getenv("HOME"), ".ghyll", "keys")
+	hostname, _ := os.Hostname()
+	deviceID := hostname
+	if deviceID == "" {
+		deviceID = "default"
+	}
+	deviceKey, err := memory.LoadOrGenerateKey(keysDir, deviceID)
+	if err != nil {
+		return fmt.Errorf("key setup: %w", err)
+	}
+	fmt.Printf("ℹ device: %s\n", deviceKey.DeviceID)
+
+	// 4. Open sqlite store
+	dbPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "memory.db")
+	store, err := memory.OpenStore(dbPath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// 5. Initialize embedder (invariant 17: graceful if unavailable)
+	embedderPath := cfg.Memory.Embedder.ModelPath
+	if embedderPath == "" {
+		embedderPath = filepath.Join(os.Getenv("HOME"), ".ghyll", "models", "gte-micro.onnx")
+	}
+	embedder, _ := memory.NewEmbedder(embedderPath, cfg.Memory.Embedder.Dimensions)
+	if !embedder.IsAvailable() {
+		fmt.Println("ℹ embedding model not available, drift detection disabled")
 	}
 
-	// Verify model exists in config
-	if _, ok := cfg.Models[activeModel]; !ok {
-		return fmt.Errorf("model %q not configured", activeModel)
+	// 6. Setup git syncer
+	var syncer *memory.Syncer
+	syncer, err = memory.NewSyncer(absDir, cfg.Memory.Branch, deviceKey.DeviceID)
+	if err != nil {
+		fmt.Printf("⚠ sync setup failed: %v\n", err)
+	} else {
+		if initErr := syncer.InitBranch(); initErr != nil {
+			fmt.Printf("⚠ memory branch init failed: %v\n", initErr)
+			syncer = nil
+		} else {
+			pubPEM, _ := memory.MarshalPublicKey(deviceKey.PublicKey)
+			_ = syncer.WritePublicKey(deviceKey.DeviceID, pubPEM)
+			if fetchErr := syncer.Fetch(); fetchErr != nil {
+				fmt.Printf("⚠ initial sync failed: %v\n", fetchErr)
+			}
+		}
 	}
 
-	fmt.Printf("ghyll [%s] %s ▸ ", activeModel, absDir)
+	// 7. Start background sync
+	var syncCancel context.CancelFunc
+	if syncer != nil && cfg.Memory.AutoSync {
+		var syncCtx context.Context
+		syncCtx, syncCancel = context.WithCancel(context.Background())
+		interval := time.Duration(cfg.Memory.SyncIntervalSeconds) * time.Second
+		if interval == 0 {
+			interval = 60 * time.Second
+		}
+		go memory.SyncLoop(syncCtx, syncer, interval)
+	}
+	defer func() {
+		if syncCancel != nil {
+			syncCancel()
+		}
+	}()
 
-	// Session loop will be wired here
-	_ = modelLocked
-	_ = cfg
+	// 8. Setup vault client
+	var vaultClient *memory.VaultClient
+	if cfg.Vault != nil {
+		vaultClient = memory.NewVaultClient(cfg.Vault.URL, cfg.Vault.Token)
+	}
 
-	fmt.Println("session not yet implemented — packages ready, wiring pending")
+	// 9. Generate session ID
+	sessionID := fmt.Sprintf("%s-%d", deviceKey.DeviceID, time.Now().UnixNano())
+
+	// 10. Create session
+	output := func(msg string) { fmt.Println(msg) }
+	sess, err := NewSession(SessionConfig{
+		Cfg:         cfg,
+		Store:       store,
+		Syncer:      syncer,
+		VaultClient: vaultClient,
+		DeviceKey:   deviceKey,
+		Embedder:    embedder,
+		ModelFlag:   modelFlag,
+		Workdir:     absDir,
+		SessionID:   sessionID,
+		Output:      output,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("ghyll [%s] %s\n", sess.ActiveModel(), absDir)
+
+	// 11. Run interactive REPL
+	REPL(sess, os.Stdin)
+
+	// 12. Shutdown: final sync
+	if syncer != nil {
+		_ = syncer.CommitAndPush(context.Background())
+	}
+
 	return nil
 }
 
-func showConfig() error {
+func cmdConfigShow() error {
 	configPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "config.toml")
 	cfg, err := config.Load(configPath)
 	if err != nil {
