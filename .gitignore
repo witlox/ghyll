@@ -1,0 +1,8 @@
+bin/
+*.db
+*.onnx
+.DS_Store
+.claude/CLAUDE.md
+.claude/settings.local.json
+vendor/
+ghyll

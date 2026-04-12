@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: false
+  commands:
+    fmt:
+      glob: "*.go"
+      run: go fmt ./...
+    vet:
+      glob: "*.go"
+      run: go vet ./...
+    lint:
+      glob: "*.go"
+      run: golangci-lint run ./...
+    test:
+      glob: "*.go"
+      run: make test
