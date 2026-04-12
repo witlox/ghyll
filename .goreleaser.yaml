@@ -11,21 +11,11 @@ builds:
     binary: ghyll
     env:
       - CGO_ENABLED=1
-    targets:
-      - linux_amd64
-      - linux_arm64
-      - darwin_arm64
-    overrides:
-      - goos: linux
-        goarch: arm64
-        env:
-          - CC=zig cc -target aarch64-linux-gnu
-          - CXX=zig c++ -target aarch64-linux-gnu
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
       - goos: darwin
-        goarch: arm64
-        env:
-          - CC=zig cc -target aarch64-macos
-          - CXX=zig c++ -target aarch64-macos
+        goarch: amd64
     ldflags:
       - -s -w -X main.version={{.Version}}
 
@@ -34,21 +24,11 @@ builds:
     binary: ghyll-vault
     env:
       - CGO_ENABLED=1
-    targets:
-      - linux_amd64
-      - linux_arm64
-      - darwin_arm64
-    overrides:
-      - goos: linux
-        goarch: arm64
-        env:
-          - CC=zig cc -target aarch64-linux-gnu
-          - CXX=zig c++ -target aarch64-linux-gnu
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
       - goos: darwin
-        goarch: arm64
-        env:
-          - CC=zig cc -target aarch64-macos
-          - CXX=zig c++ -target aarch64-macos
+        goarch: amd64
     ldflags:
       - -s -w -X main.version={{.Version}}
 

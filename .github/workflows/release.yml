@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   check-updates:
@@ -45,8 +44,29 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Generated version: ${VERSION}"
 
-  release:
+  tag:
     needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists, skipping"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "v${VERSION}" -m "Release v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+
+  build-linux:
+    needs: [check-updates, tag]
     if: needs.check-updates.outputs.has_updates == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -59,24 +79,102 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install zig (cross-compiler for CGO)
+      - name: Install zig (cross-compiler for arm64)
         uses: mlugg/setup-zig@v2
         with:
           version: latest
 
-      - name: Create tag
+      - name: Build linux/amd64
         run: |
           VERSION="${{ needs.check-updates.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
-          git push origin "v${VERSION}"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_linux_amd64/ghyll ./cmd/ghyll
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_linux_amd64/ghyll-vault ./cmd/ghyll-vault
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+      - name: Build linux/arm64
+        env:
+          CC: zig cc -target aarch64-linux-gnu
+          CXX: zig c++ -target aarch64-linux-gnu
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_linux_arm64/ghyll ./cmd/ghyll
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_linux_arm64/ghyll-vault ./cmd/ghyll-vault
+
+      - name: Package
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          cd dist
+          for dir in ghyll_linux_*; do
+            cp ../LICENSE ../README.md "$dir/"
+            tar czf "${dir}_v${VERSION}.tar.gz" -C "$dir" .
+          done
+
+      - uses: actions/upload-artifact@v7
         with:
-          version: latest
-          args: release --clean
+          name: linux-archives
+          path: dist/*.tar.gz
+
+  build-macos:
+    needs: [check-updates, tag]
+    if: needs.check-updates.outputs.has_updates == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build darwin/arm64
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_darwin_arm64/ghyll ./cmd/ghyll
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_darwin_arm64/ghyll-vault ./cmd/ghyll-vault
+
+      - name: Package
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          cd dist
+          cp ../LICENSE ../README.md ghyll_darwin_arm64/
+          tar czf "ghyll_darwin_arm64_v${VERSION}.tar.gz" -C ghyll_darwin_arm64 .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-archives
+          path: dist/*.tar.gz
+
+  release:
+    needs: [check-updates, build-linux, build-macos]
+    if: needs.check-updates.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+        run: |
+          VERSION="${{ needs.check-updates.outputs.version }}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            dist/*.tar.gz dist/checksums.txt
