@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	ghyllcontext "github.com/witlox/ghyll/context"
 )
 
 // REPL runs the interactive read-eval-print loop.
@@ -19,6 +21,17 @@ func REPL(sess *Session, input io.Reader) {
 	go func() {
 		<-sigCh
 		fmt.Println("\nshutting down...")
+		// Create final checkpoint on graceful shutdown
+		if sess.ctxManager.Turn() > 0 {
+			_ = sess.createCheckpoint(ghyllcontext.CheckpointRequest{
+				SessionID:   sess.sessionID,
+				Turn:        sess.ctxManager.Turn(),
+				ActiveModel: sess.activeModel,
+				Summary:     "session ended (signal)",
+				Messages:    sess.ctxManager.Messages(),
+				Reason:      "shutdown",
+			})
+		}
 		os.Exit(0)
 	}()
 
@@ -37,6 +50,17 @@ func REPL(sess *Session, input io.Reader) {
 		// Handle commands
 		switch {
 		case line == "/exit" || line == "/quit":
+			// Final checkpoint on clean exit
+			if sess.ctxManager.Turn() > 0 {
+				_ = sess.createCheckpoint(ghyllcontext.CheckpointRequest{
+					SessionID:   sess.sessionID,
+					Turn:        sess.ctxManager.Turn(),
+					ActiveModel: sess.activeModel,
+					Summary:     "session ended",
+					Messages:    sess.ctxManager.Messages(),
+					Reason:      "shutdown",
+				})
+			}
 			fmt.Println("goodbye")
 			return
 		case line == "/deep":
@@ -66,13 +90,11 @@ func REPL(sess *Session, input io.Reader) {
 			continue
 		}
 
-		// Execute turn
-		reply, err := sess.Turn(line)
+		// Execute turn — response is already streamed to terminal via renderer
+		_, err := sess.Turn(line)
 		if err != nil {
-			sess.output(fmt.Sprintf("✗ %v", err))
+			sess.renderer.RenderError(err.Error())
 			continue
 		}
-
-		fmt.Println(reply)
 	}
 }

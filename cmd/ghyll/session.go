@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	gocontext "context"
@@ -44,8 +45,9 @@ type Session struct {
 	tokenCount       func([]types.Message) int
 	handoffSummary   func(memory.Checkpoint, []types.Message) []types.Message
 
-	// Output callback for terminal display
-	output func(string)
+	// Terminal rendering
+	renderer *stream.Renderer
+	output   func(string)
 }
 
 // SessionConfig holds init parameters for a session.
@@ -59,6 +61,7 @@ type SessionConfig struct {
 	ModelFlag   string
 	Workdir     string
 	SessionID   string
+	Renderer    *stream.Renderer
 	Output      func(string)
 }
 
@@ -73,9 +76,13 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		embedder:    sc.Embedder,
 		workdir:     sc.Workdir,
 		sessionID:   sc.SessionID,
+		renderer:    sc.Renderer,
 		output:      sc.Output,
 	}
 
+	if s.renderer == nil {
+		s.renderer = stream.NewRenderer(os.Stdout)
+	}
 	if s.output == nil {
 		s.output = func(msg string) { fmt.Println(msg) }
 	}
@@ -182,19 +189,21 @@ func (s *Session) sendAndProcess() (string, error) {
 
 	sysPrompt := s.systemPrompt(s.workdir)
 	messages := s.buildMessages(s.ctxManager.Messages(), sysPrompt)
-	resp, err := s.streamClient.Send(messages)
+	resp, err := s.streamClient.SendStream(messages, func(delta string) {
+		s.renderer.RenderDelta(delta)
+	})
 
 	if err != nil {
 		var sErr *stream.StreamError
 		if stream.AsStreamError(err, &sErr) && sErr.ContextTooLong {
-			// Reactive compaction
 			endpoint := s.cfg.Models[s.activeModel].Endpoint
 			if cErr := s.ctxManager.ReactiveCompact(s.activeModel, endpoint, s.compactionPrompt()); cErr != nil {
 				return "", fmt.Errorf("reactive compaction failed: %w", cErr)
 			}
-			// Retry once
 			messages = s.buildMessages(s.ctxManager.Messages(), sysPrompt)
-			resp, err = s.streamClient.Send(messages)
+			resp, err = s.streamClient.SendStream(messages, func(delta string) {
+				s.renderer.RenderDelta(delta)
+			})
 			if err != nil {
 				return "", err
 			}
@@ -210,15 +219,22 @@ func (s *Session) sendAndProcess() (string, error) {
 		ToolCalls: resp.ToolCalls,
 	})
 
+	// Finish the streaming line
+	if resp.Content != "" {
+		s.renderer.RenderComplete()
+	}
+
 	if resp.Partial {
-		s.output("⚠ stream interrupted")
+		s.renderer.RenderWarning("stream interrupted")
 		return resp.Content, nil
 	}
 
 	// Execute tool calls
 	if len(resp.ToolCalls) > 0 {
 		for _, tc := range resp.ToolCalls {
+			s.renderer.RenderToolCall(tc.Function.Name, tc.Function.Arguments)
 			toolResult := s.executeTool(tc)
+			s.renderer.RenderToolResult(toolResult.Output, toolResult.Error, toolResult.TimedOut)
 			s.ctxManager.AddMessage(types.Message{
 				Role:       "tool",
 				Content:    toolResult.Output,

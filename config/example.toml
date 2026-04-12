@@ -1,0 +1,41 @@
+# Ghyll configuration
+# Copy to ~/.ghyll/config.toml and edit endpoints
+
+[models.m25]
+endpoint = "https://inference.internal:8001/v1"
+dialect = "minimax_m25"
+max_context = 1000000
+
+[models.glm5]
+endpoint = "https://inference.internal:8002/v1"
+dialect = "glm5"
+max_context = 200000
+
+[routing]
+default_model = "m25"
+context_depth_threshold = 32000
+tool_depth_threshold = 5
+enable_auto_routing = true
+
+[memory]
+branch = "ghyll/memory"
+auto_sync = true
+sync_interval_seconds = 60
+checkpoint_interval_turns = 5
+drift_check_interval_turns = 5
+drift_threshold = 0.7
+
+[memory.embedder]
+model_url = "https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
+model_path = "~/.ghyll/models/gte-micro.onnx"
+dimensions = 384
+
+[tools]
+bash_timeout_seconds = 30
+file_timeout_seconds = 5
+prefer_ripgrep = true
+
+# Optional: team memory search server
+# [vault]
+# url = "https://vault.internal:9090"
+# token = "team-shared-secret"

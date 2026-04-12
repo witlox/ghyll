@@ -103,10 +103,20 @@ func NewClient(endpoint string, opts *ClientOptions) *Client {
 	return c
 }
 
-// Send sends messages to the chat completions endpoint with streaming.
-// Retries on 5xx with exponential backoff (invariant 18).
-// Returns a StreamError with classification on failure.
+// OnDelta is called for each content delta during streaming.
+// Allows real-time terminal rendering as tokens arrive.
+type OnDelta func(delta string)
+
+// Send sends messages and returns the complete response (no streaming callback).
+// Used for compaction calls and testing.
 func (c *Client) Send(messages []map[string]any) (*Response, error) {
+	return c.SendStream(messages, nil)
+}
+
+// SendStream sends messages with real-time delta streaming.
+// The onDelta callback is invoked for each content token as it arrives.
+// Retries on 5xx with exponential backoff (invariant 18).
+func (c *Client) SendStream(messages []map[string]any, onDelta OnDelta) (*Response, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
@@ -115,29 +125,25 @@ func (c *Client) Send(messages []map[string]any) (*Response, error) {
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
 		}
 
-		resp, err := c.doRequest(messages)
+		resp, err := c.doRequest(messages, onDelta)
 		if err == nil {
 			return resp, nil
 		}
 
 		var sErr *StreamError
 		if errors.As(err, &sErr) {
-			// Rate limit: use Retry-After if available
 			if sErr.StatusCode == 429 && sErr.RetryAfter > 0 {
 				time.Sleep(time.Duration(sErr.RetryAfter) * time.Second)
 				lastErr = err
 				continue
 			}
-			// Context too long: don't retry, surface immediately
 			if sErr.ContextTooLong {
 				return nil, err
 			}
-			// 5xx: retry
 			if sErr.Retryable {
 				lastErr = err
 				continue
 			}
-			// 4xx (non-retryable): surface immediately
 			return nil, err
 		}
 
@@ -147,7 +153,7 @@ func (c *Client) Send(messages []map[string]any) (*Response, error) {
 	return nil, lastErr
 }
 
-func (c *Client) doRequest(messages []map[string]any) (*Response, error) {
+func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Response, error) {
 	modelName := c.opts.ModelName
 	if modelName == "" {
 		modelName = "default"
@@ -185,7 +191,7 @@ func (c *Client) doRequest(messages []map[string]any) (*Response, error) {
 		return nil, classifyHTTPError(resp)
 	}
 
-	return parseSSEStream(resp.Body)
+	return parseSSEStream(resp.Body, onDelta)
 }
 
 func classifyHTTPError(resp *http.Response) error {
@@ -251,7 +257,7 @@ type sseToolCallDelta struct {
 	} `json:"function"`
 }
 
-func parseSSEStream(body io.Reader) (*Response, error) {
+func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 	result := &Response{}
 	var contentBuilder strings.Builder
 	toolCallMap := map[int]*types.ToolCall{}
@@ -283,9 +289,12 @@ func parseSSEStream(body io.Reader) (*Response, error) {
 
 		choice := event.Choices[0]
 
-		// Accumulate content
+		// Accumulate content and stream delta
 		if choice.Delta.Content != "" {
 			contentBuilder.WriteString(choice.Delta.Content)
+			if onDelta != nil {
+				onDelta(choice.Delta.Content)
+			}
 		}
 
 		// Accumulate tool calls

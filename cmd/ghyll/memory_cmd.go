@@ -1,6 +1,7 @@
 package main
 
 import (
+	gocontextpkg "context"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +15,7 @@ import (
 // cmdMemoryMain handles `ghyll memory` subcommands.
 func cmdMemoryMain(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: ghyll memory [log|search <query>]")
+		return fmt.Errorf("usage: ghyll memory [log|search <query>|sync]")
 	}
 
 	dbPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "memory.db")
@@ -33,9 +34,45 @@ func cmdMemoryMain(args []string) error {
 		}
 		query := strings.Join(args[1:], " ")
 		return cmdMemorySearch(store, query, os.Stdout)
+	case "sync":
+		return cmdMemorySyncManual()
 	default:
 		return fmt.Errorf("unknown memory command: %s", args[0])
 	}
+}
+
+// cmdMemorySyncManual triggers a manual sync of the memory branch.
+func cmdMemorySyncManual() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	hostname, _ := os.Hostname()
+	deviceID := hostname
+	if deviceID == "" {
+		deviceID = "default"
+	}
+
+	branch := "ghyll/memory"
+	syncer, err := memory.NewSyncer(cwd, branch, deviceID)
+	if err != nil {
+		return fmt.Errorf("sync setup: %w", err)
+	}
+
+	fmt.Println("fetching remote checkpoints...")
+	if err := syncer.Fetch(); err != nil {
+		fmt.Printf("fetch: %v (continuing with push)\n", err)
+	}
+
+	gocontext := gocontextpkg.Background()
+	fmt.Println("pushing local checkpoints...")
+	if err := syncer.CommitAndPush(gocontext); err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+
+	fmt.Println("sync complete")
+	return nil
 }
 
 // cmdMemoryLog shows the checkpoint chain across all sessions.
