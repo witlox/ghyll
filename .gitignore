@@ -1,5 +1,0 @@
-bin/
-*.db
-*.onnx
-.claude/CLAUDE.md
-vendor/
