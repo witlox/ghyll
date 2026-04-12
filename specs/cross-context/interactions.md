@@ -3,19 +3,23 @@
 ## Package Dependency Graph
 
 ```
-cmd/ghyll ──→ dialect/ ──→ (no deps)
-    │              │
-    ├──→ context/ ─┼──→ memory/
+cmd/ghyll ──→ dialect/ ──→ config/
+    │              │           │
+    ├──→ context/ ─┼──→ memory/ ──→ tool/
     │              │       │
-    ├──→ stream/   │       ├──→ tool/git (for sync)
-    │              │       └──→ config/
-    ├──→ tool/     │
+    ├──→ stream/ ──┤       ├──→ config/
+    │              │       │
+    ├──→ tool/ ────┤       └──→ types/
     │              │
     └──→ config/ ──┘
+                   │
+             all ──→ types/  (leaf)
 
 cmd/ghyll-vault ──→ vault/ ──→ memory/
                                └──→ config/
 ```
+
+See `specs/architecture/package-graph.md` for the authoritative graph.
 
 ## Interaction Flows
 
@@ -34,8 +38,12 @@ cmd/ghyll → stream/client (send messages to model endpoint)
 ```
 context/manager (detects context depth > threshold)
 → dialect/router (decides to escalate)
-→ memory/checkpoint (create handoff checkpoint)
-→ dialect/handoff (format checkpoint for target model)
+→ context/manager (trigger compaction on current model first)
+→ dialect/ (get CompactionPrompt for current model)
+→ stream/client (separate API call: turns-to-summarize + compaction prompt)
+→ context/manager (replace old turns with summary)
+→ memory/checkpoint (create compaction + handoff checkpoint)
+→ dialect/handoff (format compacted context for target model)
 → context/manager (replace context with handoff context)
 → stream/client (next request goes to new endpoint)
 ```
@@ -72,6 +80,42 @@ context/drift (backfill needed, local insufficient)
 → memory/vault_client (GET /search?q=<embedding>&repo=<hash>)
 → memory/store (verify returned checkpoint signatures)
 → context/manager (inject verified checkpoint summaries)
+```
+
+### Flow 6: Stream failure with tier fallback (auto-routing only)
+```
+stream/client (send request to active model endpoint)
+→ stream/client (receive 5xx or connection error)
+→ stream/client (retry with exponential backoff: 1s, 2s, 4s)
+→ stream/client (3 failures → check if auto-routing is active)
+  If --model flag set: surface error, session stays open
+  If auto-routing:
+→ dialect/router (select alternate tier)
+→ dialect/handoff (reformat context for alternate dialect)
+→ stream/client (send to alternate endpoint)
+→ cmd/ghyll (display fallback warning)
+```
+
+### Flow 7: Proactive compaction
+```
+context/manager (before each turn, check token count)
+→ context/manager (>90% of max → trigger compaction)
+→ context/manager (select turns to summarize: all except last 3)
+→ dialect/ (get CompactionPrompt for active model)
+→ stream/client (separate API call: compaction prompt + turns-to-summarize only)
+→ context/manager (replace old turns with returned summary)
+→ memory/checkpoint (create checkpoint of pre-compaction state)
+→ context/drift (measure drift after compaction)
+```
+Note: context/manager orchestrates. dialect/ provides the prompt,
+stream/client makes the call. dialect/ and stream/ do not call each other.
+
+### Flow 8: Reactive compaction (fallback)
+```
+stream/client (model rejects with context_length_exceeded)
+→ context/manager (trigger compaction)
+→ [same as Flow 7 from dialect/ onward]
+→ stream/client (retry original request once with compacted context)
 ```
 
 ## Data Ownership

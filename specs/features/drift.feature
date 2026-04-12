@@ -5,19 +5,30 @@ Feature: Drift detection and memory backfill
   Scenario: No drift detected
     Given a session working on "fix the auth module race condition"
     And 8 turns have completed, all related to auth module
+    And the most recent checkpoint is checkpoint 2
     When drift is measured at turn 8
-    Then cosine similarity to checkpoint 0 is 0.85
+    Then cosine similarity is computed against checkpoint 2's embedding
+    And similarity is 0.85
     And no backfill is triggered
 
-  Scenario: Drift detected and backfill triggered
+  Scenario: Drift detected against most recent checkpoint
     Given a session that started on "fix auth module race condition"
-    And the conversation has drifted to discussing CSS styling
+    And checkpoint 3 was created at turn 10 while still on-topic
+    And the conversation has since drifted to discussing CSS styling
     When drift is measured
-    Then cosine similarity to checkpoint 0 is 0.45
-    And this is below the threshold of 0.7
+    Then cosine similarity is computed against checkpoint 3's embedding
+    And similarity is 0.45, below the threshold of 0.7
     And the top-2 most relevant checkpoints are retrieved
     And their summaries are injected as system context
     And the terminal displays "ℹ drift detected, backfilling from checkpoints 1, 3"
+
+  Scenario: Drift measured against checkpoint 0 when no others exist
+    Given a session that just started with "fix auth module race condition"
+    And only checkpoint 0 exists (the initial checkpoint)
+    And the conversation has drifted after 4 turns
+    When drift is measured
+    Then cosine similarity is computed against checkpoint 0's embedding
+    And the threshold applies the same way
 
   Scenario: Backfill from team memory
     Given developer alice created checkpoint "auth module has race condition in session.refresh()"

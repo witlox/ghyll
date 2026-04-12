@@ -50,4 +50,24 @@
 
 ### FM-10: SGLang endpoint unreachable
 **Scenario:** Network issue between developer machine and inference cluster.
-**Mitigation:** Connection timeout (5s), retry with backoff, clear error message. If only one tier is reachable, operate in single-model mode.
+**Mitigation:** Connection timeout (5s), retry with exponential backoff (1s, 2s, 4s), tier fallback to alternate model. If both tiers unreachable, session stays open for manual retry.
+
+### FM-11: Stream interrupted mid-response
+**Scenario:** Connection drops while model is streaming a response.
+**Detection:** Stream client detects EOF or connection reset before receiving stop token.
+**Mitigation:** Partial content preserved and surfaced to user. User can retry with same context. No checkpoint created for incomplete turn.
+
+### FM-12: Vault unreachable during backfill
+**Scenario:** Drift triggers backfill, local checkpoints insufficient, vault is down.
+**Mitigation:** Vault request times out after 5s. Fall back to local git-synced checkpoints only. Log warning. Session continues with reduced team memory.
+**Residual risk:** If local checkpoints are also insufficient, drift correction is incomplete.
+
+### FM-14: Private key lost or machine replaced
+**Scenario:** Developer gets a new machine, old key pair is gone. Old checkpoints are signed with the old key.
+**Mitigation:** Generate new key pair on new machine. Old checkpoints remain verifiable via old public key still on memory branch. New checkpoints use new key. No key rotation protocol needed — old and new keys coexist as different device IDs.
+
+### FM-13: Vault serves poisoned checkpoint
+**Scenario:** Compromised vault returns a checkpoint with valid structure but malicious summary.
+**Detection:** ed25519 signature verification against known public keys. Unknown key → reject. Broken hash chain → reject.
+**Mitigation:** Unverified checkpoints are never used for backfill. Warning displayed.
+**Residual risk:** Same as FM-01 — compromised developer key allows signed poisoned checkpoints.

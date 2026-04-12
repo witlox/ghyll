@@ -71,6 +71,8 @@ stream/             LLM client + terminal rendering
 config/             configuration
   config.go         TOML loader
   models.go         endpoint + dialect mapping
+types/              shared types (Message, ToolCall, ToolResult)
+  types.go          leaf package, no dependencies
 specs/              behavioral specifications
   features/         Gherkin .feature files
   architecture/     technical architecture specs

@@ -23,8 +23,17 @@ Feature: Git-based memory sync
     When ghyll starts a new session
     Then git fetch origin ghyll/memory runs
     And new remote checkpoints are imported into local sqlite
-    And hash chains are verified for imported checkpoints
+    And for each remote device, the full chain file (chains/<device-id>.jsonl) is fetched
+    And hash chains are verified per-device (each chain is independent)
     And the terminal shows "ℹ synced 12 checkpoints from 3 developers"
+
+  Scenario: Partial chain import
+    Given developer alice has checkpoints [a0, a1, a2, a3] on remote
+    And local sqlite already has [a0, a1]
+    When sync runs
+    Then only [a2, a3] are imported
+    And the chain is verified: a2.parent_hash == a1.hash, a3.parent_hash == a2.hash
+    And verification succeeds because the chain roots (a0, a1) are already trusted locally
 
   Scenario: Concurrent push conflict
     Given developer alice and bob both push to ghyll/memory simultaneously
