@@ -40,3 +40,8 @@
 # Decisions
 
 - [ADR-001: Architecture](decisions/001-architecture.md)
+- [ADR-002: Shared Types Leaf Package](decisions/002-types-leaf-package.md)
+- [ADR-003: Embedding Excluded from Hash](decisions/003-embedding-excluded-from-hash.md)
+- [ADR-004: Tool Call Depth Limit](decisions/004-tool-depth-limit.md)
+- [ADR-005: Compaction as Separate API Call](decisions/005-compaction-separate-api-call.md)
+- [ADR-006: One Session Per Repository](decisions/006-one-session-per-repo.md)
