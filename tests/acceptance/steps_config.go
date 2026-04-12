@@ -159,11 +159,10 @@ url = "%s"
 
 	ctx.Step(`^ghyll starts with --model ([a-z0-9]+)$`, func(model string) error {
 		loadConfig()
-		if loadErr == nil {
-			state.ActiveModel = model
-			state.ModelLocked = true
-			state.AutoRouting = false
-		}
+		// --model flag always overrides, regardless of config load success
+		state.ActiveModel = model
+		state.ModelLocked = true
+		state.AutoRouting = false
 		return nil
 	})
 

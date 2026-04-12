@@ -27,9 +27,10 @@ type ScenarioState struct {
 	PartialContent string
 
 	// Memory
-	Checkpoints    []string
-	LastCheckpoint string
-	ChainValid     bool
+	Checkpoints     []string
+	LastCheckpoint  string
+	ChainValid      bool
+	PendingVerifyCP interface{} // *memory.Checkpoint for cross-step-file sharing
 
 	// Drift
 	Similarity float64
