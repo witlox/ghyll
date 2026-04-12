@@ -25,3 +25,4 @@ jobs:
   test:
     needs: validate
     uses: ./.github/workflows/test.yml
+    secrets: inherit
