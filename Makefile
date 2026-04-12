@@ -61,8 +61,13 @@ embedder:
 	@mkdir -p ~/.ghyll/models
 	@echo "Downloading GTE-micro ONNX model..."
 	curl -L -o ~/.ghyll/models/gte-micro.onnx \
-		"https://huggingface.co/Xenova/gte-micro/resolve/main/model.onnx"
+		"https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
 	@echo "Done. Model at ~/.ghyll/models/gte-micro.onnx"
+	@echo ""
+	@echo "ONNX Runtime shared library is also required."
+	@echo "  macOS:  brew install onnxruntime"
+	@echo "  Linux:  See https://github.com/microsoft/onnxruntime/releases"
+	@echo "  Set ONNXRUNTIME_LIB_PATH if not in default search path."
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t ghyll:$(VERSION) .
