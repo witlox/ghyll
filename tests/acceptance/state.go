@@ -37,6 +37,23 @@ type ScenarioState struct {
 	Threshold  float64
 	Drifted    bool
 
+	// Keys
+	KeysDir  string
+	DeviceID string
+
+	// Sync
+	SyncRepoDir    string
+	SyncRemoteDir  string
+	SyncBranchName string
+
+	// Stream
+	StreamEndpoint string
+	StreamDialect  string
+
+	// Compaction
+	CompactionTriggered bool
+	CompactionSummary   string
+
 	// Terminal output (for display assertions)
 	TerminalOutput []string
 }

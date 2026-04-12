@@ -461,11 +461,31 @@ func registerMemorySteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^the checkpoint summary includes "([^"]*)"$`, func(expected string) error {
-		if lastCP == nil {
+		// Strip placeholder "N" from expected to get the prefix to match
+		matchStr := strings.TrimSuffix(strings.TrimSpace(expected), " N")
+		if matchStr == expected {
+			matchStr = expected
+		}
+
+		// Check local checkpoint first, then fall back to shared state
+		cp := lastCP
+		if cp == nil {
+			if pending, ok := state.PendingVerifyCP.(*memory.Checkpoint); ok && pending != nil {
+				cp = pending
+			}
+		}
+		if cp == nil && state.CompactionSummary != "" {
+			// Compaction scenario: summary was captured via callback
+			if !strings.Contains(state.CompactionSummary, matchStr) {
+				return fmt.Errorf("compaction summary %q does not contain %q", state.CompactionSummary, matchStr)
+			}
+			return nil
+		}
+		if cp == nil {
 			return fmt.Errorf("no checkpoint")
 		}
-		if !strings.Contains(lastCP.Summary, "model switch") {
-			return fmt.Errorf("summary %q does not contain %q", lastCP.Summary, expected)
+		if !strings.Contains(cp.Summary, matchStr) {
+			return fmt.Errorf("summary %q does not contain %q", cp.Summary, matchStr)
 		}
 		return nil
 	})
