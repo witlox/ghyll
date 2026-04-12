@@ -9,9 +9,13 @@ go 1.25.0
 // - golang.org/x/crypto (ed25519 — though stdlib crypto/ed25519 may suffice)
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/BurntSushi/toml v1.6.0
+	github.com/cucumber/godog v0.15.1
+	modernc.org/sqlite v1.48.2
+)
+
+require (
 	github.com/cucumber/gherkin/go/v26 v26.2.0 // indirect
-	github.com/cucumber/godog v0.15.1 // indirect
 	github.com/cucumber/messages/go/v21 v21.0.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gofrs/uuid v4.3.1+incompatible // indirect
@@ -27,5 +31,4 @@ require (
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.48.2 // indirect
 )
