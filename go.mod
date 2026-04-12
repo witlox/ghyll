@@ -9,6 +9,7 @@ go 1.22
 // - golang.org/x/crypto (ed25519 — though stdlib crypto/ed25519 may suffice)
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/cucumber/gherkin/go/v26 v26.2.0 // indirect
 	github.com/cucumber/godog v0.15.1 // indirect
 	github.com/cucumber/messages/go/v21 v21.0.1 // indirect
