@@ -1,0 +1,12 @@
+[book]
+title = "Ghyll Documentation"
+description = "Purpose-built coding agent CLI for self-hosted open-weight models"
+authors = ["witlox"]
+language = "en"
+src = "docs"
+
+[output.html]
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/witlox/ghyll"
+edit-url-template = "https://github.com/witlox/ghyll/edit/main/{path}"

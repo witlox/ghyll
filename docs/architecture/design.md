@@ -1,121 +1,64 @@
-# Ghyll — Technical Design
-
-## Overview
+# Architecture Overview
 
 Ghyll is a purpose-built coding agent CLI for self-hosted open-weight models. It runs inside a Tarn sandbox and targets a Cray EX inference cluster with GH200 nodes serving GLM-5 and MiniMax M2.5 via SGLang.
 
-## Architecture
+This section documents ghyll's internal architecture. Each page covers a specific subsystem in detail.
+
+## System Diagram
 
 ```
-┌──────────────────────────────────────────────────┐
-│ Developer machine (inside Tarn sandbox)           │
-│                                                   │
-│  ghyll (single Go binary)                         │
-│  ┌──────────────────────────────────────────────┐ │
-│  │ cmd/ghyll          CLI, session loop          │ │
-│  │ dialect/           model-specific code        │ │
-│  │   router.go        context-depth routing      │ │
-│  │   glm5.go          GLM-5 dialect              │ │
-│  │   minimax_m25.go   MiniMax M2.5 dialect       │ │
-│  │   handoff.go       checkpoint-based switch     │ │
-│  │ context/           unified context manager    │ │
-│  │   manager.go       compaction + backfill      │ │
-│  │   drift.go         embedding similarity       │ │
-│  │   injection.go     signal detection           │ │
-│  │ memory/            checkpoint store           │ │
-│  │   store.go         sqlite + hash chain        │ │
-│  │   embedder.go      ONNX runtime              │ │
-│  │   sync.go          git orphan branch          │ │
-│  │ tool/              direct OS operations       │ │
-│  │ stream/            SSE client + renderer      │ │
-│  │ config/            TOML configuration         │ │
-│  └──────────────────────────────────────────────┘ │
-│                                                   │
-│  ~/.ghyll/                                        │
-│    config.toml        endpoints, thresholds       │
-│    memory.db          sqlite checkpoint store     │
-│    keys/              ed25519 keypair             │
-│    models/            ONNX embedding model        │
-└───────────────────────┬───────────────────────────┘
-                        │ HTTPS
-              ┌─────────┴─────────┐
-              │                   │
-    SGLang: M2.5        SGLang: GLM-5
-    (Cray EX nodes)     (Cray EX blades)
++--------------------------------------------------+
+| Developer machine (inside Tarn sandbox)           |
+|                                                   |
+|  ghyll (single Go binary)                         |
+|  +----------------------------------------------+ |
+|  | cmd/ghyll          CLI, session loop          | |
+|  | dialect/           model-specific code        | |
+|  |   router.go        context-depth routing      | |
+|  |   glm5.go          GLM-5 dialect              | |
+|  |   minimax_m25.go   MiniMax M2.5 dialect       | |
+|  |   handoff.go       checkpoint-based switch     | |
+|  | context/           unified context manager    | |
+|  |   manager.go       compaction + backfill      | |
+|  |   drift.go         embedding similarity       | |
+|  |   injection.go     signal detection           | |
+|  | memory/            checkpoint store           | |
+|  |   store.go         sqlite + hash chain        | |
+|  |   embedder.go      ONNX runtime              | |
+|  |   sync.go          git orphan branch          | |
+|  | tool/              direct OS operations       | |
+|  | stream/            SSE client + renderer      | |
+|  | config/            TOML configuration         | |
+|  +----------------------------------------------+ |
+|                                                   |
+|  ~/.ghyll/                                        |
+|    config.toml        endpoints, thresholds       |
+|    memory.db          sqlite checkpoint store     |
+|    keys/              ed25519 keypair             |
+|    models/            ONNX embedding model        |
++-------------------------+-------------------------+
+                          | HTTPS
+                +---------+---------+
+                |                   |
+      SGLang: M2.5        SGLang: GLM-5
+      (Cray EX nodes)     (Cray EX blades)
 ```
 
-## Checkpoint Format
+## Architecture Pages
 
-```go
-type Checkpoint struct {
-    Version      int       `json:"v"`
-    Hash         string    `json:"hash"`          // hex(sha256(canonical content))
-    ParentHash   string    `json:"parent"`        // previous checkpoint hash, or "0"*64
-    DeviceID     string    `json:"device"`
-    AuthorID     string    `json:"author"`
-    Timestamp    int64     `json:"ts"`            // unix nanos
-    RepoRemote   string    `json:"repo"`          // git remote URL
-    Branch       string    `json:"branch"`        // git branch at time of checkpoint
-    SessionID    string    `json:"session"`       // unique per ghyll invocation
-    Turn         int       `json:"turn"`
-    ActiveModel  string    `json:"model"`         // "m25" or "glm5"
-    Summary      string    `json:"summary"`       // structured natural language
-    Embedding    []float32 `json:"emb"`           // vector from ONNX model
-    FilesTouched []string  `json:"files"`
-    ToolsUsed    []string  `json:"tools"`
-    InjectionSig []string  `json:"injections,omitempty"`
-    Signature    string    `json:"sig"`           // hex(ed25519.Sign(privkey, hash))
-}
-```
+- **[Package Graph](package-graph.md)** -- How ghyll's Go packages are organized, their dependencies, and the role of the types/ leaf package.
 
-Canonical serialization: JSON with sorted keys, no whitespace, UTF-8. Hash computed over all fields except `hash` and `sig`.
+- **[Session Loop](session-loop.md)** -- The state machine at the heart of cmd/ghyll: initialization, turn execution, compaction, handoff, backfill, and shutdown.
 
-## Routing Decision Table
+- **[Context-Depth Routing](routing.md)** -- The decision table that determines when to escalate from the fast tier (MiniMax M2.5) to the deep tier (GLM-5) and back.
 
-| Condition | Current Model | Action |
-|-----------|--------------|--------|
-| Session start | — | Select M2.5 |
-| context_depth > 32K tokens | M2.5 | Escalate to GLM-5 |
-| tool_depth > 5 sequential calls | M2.5 | Escalate to GLM-5 |
-| drift backfill triggered | M2.5 | Escalate to GLM-5 |
-| User types `/deep` | any | Switch to GLM-5 |
-| User types `/fast` | any | Switch to M2.5 |
-| `--model` flag set | — | Use specified, never change |
-| Compaction reduces context < 16K | GLM-5 (auto-escalated) | De-escalate to M2.5 |
+- **[Checkpoint Format](checkpoints.md)** -- The structure of memory checkpoints, canonical serialization, cryptographic signing, chain verification, and storage layout.
 
-## Git Memory Branch Layout
+- **[Sync Protocol](sync.md)** -- Git-based memory synchronization via the orphan branch, including worktree setup, conflict handling, and offline operation.
 
-```
-ghyll/memory (orphan branch)
-  devices/
-    <device-id>.pub              ed25519 public key
-  repos/
-    <sha256(git-remote-url)>/
-      checkpoints/
-        <checkpoint-hash>.json   individual checkpoint files
-      chains/
-        <device-id>.jsonl        ordered hash chain per device
-```
+- **[Vault API](vault-api.md)** -- The HTTP API served by ghyll-vault for team memory search, including authentication, endpoints, and client behavior.
 
-## Sync Protocol
-
-```
-Session start:
-  git fetch origin ghyll/memory:ghyll/memory (background)
-  import new checkpoint files into local sqlite
-  verify hash chains for imported checkpoints
-
-Checkpoint creation:
-  write <hash>.json to worktree
-  append to chains/<device-id>.jsonl
-  git add + commit (background)
-  git push origin ghyll/memory (background, retry on conflict)
-
-Push conflict resolution:
-  git pull --ff-only origin ghyll/memory
-  retry push (append-only = always fast-forward)
-  after 3 failures: queue for next sync interval
-```
+- **[Error Types](errors.md)** -- Typed errors organized by package, including sentinel errors, structured error types, and error flow across package boundaries.
 
 ## Configuration
 
@@ -124,13 +67,13 @@ Push conflict resolution:
 endpoint = "https://inference.internal:8001/v1"
 dialect = "minimax_m25"
 max_context = 1000000
-description = "MiniMax M2.5 — fast tier"
+description = "MiniMax M2.5 -- fast tier"
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
 dialect = "glm5"
 max_context = 200000
-description = "GLM-5 — deep tier"
+description = "GLM-5 -- deep tier"
 
 [routing]
 default_model = "m25"

@@ -1,5 +1,6 @@
 .PHONY: all build build-bin test test-unit test-acceptance lint fmt clean \
-       embedder vault verify-scenarios coverage coverage-check install-tools setup
+       embedder vault verify-scenarios coverage coverage-check install-tools setup \
+       docs docs-serve
 
 VERSION ?= dev
 
@@ -65,3 +66,9 @@ embedder:
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t ghyll:$(VERSION) .
+
+docs:
+	mdbook build
+
+docs-serve:
+	mdbook serve --open

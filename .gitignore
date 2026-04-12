@@ -6,3 +6,4 @@ bin/
 vendor/
 /ghyll
 coverage.out
+book/
