@@ -24,7 +24,8 @@ cmd/
   ghyll-vault/        team memory server entry point
 config/               TOML loader + validation
 types/                shared types (Message, ToolCall, ToolResult) — leaf package
-tool/                 direct OS operations (bash, file, git, grep)
+tool/                 direct OS operations (bash, file, git, grep, edit, glob, web)
+workflow/             project instructions, roles, slash commands loader
 stream/               SSE streaming client + terminal renderer
 dialect/              model-specific code + routing decision table
   router.go           context-depth routing
@@ -75,6 +76,7 @@ scripts/              scenario verification tooling
 ```bash
 ghyll run .                           # start session, auto-detect model
 ghyll run . --model glm5              # force GLM-5
+ghyll run . --resume                  # resume from last session's checkpoint
 ghyll memory search "race condition"  # search checkpoints
 ghyll memory sync                     # manual sync
 ghyll memory log                      # show checkpoint chain
@@ -87,6 +89,8 @@ ghyll version                         # print version
 | Command | Effect |
 |---------|--------|
 | `/deep` | Temporarily switch to GLM-5 |
-| `/fast` | Restore auto-routing |
-| `/status` | Show model, turn count, tool depth |
+| `/fast` | Restore auto-routing, clear plan mode |
+| `/plan` | Enter plan mode (deeper reasoning) |
+| `/status` | Show model, turn count, tool depth, plan mode |
 | `/exit` | End session (creates final checkpoint) |
+| `/<name>` | Run user-defined slash command from .ghyll/commands/ |

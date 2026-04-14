@@ -60,14 +60,52 @@ dimensions = 384
 
 ## Tools
 
-Tool execution timeouts:
+Tool execution timeouts and web settings:
 
 ```toml
 [tools]
 bash_timeout_seconds = 30
 file_timeout_seconds = 5
+web_timeout_seconds = 30          # Timeout for web_fetch/web_search
+web_max_response_tokens = 10000   # Max tokens returned by web_fetch (truncated with [truncated] marker)
+web_search_backend = "duckduckgo" # Search backend (currently only duckduckgo)
 prefer_ripgrep = true
 ```
+
+## Sub-Agents
+
+Controls for the `agent` tool --- model-dispatched sub-agents that run focused tasks:
+
+```toml
+[sub_agent]
+default_model = "m25"             # Model for sub-agents (default: routing.default_model)
+max_turns = 20                    # Maximum turn-loop iterations
+token_budget = 50000              # Maximum total tokens consumed
+timeout_seconds = 300             # Wall-clock timeout for entire sub-agent execution
+```
+
+Sub-agents run synchronously (the parent session blocks). They have access to all tools except `agent`, `enter_plan_mode`, and `exit_plan_mode`.
+
+## Workflow
+
+Controls project instruction loading:
+
+```toml
+[workflow]
+instruction_budget_tokens = 2000  # Max tokens for instructions + role in system prompt
+fallback_folders = [".claude"]    # Folders to check if .ghyll/ is absent
+```
+
+Workflow files are loaded from `<repo>/.ghyll/` (or fallback folders):
+
+```
+.ghyll/
+  instructions.md    # Project-level behavioral instructions
+  roles/             # Role constraint definitions (analyst.md, implementer.md, etc.)
+  commands/          # Slash command definitions (review.md, verify.md, etc.)
+```
+
+Global instructions from `~/.ghyll/instructions.md` are prepended; project instructions are appended (project has the "last word"). If combined content exceeds the token budget, global instructions are dropped first.
 
 ## Vault (optional)
 
@@ -96,3 +134,10 @@ If a field is omitted, these defaults apply:
 | `memory.drift_threshold` | `0.7` |
 | `tools.bash_timeout_seconds` | `30` |
 | `tools.file_timeout_seconds` | `5` |
+| `tools.web_timeout_seconds` | `30` |
+| `tools.web_max_response_tokens` | `10000` |
+| `sub_agent.max_turns` | `20` |
+| `sub_agent.token_budget` | `50000` |
+| `sub_agent.timeout_seconds` | `300` |
+| `workflow.instruction_budget_tokens` | `2000` |
+| `workflow.fallback_folders` | `[".claude"]` |

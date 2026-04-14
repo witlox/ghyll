@@ -34,6 +34,8 @@
 - [Drift Detection](internals/drift.md)
 - [Injection Detection](internals/injection.md)
 - [Tool Execution](internals/tools.md)
+- [Workflow System](internals/workflow.md)
+- [Sub-Agents](internals/sub-agents.md)
 
 ---
 

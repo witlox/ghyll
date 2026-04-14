@@ -5,7 +5,7 @@ The session loop is the state machine at the heart of `cmd/ghyll`. As the compos
 ## Lifecycle Overview
 
 ```
-INIT --> READY --> TURN --> (TURN | COMPACT | HANDOFF | BACKFILL) --> ... --> SHUTDOWN
+INIT --> READY --> TURN --> (TURN | COMPACT | HANDOFF | BACKFILL | SUB-AGENT) --> ... --> SHUTDOWN
 ```
 
 A session progresses through initialization, then alternates between waiting for user input and executing turns. Turns may trigger compaction, model handoff, or memory backfill as needed. The session ends with a clean shutdown that persists final state.
@@ -25,9 +25,12 @@ Initialization runs the following steps in order:
 7. Start the background sync goroutine (`memory/sync`).
 8. Pull remote checkpoints and public keys (`memory/sync`).
 9. Resolve the active model from config and the `--model` flag.
-10. Build initial routing state.
-11. Build the system prompt via the active dialect.
-12. Initialize the context manager (`context/`).
+10. Build initial routing state (plan mode = off).
+11. Load workflow from `.ghyll/` (or fallback `.claude/`). Merge global + project instructions.
+12. Build the system prompt via the active dialect + workflow instructions.
+13. If `--resume`: load previous session checkpoint, inject summary as backfill, restore plan mode.
+14. Initialize the context manager (`context/`).
+15. Initialize the stream client (`stream/`).
 13. Initialize the stream client (`stream/`).
 14. Transition to READY.
 
