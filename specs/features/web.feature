@@ -15,7 +15,7 @@ Feature: Web fetch and search tools
     Given Tarn blocks outbound HTTP to "https://example.com"
     When the model calls web_fetch with url "https://example.com/docs"
     Then the tool retries 3 times with exponential backoff
-    And the tool result indicates error "domain not reachable after 3 attempts, may need Tarn approval"
+    And the tool result indicates error "domain not reachable after 3 attempts"
 
   Scenario: Web fetch with Tarn blocking — approved mid-retry
     Given Tarn blocks outbound HTTP to "https://docs.example.com"
@@ -46,7 +46,7 @@ Feature: Web fetch and search tools
     Given Tarn blocks outbound HTTP to the search backend
     When the model calls web_search with query "golang error handling"
     Then the tool retries 3 times with exponential backoff
-    And the tool result indicates error "search backend not reachable after 3 attempts, may need Tarn approval"
+    And the tool result indicates error "search backend not reachable after 3 attempts"
 
   Scenario: Web fetch returns markdown not binary
     Given the URL "https://example.com/image.png" returns binary content

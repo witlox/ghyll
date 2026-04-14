@@ -44,9 +44,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerDriftSteps(ctx, state)
 	registerSyncSteps(ctx, state)
 	registerToolSteps(ctx, state)
+	registerEditSteps(ctx, state)
+	registerGlobSteps(ctx, state)
+	registerWebSteps(ctx, state)
 	registerCompactionSteps(ctx, state)
 	registerVaultSteps(ctx, state)
 	registerKeySteps(ctx, state)
+	registerSessionFeatureSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

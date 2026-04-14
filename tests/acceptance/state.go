@@ -1,5 +1,11 @@
 package acceptance
 
+import (
+	"time"
+
+	"github.com/witlox/ghyll/types"
+)
+
 // ScenarioState holds shared state across steps within a single scenario.
 // Reset between scenarios by godog's scenario lifecycle.
 type ScenarioState struct {
@@ -56,6 +62,12 @@ type ScenarioState struct {
 
 	// Terminal output (for display assertions)
 	TerminalOutput []string
+
+	// Tool testing (shared across edit/glob/web step files)
+	ToolResult  types.ToolResult
+	TmpDir      string
+	GlobalDir   string // ~/.ghyll/ equivalent for tests
+	ToolTimeout time.Duration
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

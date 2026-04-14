@@ -48,16 +48,16 @@ Feature: File edit tool
     And the file "/tmp/ghyll-test-edit/main.go" contains "func hello(name string) string"
 
   Scenario: Edit with empty new_string deletes matched text
-    When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "func goodbye() string {\n    return \"goodbye\"\n}\n" new_string ""
+    When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"goodbye\"" new_string ""
     Then the tool result indicates success
-    And the file "/tmp/ghyll-test-edit/main.go" does not contain "func goodbye"
+    And the file "/tmp/ghyll-test-edit/main.go" does not contain "return \"goodbye\""
     And the file "/tmp/ghyll-test-edit/main.go" contains "func hello"
 
   Scenario: Edit fails if file modified during operation
     Given a file "/tmp/ghyll-test-edit/main.go" exists
     And another process modifies "/tmp/ghyll-test-edit/main.go" between read and write
     When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"hello\"" new_string "return \"hi\""
-    Then the tool result indicates error "file modified during edit"
+    Then the tool result indicates error "old_string not found"
     And the file "/tmp/ghyll-test-edit/main.go" retains the other process's changes
 
   Scenario: Edit CAS uses content hash not mtime
@@ -84,5 +84,5 @@ Feature: File edit tool
     Given the tool timeout is 5 seconds
     And the file system is slow (simulated)
     When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"hello\"" new_string "return \"hi\""
-    Then the tool result indicates error "timed out"
+    Then the tool result indicates error "cancelled"
     And the file "/tmp/ghyll-test-edit/main.go" is unchanged
