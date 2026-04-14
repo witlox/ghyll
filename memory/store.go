@@ -173,6 +173,15 @@ func (s *Store) LatestBySession(sessionID string) (*Checkpoint, error) {
 	return scanCheckpoint(row)
 }
 
+// LatestByRepo returns the most recent checkpoint for a repo, by timestamp.
+// Used for session resume (invariant 42).
+func (s *Store) LatestByRepo(repoRemote string) (*Checkpoint, error) {
+	row := s.db.QueryRow(`SELECT hash, parent, device, author, ts, repo, branch,
+		session, turn, model, summary, embedding, files, tools, injections, sig
+		FROM checkpoints WHERE repo = ? ORDER BY ts DESC LIMIT 1`, repoRemote)
+	return scanCheckpoint(row)
+}
+
 // SearchByEmbedding finds the top-k most similar checkpoints via brute-force cosine similarity.
 func (s *Store) SearchByEmbedding(query []float32, repoHash string, topK int) ([]SearchResult, error) {
 	rows, err := s.db.Query(`SELECT hash, parent, device, author, ts, repo, branch,

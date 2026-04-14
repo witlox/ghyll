@@ -26,6 +26,30 @@ func (e *SyncError) Unwrap() error {
 	return e.Err
 }
 
+// GitRemoteURL returns the origin remote URL for a repo, or empty string if not available.
+func GitRemoteURL(repoDir string) string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = repoDir
+	// Clean git env variables (feedback: lefthook GIT_DIR issue)
+	cmd.Env = cleanGitEnvSlice(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func cleanGitEnvSlice(env []string) []string {
+	cleaned := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") || strings.HasPrefix(e, "GIT_INDEX_FILE=") {
+			continue
+		}
+		cleaned = append(cleaned, e)
+	}
+	return cleaned
+}
+
 // Syncer manages the git orphan branch worktree for memory sync.
 type Syncer struct {
 	repoDir     string

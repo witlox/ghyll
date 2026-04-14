@@ -49,6 +49,17 @@ func M25ParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error) {
 	return parseOpenAIToolCalls(raw)
 }
 
+// M25PlanModePrompt returns additional system instructions for plan mode on M2.5.
+// Invariant 36: advisory only — all tools remain available.
+func M25PlanModePrompt() string {
+	return `You are in PLAN MODE. Think before acting:
+1. Analyze the problem and constraints
+2. Consider approaches and trade-offs
+3. Outline your plan before executing
+4. Explain your reasoning for non-obvious choices
+All tools remain available. Plan first, then act.`
+}
+
 // M25CompactionPrompt returns the compaction instruction for M2.5.
 func M25CompactionPrompt() string {
 	return `Summarize the following conversation turns into a concise summary. Preserve:

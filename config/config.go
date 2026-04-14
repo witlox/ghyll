@@ -34,11 +34,13 @@ func (e *ConfigError) Unwrap() error {
 
 // Config is the root configuration loaded from ~/.ghyll/config.toml.
 type Config struct {
-	Models  map[string]ModelConfig `toml:"models"`
-	Routing RoutingConfig          `toml:"routing"`
-	Memory  MemoryConfig           `toml:"memory"`
-	Tools   ToolsConfig            `toml:"tools"`
-	Vault   *VaultConfig           `toml:"vault,omitempty"`
+	Models   map[string]ModelConfig `toml:"models"`
+	Routing  RoutingConfig          `toml:"routing"`
+	Memory   MemoryConfig           `toml:"memory"`
+	Tools    ToolsConfig            `toml:"tools"`
+	SubAgent SubAgentConfig         `toml:"sub_agent"`
+	Workflow WorkflowConfig         `toml:"workflow"`
+	Vault    *VaultConfig           `toml:"vault,omitempty"`
 }
 
 type ModelConfig struct {
@@ -71,9 +73,24 @@ type EmbedderConfig struct {
 }
 
 type ToolsConfig struct {
-	BashTimeoutSeconds int  `toml:"bash_timeout_seconds"`
-	FileTimeoutSeconds int  `toml:"file_timeout_seconds"`
-	PreferRipgrep      bool `toml:"prefer_ripgrep"`
+	BashTimeoutSeconds   int    `toml:"bash_timeout_seconds"`
+	FileTimeoutSeconds   int    `toml:"file_timeout_seconds"`
+	WebTimeoutSeconds    int    `toml:"web_timeout_seconds"`
+	WebMaxResponseTokens int    `toml:"web_max_response_tokens"`
+	WebSearchBackend     string `toml:"web_search_backend"`
+	PreferRipgrep        bool   `toml:"prefer_ripgrep"`
+}
+
+type SubAgentConfig struct {
+	DefaultModel   string `toml:"default_model"`
+	MaxTurns       int    `toml:"max_turns"`
+	TokenBudget    int    `toml:"token_budget"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
+}
+
+type WorkflowConfig struct {
+	InstructionBudgetTokens int      `toml:"instruction_budget_tokens"`
+	FallbackFolders         []string `toml:"fallback_folders"`
 }
 
 type VaultConfig struct {
@@ -146,6 +163,27 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Tools.FileTimeoutSeconds == 0 {
 		cfg.Tools.FileTimeoutSeconds = 5
+	}
+	if cfg.Tools.WebTimeoutSeconds == 0 {
+		cfg.Tools.WebTimeoutSeconds = 30
+	}
+	if cfg.Tools.WebMaxResponseTokens == 0 {
+		cfg.Tools.WebMaxResponseTokens = 10000
+	}
+	if cfg.SubAgent.MaxTurns == 0 {
+		cfg.SubAgent.MaxTurns = 20
+	}
+	if cfg.SubAgent.TokenBudget == 0 {
+		cfg.SubAgent.TokenBudget = 50000
+	}
+	if cfg.SubAgent.TimeoutSeconds == 0 {
+		cfg.SubAgent.TimeoutSeconds = 300
+	}
+	if cfg.Workflow.InstructionBudgetTokens == 0 {
+		cfg.Workflow.InstructionBudgetTokens = 2000
+	}
+	if len(cfg.Workflow.FallbackFolders) == 0 {
+		cfg.Workflow.FallbackFolders = []string{".claude"}
 	}
 }
 

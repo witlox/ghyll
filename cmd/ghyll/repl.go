@@ -71,21 +71,42 @@ func REPL(sess *Session, input io.Reader) {
 				sess.output("switched to deep tier")
 			}
 			continue
+		case line == "/plan":
+			if sess.planMode {
+				sess.output("plan mode already active")
+			} else {
+				sess.planMode = true
+				sess.output("plan mode activated")
+			}
+			continue
 		case line == "/fast":
 			if sess.modelLocked {
 				sess.output("ℹ /fast ignored, model locked via --model flag")
 			} else {
 				sess.deepOverride = false
-				sess.output("auto-routing restored")
+				sess.planMode = false
+				sess.output("auto-routing restored, plan mode off")
 			}
 			continue
 		case line == "/status":
-			fmt.Printf("model: %s (locked: %v, deep: %v)\n",
-				sess.activeModel, sess.modelLocked, sess.deepOverride)
+			fmt.Printf("model: %s (locked: %v, deep: %v, plan: %v)\n",
+				sess.activeModel, sess.modelLocked, sess.deepOverride, sess.planMode)
 			fmt.Printf("turn: %d, tool_depth: %d\n",
 				sess.ctxManager.Turn(), sess.toolDepth)
 			continue
 		case strings.HasPrefix(line, "/"):
+			// Check workflow commands (invariant 49: inject as user message)
+			cmdName := strings.TrimPrefix(line, "/")
+			if sess.wf != nil {
+				if content, ok := sess.wf.Commands[cmdName]; ok {
+					// Inject command content as user input and process as a turn
+					_, err := sess.Turn(content)
+					if err != nil {
+						sess.renderer.RenderError(err.Error())
+					}
+					continue
+				}
+			}
 			sess.output(fmt.Sprintf("unknown command: %s", line))
 			continue
 		}

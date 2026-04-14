@@ -48,6 +48,18 @@ func GLM5ParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error) {
 	return parseOpenAIToolCalls(raw)
 }
 
+// GLM5PlanModePrompt returns additional system instructions for plan mode on GLM-5.
+// Invariant 36: advisory only — all tools remain available.
+func GLM5PlanModePrompt() string {
+	return `You are in PLAN MODE. Before taking any action, think deeply and systematically:
+1. Analyze the full context and constraints before proposing changes
+2. Consider multiple approaches and their trade-offs
+3. Identify risks and edge cases
+4. Outline your plan step by step before executing
+5. For architectural decisions, explain your reasoning thoroughly
+All tools remain available. Use them when ready, but think first.`
+}
+
 // GLM5CompactionPrompt returns the compaction instruction for GLM-5.
 // Accounts for DSA attention — emphasizes preserving structural decisions.
 func GLM5CompactionPrompt() string {

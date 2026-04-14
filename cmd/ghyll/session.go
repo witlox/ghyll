@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	gocontext "context"
@@ -14,6 +15,7 @@ import (
 	"github.com/witlox/ghyll/stream"
 	"github.com/witlox/ghyll/tool"
 	"github.com/witlox/ghyll/types"
+	"github.com/witlox/ghyll/workflow"
 	"time"
 )
 
@@ -33,17 +35,26 @@ type Session struct {
 	activeModel  string
 	modelLocked  bool
 	deepOverride bool
+	planMode     bool // invariant 36: advisory, invariant 37: survives compaction
 	toolDepth    int
 	sessionID    string
 	workdir      string
 
 	// Dialect functions resolved for active model
 	systemPrompt     func(string) string
+	planModePrompt   func() string
 	buildMessages    func([]types.Message, string) []map[string]any
 	parseToolCalls   func(json.RawMessage) ([]types.ToolCall, error)
 	compactionPrompt func() string
 	tokenCount       func([]types.Message) int
 	handoffSummary   func(memory.Checkpoint, []types.Message) []types.Message
+
+	// Workflow
+	wf         *workflow.Workflow
+	activeRole string // currently active role name, empty if none
+
+	// Resume
+	resumeRef *memory.ResumeRef // set if this session was resumed
 
 	// Terminal rendering
 	renderer *stream.Renderer
@@ -59,6 +70,8 @@ type SessionConfig struct {
 	DeviceKey   *memory.DeviceKey
 	Embedder    *memory.Embedder
 	ModelFlag   string
+	Resume      bool   // --resume flag
+	RepoRemote  string // git remote URL for resume lookup
 	Workdir     string
 	SessionID   string
 	Renderer    *stream.Renderer
@@ -121,9 +134,53 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		CreateCheckpoint: s.createCheckpoint,
 	})
 
-	// Build system prompt
-	sysPrompt := s.systemPrompt(s.workdir)
+	// Load workflow (invariant 51: .ghyll/ first, fallback .claude/)
+	globalDir := filepath.Join(os.Getenv("HOME"), ".ghyll")
+	wf, wfErr := workflow.Load(globalDir, sc.Workdir, sc.Cfg.Workflow.FallbackFolders)
+	if wfErr != nil {
+		s.output(fmt.Sprintf("⚠ workflow load failed: %v", wfErr))
+	} else {
+		s.wf = wf
+		if wf.Source != "none" {
+			s.output(fmt.Sprintf("ℹ workflow loaded from .%s/", wf.Source))
+		}
+	}
+
+	// Build system prompt (includes workflow instructions)
+	sysPrompt := s.composedSystemPrompt()
 	s.ctxManager.AddMessage(types.Message{Role: "system", Content: sysPrompt})
+
+	// Handle --resume (invariant 42, 43)
+	if sc.Resume && s.store != nil {
+		repoRemote := sc.RepoRemote
+		if repoRemote == "" {
+			repoRemote = sc.Workdir // fallback to workdir path
+		}
+		prevCp, err := s.store.LatestByRepo(repoRemote)
+		if err != nil {
+			s.output("ℹ no previous session found, starting fresh")
+		} else {
+			// Inject previous session summary as backfill
+			backfill := fmt.Sprintf("Resuming from previous session (turn %d, model %s):\n\n%s",
+				prevCp.Turn, prevCp.ActiveModel, prevCp.Summary)
+			if len(prevCp.FilesTouched) > 0 {
+				backfill += fmt.Sprintf("\n\nFiles touched: %s", strings.Join(prevCp.FilesTouched, ", "))
+			}
+			s.ctxManager.AddMessage(types.Message{Role: "system", Content: backfill})
+			s.output(fmt.Sprintf("ℹ resumed from previous session (turn %d)", prevCp.Turn))
+
+			// Restore plan mode from checkpoint
+			if prevCp.PlanMode {
+				s.planMode = true
+			}
+
+			// Store resume reference for first checkpoint
+			s.resumeRef = &memory.ResumeRef{
+				SessionID:      prevCp.SessionID,
+				CheckpointHash: prevCp.Hash,
+			}
+		}
+	}
 
 	return s, nil
 }
@@ -132,6 +189,7 @@ func (s *Session) resolveDialect() {
 	switch s.cfg.Models[s.activeModel].Dialect {
 	case "glm5":
 		s.systemPrompt = dialect.GLM5SystemPrompt
+		s.planModePrompt = dialect.GLM5PlanModePrompt
 		s.buildMessages = dialect.GLM5BuildMessages
 		s.parseToolCalls = dialect.GLM5ParseToolCalls
 		s.compactionPrompt = dialect.GLM5CompactionPrompt
@@ -139,6 +197,7 @@ func (s *Session) resolveDialect() {
 		s.handoffSummary = dialect.GLM5HandoffSummary
 	default: // minimax_m25
 		s.systemPrompt = dialect.M25SystemPrompt
+		s.planModePrompt = dialect.M25PlanModePrompt
 		s.buildMessages = dialect.M25BuildMessages
 		s.parseToolCalls = dialect.M25ParseToolCalls
 		s.compactionPrompt = dialect.M25CompactionPrompt
@@ -187,7 +246,7 @@ func (s *Session) sendAndProcess() (string, error) {
 		return "", fmt.Errorf("tool call depth exceeded (%d), stopping", maxToolDepth)
 	}
 
-	sysPrompt := s.systemPrompt(s.workdir)
+	sysPrompt := s.composedSystemPrompt()
 	messages := s.buildMessages(s.ctxManager.Messages(), sysPrompt)
 	resp, err := s.streamClient.SendStream(messages, func(delta string) {
 		s.renderer.RenderDelta(delta)
@@ -271,14 +330,29 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 
 	// Finding 5: don't execute with empty args on parse failure
 	var args struct {
-		Command string `json:"command"`
-		Path    string `json:"path"`
-		Content string `json:"content"`
-		Pattern string `json:"pattern"`
-		Args    string `json:"args"`
+		Command   string `json:"command"`
+		Path      string `json:"path"`
+		Content   string `json:"content"`
+		Pattern   string `json:"pattern"`
+		Args      string `json:"args"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+		URL       string `json:"url"`
+		Query     string `json:"query"`
+		Task      string `json:"task"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return types.ToolResult{Error: fmt.Sprintf("failed to parse tool arguments: %v", err)}
+	}
+
+	webTimeout := time.Duration(s.cfg.Tools.WebTimeoutSeconds) * time.Second
+	if webTimeout == 0 {
+		webTimeout = 30 * time.Second
+	}
+	webMaxTokens := s.cfg.Tools.WebMaxResponseTokens
+	if webMaxTokens == 0 {
+		webMaxTokens = 10000
 	}
 
 	switch tc.Function.Name {
@@ -288,11 +362,35 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 		return tool.ReadFile(ctx, args.Path, fileTimeout)
 	case "write_file":
 		return tool.WriteFile(ctx, args.Path, args.Content, fileTimeout)
+	case "edit_file":
+		return tool.EditFile(ctx, args.Path, args.OldString, args.NewString, fileTimeout)
 	case "git":
 		gitArgs := strings.Fields(args.Args)
 		return tool.Git(ctx, s.workdir, gitArgs, bashTimeout)
 	case "grep":
 		return tool.Grep(ctx, args.Pattern, args.Path, bashTimeout)
+	case "glob":
+		path := args.Path
+		if path == "" {
+			path = s.workdir
+		}
+		return tool.Glob(ctx, args.Pattern, path, bashTimeout)
+	case "web_fetch":
+		return tool.WebFetch(ctx, args.URL, webMaxTokens, webTimeout)
+	case "web_search":
+		backend := s.cfg.Tools.WebSearchBackend
+		if backend == "" {
+			backend = "https://html.duckduckgo.com"
+		}
+		return tool.WebSearch(ctx, args.Query, backend, 10, webTimeout)
+	case "agent":
+		return RunSubAgent(s, args.Task)
+	case "enter_plan_mode":
+		s.planMode = true
+		return types.ToolResult{Output: "plan mode activated"}
+	case "exit_plan_mode":
+		s.planMode = false
+		return types.ToolResult{Output: "plan mode deactivated"}
 	default:
 		return types.ToolResult{Error: fmt.Sprintf("unknown tool: %s", tc.Function.Name)}
 	}
@@ -396,7 +494,7 @@ func (s *Session) createCheckpoint(req ghyllcontext.CheckpointRequest) error {
 	}
 
 	cp := &memory.Checkpoint{
-		Version:      1,
+		Version:      2,
 		ParentHash:   parentHash,
 		DeviceID:     s.deviceKey.DeviceID,
 		AuthorID:     s.deviceKey.DeviceID,
@@ -404,14 +502,75 @@ func (s *Session) createCheckpoint(req ghyllcontext.CheckpointRequest) error {
 		SessionID:    req.SessionID,
 		Turn:         req.Turn,
 		ActiveModel:  req.ActiveModel,
+		PlanMode:     s.planMode,
+		ResumedFrom:  s.resumeRef,
 		Summary:      req.Summary,
 		FilesTouched: req.FilesTouched,
 		ToolsUsed:    req.ToolsUsed,
 		InjectionSig: req.InjectionSig,
 	}
+	// Only include resumeRef in the first checkpoint
+	if s.resumeRef != nil {
+		s.resumeRef = nil // clear after first use
+	}
 
 	memory.SignCheckpoint(cp, s.deviceKey.PrivateKey)
 	return s.store.Append(cp)
+}
+
+// composedSystemPrompt returns the system prompt with workflow instructions,
+// active role overlay, and plan mode overlay.
+// Invariant 46: instructions survive compaction (system-level).
+// Invariant 47: global first, project last (project has last word).
+func (s *Session) composedSystemPrompt() string {
+	prompt := s.systemPrompt(s.workdir)
+
+	// Append workflow instructions (invariant 47: global first, project appended)
+	if s.wf != nil {
+		if s.wf.GlobalInstructions != "" {
+			prompt += "\n\n" + s.wf.GlobalInstructions
+		}
+		if s.wf.ProjectInstructions != "" {
+			prompt += "\n\n" + s.wf.ProjectInstructions
+		}
+	}
+
+	// Append active role overlay (invariant 50: replace, not accumulate)
+	if s.activeRole != "" && s.wf != nil {
+		if content, ok := s.wf.Roles[s.activeRole]; ok {
+			prompt += "\n\n" + content
+		}
+	}
+
+	// Append plan mode overlay (invariant 36: advisory only)
+	if s.planMode && s.planModePrompt != nil {
+		prompt += "\n\n" + s.planModePrompt()
+	}
+
+	return prompt
+}
+
+// SwitchRole changes the active role overlay.
+// Invariant 50: non-destructive — no compaction, no checkpoint.
+func (s *Session) SwitchRole(name string) error {
+	if s.wf == nil {
+		return fmt.Errorf("role not found: %s (no workflow loaded)", name)
+	}
+	if _, ok := s.wf.Roles[name]; !ok {
+		return fmt.Errorf("role not found: %s", name)
+	}
+	s.activeRole = name
+	return nil
+}
+
+// PlanMode returns whether plan mode is active.
+func (s *Session) PlanMode() bool {
+	return s.planMode
+}
+
+// SetPlanMode sets plan mode on or off and returns the new state.
+func (s *Session) SetPlanMode(active bool) {
+	s.planMode = active
 }
 
 // ActiveModel returns the current model name.

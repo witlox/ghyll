@@ -57,6 +57,7 @@ func main() {
 func cmdRun(args []string) error {
 	workdir := "."
 	var modelFlag string
+	var resumeFlag bool
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -65,6 +66,8 @@ func cmdRun(args []string) error {
 				modelFlag = args[i+1]
 				i++
 			}
+		case "--resume":
+			resumeFlag = true
 		default:
 			workdir = args[i]
 		}
@@ -165,7 +168,18 @@ func cmdRun(args []string) error {
 	// 9. Generate session ID
 	sessionID := fmt.Sprintf("%s-%d", deviceKey.DeviceID, time.Now().UnixNano())
 
-	// 10. Create session
+	// 10. Determine repo remote for resume
+	var repoRemote string
+	if resumeFlag {
+		remoteResult := memory.GitRemoteURL(absDir)
+		if remoteResult != "" {
+			repoRemote = remoteResult
+		} else {
+			repoRemote = absDir // fallback to path
+		}
+	}
+
+	// 11. Create session
 	output := func(msg string) { fmt.Println(msg) }
 	sess, err := NewSession(SessionConfig{
 		Cfg:         cfg,
@@ -175,6 +189,8 @@ func cmdRun(args []string) error {
 		DeviceKey:   deviceKey,
 		Embedder:    embedder,
 		ModelFlag:   modelFlag,
+		Resume:      resumeFlag,
+		RepoRemote:  repoRemote,
 		Workdir:     absDir,
 		SessionID:   sessionID,
 		Output:      output,

@@ -36,6 +36,14 @@ func CanonicalHash(cp *Checkpoint) string {
 		"tools":   cp.ToolsUsed,
 	}
 
+	// v2 fields
+	if cp.PlanMode {
+		m["plan_mode"] = cp.PlanMode
+	}
+	if cp.ResumedFrom != nil {
+		m["resumed_from"] = cp.ResumedFrom
+	}
+
 	// Embedding excluded from hash — it's for search, not integrity.
 	// Float serialization varies across platforms, which would break verification.
 	if len(cp.InjectionSig) > 0 {
