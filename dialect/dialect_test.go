@@ -2,6 +2,7 @@ package dialect
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/witlox/ghyll/memory"
@@ -82,6 +83,16 @@ func TestM25_HandoffSummary(t *testing.T) {
 	}
 }
 
+func TestM25_PlanModePrompt(t *testing.T) {
+	prompt := M25PlanModePrompt()
+	if prompt == "" {
+		t.Fatal("expected non-empty plan mode prompt")
+	}
+	if !strings.Contains(prompt, "PLAN MODE") {
+		t.Error("plan mode prompt should mention PLAN MODE")
+	}
+}
+
 // Test GLM-5 dialect functions
 
 func TestGLM5_SystemPrompt(t *testing.T) {
@@ -119,6 +130,20 @@ func TestGLM5_TokenCount(t *testing.T) {
 	count := GLM5TokenCount(msgs)
 	if count <= 0 {
 		t.Errorf("expected positive count, got %d", count)
+	}
+}
+
+func TestGLM5_PlanModePrompt(t *testing.T) {
+	prompt := GLM5PlanModePrompt()
+	if prompt == "" {
+		t.Fatal("expected non-empty plan mode prompt")
+	}
+	if !strings.Contains(prompt, "PLAN MODE") {
+		t.Error("plan mode prompt should mention PLAN MODE")
+	}
+	// GLM-5 plan mode should be more detailed than M2.5
+	if len(prompt) <= len(M25PlanModePrompt()) {
+		t.Error("GLM-5 plan mode should be at least as detailed as M2.5")
 	}
 }
 

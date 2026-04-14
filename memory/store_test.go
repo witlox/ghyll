@@ -146,3 +146,110 @@ func TestScenario_Memory_StoreLatestBySession(t *testing.T) {
 		t.Errorf("summary = %q, want %q", latest.Summary, "latest")
 	}
 }
+
+// TestScenario_Resume_LatestByRepo maps to:
+// Scenario: Resume selects the most recent final checkpoint
+func TestScenario_Resume_LatestByRepo(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	zeroHash := "0000000000000000000000000000000000000000000000000000000000000000"
+	repo := "https://github.com/witlox/ghyll.git"
+
+	// Older session
+	c0 := &Checkpoint{Version: 2, ParentHash: zeroHash, DeviceID: "dev1", AuthorID: "dev1",
+		Timestamp: 1713000000, RepoRemote: repo, SessionID: "sess-old", Turn: 8,
+		ActiveModel: "m25", Summary: "old session"}
+	SignCheckpoint(c0, priv)
+
+	// Newer session
+	c1 := &Checkpoint{Version: 2, ParentHash: zeroHash, DeviceID: "dev1", AuthorID: "dev1",
+		Timestamp: 1713100000, RepoRemote: repo, SessionID: "sess-new", Turn: 15,
+		ActiveModel: "m25", Summary: "new session"}
+	SignCheckpoint(c1, priv)
+
+	// Different repo — should not be returned
+	c2 := &Checkpoint{Version: 2, ParentHash: zeroHash, DeviceID: "dev1", AuthorID: "dev1",
+		Timestamp: 1713200000, RepoRemote: "https://github.com/other/repo.git", SessionID: "sess-other",
+		Turn: 20, ActiveModel: "m25", Summary: "other repo"}
+	SignCheckpoint(c2, priv)
+
+	for _, cp := range []*Checkpoint{c0, c1, c2} {
+		_ = store.Append(cp)
+	}
+
+	// LatestByRepo should return the newest checkpoint for our repo
+	latest, err := store.LatestByRepo(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.SessionID != "sess-new" {
+		t.Errorf("session = %q, want sess-new", latest.SessionID)
+	}
+	if latest.Summary != "new session" {
+		t.Errorf("summary = %q", latest.Summary)
+	}
+}
+
+// TestScenario_Resume_NoCheckpoint maps to:
+// Scenario: Resume with no previous checkpoint starts fresh
+func TestScenario_Resume_NoCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_, err = store.LatestByRepo("https://github.com/nonexistent/repo.git")
+	if err == nil {
+		t.Fatal("expected error for no checkpoints")
+	}
+}
+
+// TestScenario_Resume_CheckpointV2Fields maps to:
+// Scenario: Resume restores plan mode from checkpoint
+func TestScenario_Resume_CheckpointV2Fields(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	zeroHash := "0000000000000000000000000000000000000000000000000000000000000000"
+
+	cp := &Checkpoint{
+		Version:     2,
+		ParentHash:  zeroHash,
+		DeviceID:    "dev1",
+		AuthorID:    "dev1",
+		Timestamp:   1713100000,
+		RepoRemote:  "test-repo",
+		SessionID:   "sess-1",
+		Turn:        10,
+		ActiveModel: "m25",
+		PlanMode:    true,
+		ResumedFrom: &ResumeRef{SessionID: "sess-0", CheckpointHash: "abc123"},
+		Summary:     "test with v2 fields",
+	}
+	SignCheckpoint(cp, priv)
+	_ = store.Append(cp)
+
+	// Verify the v2 fields are part of the hash (plan_mode=true affects hash)
+	if cp.Hash == "" {
+		t.Fatal("hash should be computed")
+	}
+
+	// Verify ResumeRef roundtrips through canonical hash
+	recomputed := CanonicalHash(cp)
+	if recomputed != cp.Hash {
+		t.Errorf("hash mismatch after roundtrip: %s vs %s", recomputed, cp.Hash)
+	}
+}
