@@ -72,6 +72,7 @@ type SessionConfig struct {
 	ModelFlag   string
 	Resume      bool   // --resume flag
 	RepoRemote  string // git remote URL for resume lookup
+	GlobalDir   string // ~/.ghyll/ directory for workflow loading
 	Workdir     string
 	SessionID   string
 	Renderer    *stream.Renderer
@@ -135,7 +136,10 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	})
 
 	// Load workflow (invariant 51: .ghyll/ first, fallback .claude/)
-	globalDir := filepath.Join(os.Getenv("HOME"), ".ghyll")
+	globalDir := sc.GlobalDir
+	if globalDir == "" {
+		globalDir = filepath.Join(os.Getenv("HOME"), ".ghyll")
+	}
 	wf, wfErr := workflow.Load(globalDir, sc.Workdir, sc.Cfg.Workflow.FallbackFolders)
 	if wfErr != nil {
 		s.output(fmt.Sprintf("⚠ workflow load failed: %v", wfErr))
@@ -294,9 +298,14 @@ func (s *Session) sendAndProcess() (string, error) {
 			s.renderer.RenderToolCall(tc.Function.Name, tc.Function.Arguments)
 			toolResult := s.executeTool(tc)
 			s.renderer.RenderToolResult(toolResult.Output, toolResult.Error, toolResult.TimedOut)
+			// Surface error to model if output is empty (finding 23)
+			content := toolResult.Output
+			if content == "" && toolResult.Error != "" {
+				content = toolResult.Error
+			}
 			s.ctxManager.AddMessage(types.Message{
 				Role:       "tool",
-				Content:    toolResult.Output,
+				Content:    content,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
@@ -509,9 +518,10 @@ func (s *Session) createCheckpoint(req ghyllcontext.CheckpointRequest) error {
 		ToolsUsed:    req.ToolsUsed,
 		InjectionSig: req.InjectionSig,
 	}
-	// Only include resumeRef in the first checkpoint
+	// resumeRef is cleared after first checkpoint creation (regardless of reason).
+	// This ensures only the first checkpoint of a resumed session carries the link.
 	if s.resumeRef != nil {
-		s.resumeRef = nil // clear after first use
+		s.resumeRef = nil
 	}
 
 	memory.SignCheckpoint(cp, s.deviceKey.PrivateKey)
@@ -525,20 +535,46 @@ func (s *Session) createCheckpoint(req ghyllcontext.CheckpointRequest) error {
 func (s *Session) composedSystemPrompt() string {
 	prompt := s.systemPrompt(s.workdir)
 
-	// Append workflow instructions (invariant 47: global first, project appended)
+	// Append workflow instructions with budget enforcement (invariant 47, 48).
+	// Two-phase truncation: project fits → drop global; project exceeds → truncate project from end.
 	if s.wf != nil {
-		if s.wf.GlobalInstructions != "" {
-			prompt += "\n\n" + s.wf.GlobalInstructions
+		budget := s.cfg.Workflow.InstructionBudgetTokens
+		global := s.wf.GlobalInstructions
+		project := s.wf.ProjectInstructions
+		role := ""
+		if s.activeRole != "" {
+			if content, ok := s.wf.Roles[s.activeRole]; ok {
+				role = content
+			}
 		}
-		if s.wf.ProjectInstructions != "" {
-			prompt += "\n\n" + s.wf.ProjectInstructions
-		}
-	}
 
-	// Append active role overlay (invariant 50: replace, not accumulate)
-	if s.activeRole != "" && s.wf != nil {
-		if content, ok := s.wf.Roles[s.activeRole]; ok {
-			prompt += "\n\n" + content
+		// Combine and check budget
+		combined := joinNonEmpty("\n\n", global, project, role)
+		if budget > 0 && s.tokenCount != nil && combined != "" {
+			tokens := s.tokenCount([]types.Message{{Role: "system", Content: combined}})
+			if tokens > budget {
+				// Phase 1: try dropping global
+				withoutGlobal := joinNonEmpty("\n\n", project, role)
+				tokensWithout := s.tokenCount([]types.Message{{Role: "system", Content: withoutGlobal}})
+				if tokensWithout <= budget {
+					combined = withoutGlobal
+					s.output("⚠ global instructions dropped to fit budget")
+				} else {
+					// Phase 2: truncate project from end
+					// Approximate: cut chars proportionally
+					ratio := float64(budget) / float64(tokensWithout)
+					maxChars := int(float64(len(project)) * ratio)
+					if maxChars > 0 && maxChars < len(project) {
+						project = project[:maxChars]
+					}
+					combined = joinNonEmpty("\n\n", project, role)
+					s.output("⚠ instructions truncated to fit budget")
+				}
+			}
+		}
+
+		if combined != "" {
+			prompt += "\n\n" + combined
 		}
 	}
 
@@ -548,6 +584,17 @@ func (s *Session) composedSystemPrompt() string {
 	}
 
 	return prompt
+}
+
+// joinNonEmpty joins non-empty strings with a separator.
+func joinNonEmpty(sep string, parts ...string) string {
+	var nonEmpty []string
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	return strings.Join(nonEmpty, sep)
 }
 
 // SwitchRole changes the active role overlay.

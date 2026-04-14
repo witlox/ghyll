@@ -1,7 +1,7 @@
 package tool
 
 import (
-	"context"
+	gocontext "context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,7 +16,7 @@ import (
 // Glob returns file paths matching a glob pattern within a directory.
 // Invariant 35: only existing, workspace-local paths returned. Broken symlinks
 // and symlinks pointing outside the workspace are excluded.
-func Glob(ctx context.Context, pattern, basePath string, timeout time.Duration) types.ToolResult {
+func Glob(ctx gocontext.Context, pattern, basePath string, timeout time.Duration) types.ToolResult {
 	start := time.Now()
 
 	if pattern == "" {
@@ -26,24 +26,22 @@ func Glob(ctx context.Context, pattern, basePath string, timeout time.Duration) 
 		}
 	}
 
+	// Create a cancellable context for the goroutine to prevent leaks on timeout
+	innerCtx, cancel := gocontext.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	done := make(chan types.ToolResult, 1)
 	go func() {
-		done <- globImpl(basePath, pattern)
+		done <- globImpl(innerCtx, basePath, pattern)
 	}()
 
 	select {
 	case result := <-done:
 		result.Duration = time.Since(start)
 		return result
-	case <-time.After(timeout):
+	case <-innerCtx.Done():
 		return types.ToolResult{
 			Error:    fmt.Sprintf("glob timed out after %s", timeout),
-			TimedOut: true,
-			Duration: time.Since(start),
-		}
-	case <-ctx.Done():
-		return types.ToolResult{
-			Error:    fmt.Sprintf("glob cancelled: %v", ctx.Err()),
 			TimedOut: true,
 			Duration: time.Since(start),
 		}
@@ -55,7 +53,7 @@ type fileEntry struct {
 	modTime time.Time
 }
 
-func globImpl(basePath, pattern string) types.ToolResult {
+func globImpl(ctx gocontext.Context, basePath, pattern string) types.ToolResult {
 	// Verify base path exists
 	info, err := os.Stat(basePath)
 	if err != nil {
@@ -80,6 +78,10 @@ func globImpl(basePath, pattern string) types.ToolResult {
 	err = filepath.WalkDir(absBase, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		// Check for cancellation to prevent goroutine leak on timeout
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		if path == absBase {
@@ -152,9 +154,10 @@ func globImpl(basePath, pattern string) types.ToolResult {
 
 		return nil
 	})
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		return types.ToolResult{Error: fmt.Sprintf("walk: %v", err)}
 	}
+	// If context was cancelled, return what we have so far (partial is better than nothing)
 
 	// Sort by modification time, most recent first
 	sort.Slice(entries, func(i, j int) bool {
@@ -174,6 +177,8 @@ func globImpl(basePath, pattern string) types.ToolResult {
 }
 
 // matchGlob matches a path against a glob pattern supporting ** for recursive.
+// Limitation: only one ** segment is supported per pattern. Patterns like
+// "src/**/test/**/*.go" will not match correctly — use "src/**/*.go" instead.
 func matchGlob(pattern, path string) (bool, error) {
 	// Handle ** (recursive directory match)
 	if strings.Contains(pattern, "**") {

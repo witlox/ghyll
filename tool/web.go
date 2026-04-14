@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -88,7 +89,10 @@ func webFetchImpl(ctx context.Context, url string, maxTokens int, timeout time.D
 			return types.ToolResult{Error: "binary content not supported"}
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		// Limit read to prevent OOM on large responses.
+		// Read up to 2x the token budget in chars to allow for HTML overhead.
+		maxReadBytes := int64(maxTokens*4*2) + 4096
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxReadBytes))
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = err
@@ -147,7 +151,7 @@ func WebSearch(ctx context.Context, query, backendURL string, maxResults int, ti
 func webSearchImpl(ctx context.Context, query, backendURL string, maxResults int, timeout time.Duration) types.ToolResult {
 	client := &http.Client{Timeout: timeout}
 
-	searchURL := fmt.Sprintf("%s/?q=%s&format=json", backendURL, strings.ReplaceAll(query, " ", "+"))
+	searchURL := fmt.Sprintf("%s/?q=%s&format=json", backendURL, url.QueryEscape(query))
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {

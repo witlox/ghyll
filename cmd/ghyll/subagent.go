@@ -124,6 +124,13 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 			parentSession.renderer.RenderDelta(delta) // Show sub-agent output
 		})
 		if err != nil {
+			// If context too long, return partial result instead of opaque error
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "context") || strings.Contains(errMsg, "length") {
+				return types.ToolResult{
+					Output: fmt.Sprintf("[sub-agent context overflow after %d turns]\n\n%s", turn, lastContent),
+				}
+			}
 			return types.ToolResult{Error: fmt.Sprintf("sub-agent model unreachable: %v", err)}
 		}
 

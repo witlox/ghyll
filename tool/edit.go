@@ -108,7 +108,10 @@ func editFileImpl(path, oldString, newString string) types.ToolResult {
 		return types.ToolResult{Error: fmt.Sprintf("chmod temp file: %v", err)}
 	}
 
-	// Step 8: CAS check — re-read original, compare SHA256 (invariant 33)
+	// Step 8: CAS check — re-read original, compare SHA256 (invariant 33).
+	// Note: a narrow TOCTOU window exists between hash check and rename (microseconds).
+	// True atomicity would require flock(), but hash-based CAS is a best-effort guard
+	// that catches the vast majority of concurrent modifications.
 	recheck, err := os.ReadFile(path)
 	if err != nil {
 		_ = os.Remove(tmpPath)
