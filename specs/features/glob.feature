@@ -57,6 +57,19 @@ Feature: Glob tool
     When I call glob with pattern "**/*" path "/tmp/ghyll-test-glob"
     Then the result does not include "src/external"
 
+  Scenario: Glob includes hidden files when pattern matches
+    When I call glob with pattern "**/*.md" path "/tmp/ghyll-test-glob"
+    Then the result includes ".ghyll/instructions.md"
+
+  Scenario: Glob with empty pattern returns error
+    When I call glob with pattern "" path "/tmp/ghyll-test-glob"
+    Then the tool result indicates error "empty pattern"
+
+  Scenario: Glob follows valid symlinks within workspace
+    Given a symlink "src/alias.go" pointing to "/tmp/ghyll-test-glob/src/main.go"
+    When I call glob with pattern "**/*.go" path "/tmp/ghyll-test-glob"
+    Then the result includes "src/alias.go"
+
   Scenario: Glob respects tool timeout
     Given the tool timeout is 5 seconds
     When I call glob with pattern "**/*" path "/tmp/ghyll-test-glob"

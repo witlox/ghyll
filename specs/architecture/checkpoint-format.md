@@ -1,6 +1,11 @@
 # Checkpoint Format
 
-Version 1. Forward-compatible: unknown fields are preserved but ignored.
+Version 2. Forward-compatible: unknown fields are preserved but ignored.
+
+## Version history
+
+- **v1**: Initial format — core fields.
+- **v2**: Added `plan_mode` (bool) and `resumed_from` (ResumeRef, optional). Old clients ignore these fields (forward-compatible). New clients reading v1 treat missing fields as zero values (plan_mode=false, resumed_from=nil).
 
 ## Canonical serialization
 
@@ -72,6 +77,8 @@ CREATE TABLE checkpoints (
     session    TEXT NOT NULL,
     turn       INTEGER NOT NULL,
     model      TEXT NOT NULL,
+    plan_mode  INTEGER DEFAULT 0,   -- v2: 1 if plan mode was active
+    resumed_from TEXT,              -- v2: JSON {"session":"...","hash":"..."}, nullable
     summary    TEXT NOT NULL,
     embedding  BLOB NOT NULL,       -- float32 array, binary
     files      TEXT NOT NULL,        -- JSON array

@@ -89,3 +89,65 @@ Every invariant → where it is enforced in code.
 |---|-----------|------------------|-----------|
 | 29 | Key before checkpoint | cmd/ghyll/main.go: cmdRun() | LoadOrGenerateKey at startup, before any checkpoint creation |
 | 30 | Public keys sync | memory/sync.go: WritePublicKey() / ReadPublicKey() | Reads/writes devices/ directory on memory branch |
+
+## Session
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 31 | One session per repo | cmd/ghyll/lockfile.go: AcquireLock() | O_CREATE\|O_EXCL atomic file, PID staleness check |
+| 32 | Lockfile released | cmd/ghyll/main.go: defer ReleaseLock() | Deferred in main + signal handler |
+
+## Edit Tool
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 33 | Edit is CAS-atomic | tool/edit.go: EditFile() | Read file + compute SHA256 of content, find match, write replacement to temp file, re-read original and compare SHA256, rename temp to original only if hash unchanged. Immune to filesystem timestamp resolution issues. |
+| 34 | Edit match unambiguous | tool/edit.go: EditFile() | strings.Count(content, old_string) must equal 1 |
+
+## Glob Tool
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 35 | Existing workspace-local paths only | tool/glob.go: Glob() | filepath.WalkDir with symlink check: skip if target outside workspace or broken |
+
+## Plan Mode
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 36 | Advisory only | cmd/ghyll/session.go | Plan mode modifies system prompt only; tool dispatch has no plan mode check |
+| 37 | Survives compaction | cmd/ghyll/session.go: RoutingState.PlanMode | Session-level flag, not in context messages; compaction cannot touch it |
+
+## Sub-Agents
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 38 | Isolated and role-free | cmd/ghyll/subagent.go: RunSubAgent() | Creates new context/manager with system prompt + task only, no role overlay, no parent messages |
+| 39 | Shares session lockfile | cmd/ghyll/subagent.go: RunSubAgent() | Does not call AcquireLock(); operates within parent's lock scope |
+| 40 | Turn-loop terminates | cmd/ghyll/subagent.go: RunSubAgent() | Counter incremented per turn; if >= config.SubAgent.MaxTurns → return partial |
+| 41 | Tool calls bounded | cmd/ghyll/subagent.go: RunSubAgent() | Agent tool excluded from sub-agent tool set at dispatch |
+| 41a | Token budget enforced | cmd/ghyll/subagent.go: RunSubAgent() | Accumulate stream.Usage.TotalTokens per turn; if > config.SubAgent.TokenBudget → return partial |
+
+## Session Resume
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 42 | Loads checkpoint not history | cmd/ghyll/main.go: cmdRun() | Queries store for latest reason="shutdown" checkpoint; injects summary only |
+| 43 | Requires existing checkpoint | cmd/ghyll/main.go: cmdRun() | If query returns nil → warn "no previous session", start fresh |
+
+## Web Fetch / Search
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 44 | Retry on transient failure | tool/web.go: WebFetch(), WebSearch() | Retry loop (3x, exponential backoff) on connection error / 5xx; immediate fail on 4xx |
+| 45 | Plain text, size-bounded | tool/web.go: WebFetch() | HTML→markdown conversion, truncate at config.Tools.WebMaxResponseTokens with "[truncated]" marker; reject binary Content-Type |
+
+## Workflow
+
+| # | Invariant | Enforcement point | Mechanism |
+|---|-----------|------------------|-----------|
+| 46 | Instructions survive compaction | cmd/ghyll/session.go | Instructions injected as system prompt prefix; context/manager never includes system messages in compaction input |
+| 47 | Project instructions authoritative | workflow/loader.go: Load() | Concatenate global first, project appended; no algorithmic conflict detection |
+| 48 | Instruction budget enforced | cmd/ghyll/session.go: buildSystemPrompt() | workflow/ returns raw merged content. cmd/ghyll calls dialect.TokenCount on combined text, truncates if over budget (two-phase: drop global first, then project from end). workflow/ has no dialect dependency. |
+| 49 | Slash commands are user messages | cmd/ghyll/repl.go: handleCommand() | Load command file content, pass to context/manager as role="user" message |
+| 50 | Role switch non-destructive | cmd/ghyll/session.go: switchRole() | Replace role portion of system prompt string; no context/manager mutations, no checkpoint |
+| 51 | Workflow folder fallback | workflow/loader.go: Load() | Try .ghyll/ first; if absent, iterate config.Workflow.FallbackFolders; map CLAUDE.md → instructions |

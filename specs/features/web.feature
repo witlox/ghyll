@@ -60,6 +60,33 @@ Feature: Web fetch and search tools
     Then the tool result contains the first 10000 tokens of content
     And the tool result ends with "[truncated]"
 
+  Scenario: Web fetch retries on 5xx server error
+    Given the URL "https://api.example.com/docs" returns HTTP 503 twice then succeeds
+    When the model calls web_fetch with url "https://api.example.com/docs"
+    Then the tool retries with exponential backoff
+    And the third attempt succeeds
+    And the tool result contains the page content
+
+  Scenario: Web search returns empty results
+    Given the search backend is reachable
+    When the model calls web_search with query "xyzzy_nonexistent_term_12345"
+    Then the tool result contains 0 results
+    And the result is not an error
+
+  Scenario: Web fetch max response tokens configurable
+    Given web_max_response_tokens is configured as 5000
+    And the URL "https://example.com/long-page" is reachable
+    And the page content exceeds 5000 tokens
+    When the model calls web_fetch with url "https://example.com/long-page"
+    Then the tool result contains the first 5000 tokens
+    And the tool result ends with "[truncated]"
+
+  Scenario: Web search results limited to 10
+    Given the search backend is reachable
+    And the query matches more than 10 results
+    When the model calls web_search with query "golang"
+    Then the tool result contains at most 10 results
+
   Scenario: Web fetch with redirect
     Given the URL "https://example.com/old" redirects to "https://example.com/new"
     And "https://example.com/new" is reachable

@@ -45,12 +45,29 @@ Feature: Workflow system
     When proactive compaction is triggered
     Then the system prompt still contains the project instructions
 
-  Scenario: Instruction budget enforced
+  Scenario: Instruction budget — project fits, global dropped
     Given the instruction budget is 500 tokens
-    And the combined instructions and role content is 800 tokens
+    And global instructions are 300 tokens
+    And project instructions are 400 tokens
     When I start a session in "/tmp/ghyll-test-workflow"
-    Then the instructions are truncated to fit within 500 tokens
+    Then global instructions are dropped entirely
+    And project instructions are included in full
+    And a warning is displayed: "global instructions dropped to fit budget"
+
+  Scenario: Instruction budget — project alone exceeds budget
+    Given the instruction budget is 500 tokens
+    And project instructions are 800 tokens
+    When I start a session in "/tmp/ghyll-test-workflow"
+    Then project instructions are truncated from the end to 500 tokens
     And a warning is displayed: "instructions truncated to fit budget"
+
+  Scenario: Instruction budget — both fit
+    Given the instruction budget is 2000 tokens
+    And global instructions are 300 tokens
+    And project instructions are 400 tokens
+    When I start a session in "/tmp/ghyll-test-workflow"
+    Then both global and project instructions are included
+    And no warning is displayed
 
   # --- Roles ---
 
@@ -164,6 +181,38 @@ Feature: Workflow system
     When I start a session in "/tmp/ghyll-test-workflow"
     Then the system prompt contains "Use ghyll workflow"
     And the system prompt does not contain "Use claude workflow"
+
+  Scenario: Empty instructions file treated as no instructions
+    Given a file "/tmp/ghyll-test-workflow/.ghyll/instructions.md" with content ""
+    When I start a session in "/tmp/ghyll-test-workflow"
+    Then the system prompt is the bare dialect system prompt only
+
+  Scenario: Role not found shows error
+    When the model activates role "nonexistent"
+    Then an error is displayed: "role not found: nonexistent"
+    And the active role is unchanged
+
+  Scenario: Global and project commands merged
+    Given a file "~/.ghyll/commands/lint.md" with content "Run the linter."
+    And a file "/tmp/ghyll-test-workflow/.ghyll/commands/review.md" with content "Review the code."
+    When I start a session in "/tmp/ghyll-test-workflow"
+    Then "/lint" is available as a command
+    And "/review" is available as a command
+
+  Scenario: Project command overrides global command with same name
+    Given a file "~/.ghyll/commands/check.md" with content "Run basic checks."
+    And a file "/tmp/ghyll-test-workflow/.ghyll/commands/check.md" with content "Run full verification."
+    When the user types "/check"
+    Then the injected content is "Run full verification."
+    And "Run basic checks." is not injected
+
+  Scenario: Fallback .claude/ with instructions.md takes precedence over CLAUDE.md
+    Given no ".ghyll/" directory exists in "/tmp/ghyll-test-workflow"
+    And a file "/tmp/ghyll-test-workflow/.claude/instructions.md" with content "From instructions.md"
+    And a file "/tmp/ghyll-test-workflow/.claude/CLAUDE.md" with content "From CLAUDE.md"
+    When I start a session in "/tmp/ghyll-test-workflow"
+    Then the system prompt contains "From instructions.md"
+    And the system prompt does not contain "From CLAUDE.md"
 
   Scenario: No workflow folder — session starts with bare prompt
     Given no ".ghyll/" or ".claude/" directory exists in "/tmp/ghyll-test-workflow"

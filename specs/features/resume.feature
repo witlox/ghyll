@@ -53,6 +53,29 @@ Feature: Session resume
     And the new session's first checkpoint contains resumed_from session_id "dev1-1713100000000000000"
     And the new session's first checkpoint contains resumed_from checkpoint hash matching the source's final checkpoint
 
+  Scenario: Resume restores plan mode from checkpoint
+    Given the previous session's final checkpoint has plan_mode = true
+    When I run "ghyll run /tmp/ghyll-test-resume --resume"
+    Then plan mode is active in the new session
+
+  Scenario: Resume filters by current repo
+    Given the checkpoint store contains sessions for different repos:
+      | session_id                  | repo_remote                        | reason   |
+      | dev1-1713000000000000000    | https://github.com/other/repo.git  | shutdown |
+      | dev1-1713100000000000000    | https://github.com/witlox/ghyll.git| shutdown |
+    And the current repo remote is "https://github.com/witlox/ghyll.git"
+    When I run "ghyll run /tmp/ghyll-test-resume --resume"
+    Then the context is backfilled from session "dev1-1713100000000000000"
+
+  Scenario: Resume skips non-shutdown checkpoints
+    Given the checkpoint store contains:
+      | session_id                  | turn | reason     | timestamp           |
+      | dev1-1713100000000000000    | 10   | compaction | 2026-04-14T09:00:00 |
+      | dev1-1713100000000000000    | 12   | handoff    | 2026-04-14T09:05:00 |
+      | dev1-1713100000000000000    | 15   | shutdown   | 2026-04-14T09:10:00 |
+    When I run "ghyll run /tmp/ghyll-test-resume --resume"
+    Then the context is backfilled from turn 15 (shutdown) not turn 12 (handoff)
+
   Scenario: Resume without --resume flag ignores previous sessions
     When I run "ghyll run /tmp/ghyll-test-resume"
     Then no previous checkpoint summary is loaded

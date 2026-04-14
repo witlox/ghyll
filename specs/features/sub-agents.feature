@@ -74,6 +74,41 @@ Feature: Sub-agents
     And the sub-agent completes
     Then both results are available in the parent context
 
+  Scenario: Sub-agent wall-clock timeout
+    Given the sub-agent timeout is 300 seconds
+    When the model calls agent with task "Run an extremely long analysis"
+    And the sub-agent runs for 300 seconds without completing
+    Then the sub-agent is terminated
+    And a partial result is returned to the parent
+    And the partial result indicates "wall-clock timeout"
+
+  Scenario: Sub-agent does not inherit plan mode
+    Given plan mode is active in the parent session
+    When the model calls agent with task "Explore the codebase"
+    Then the sub-agent's system prompt does not include planning instructions
+
+  Scenario: Sub-agent tool set excludes plan mode tools
+    When the model calls agent with task "Analyze something"
+    Then the sub-agent's available tools do not include "enter_plan_mode"
+    And the sub-agent's available tools do not include "exit_plan_mode"
+
+  Scenario: Sub-agent has access to new tools
+    When the model calls agent with task "Find and edit a file"
+    Then the sub-agent can call edit_file
+    And the sub-agent can call glob
+    And the sub-agent can call web_fetch
+    And the sub-agent can call web_search
+
+  Scenario: Sub-agent has no checkpoint creation
+    When the model calls agent with task "Do work across 10 turns"
+    And the sub-agent completes after 10 turns
+    Then no checkpoints were created during sub-agent execution
+
+  Scenario: Sub-agent has no drift detection
+    When the model calls agent with task "Work on something for many turns"
+    And the sub-agent completes
+    Then no drift measurement was performed during sub-agent execution
+
   Scenario: Sub-agent result is included in parent checkpoint
     When the model calls agent with task "Analyze the bug"
     And the sub-agent completes with a result

@@ -15,7 +15,8 @@ Typed errors per package. No generic error wrapping across boundaries.
 var (
     ErrConfigNotFound   = errors.New("config: file not found")
     ErrConfigMalformed  = errors.New("config: invalid TOML syntax")
-    ErrConfigValidation = errors.New("config: validation failed")
+    ErrConfigValidation       = errors.New("config: validation failed")
+    ErrConfigUnknownBackend   = errors.New("config: unknown web_search_backend")
 )
 
 // ConfigError wraps parse errors with line number context.
@@ -95,12 +96,18 @@ type StreamError struct {
 
 ```go
 var (
-    ErrToolTimeout = errors.New("tool: execution timed out")
+    ErrToolTimeout       = errors.New("tool: execution timed out")
+    ErrEditNotFound      = errors.New("tool: old_string not found in file")
+    ErrEditAmbiguous     = errors.New("tool: old_string matches multiple locations")
+    ErrEditFileChanged   = errors.New("tool: file modified during edit")       // invariant 33 CAS
+    ErrGlobDirNotFound   = errors.New("tool: directory not found")
+    ErrWebBinaryContent  = errors.New("tool: binary content not supported")
+    ErrWebDomainBlocked  = errors.New("tool: domain not reachable after retries") // invariant 44
 )
 
 // ToolError wraps execution failures with command context.
 type ToolError struct {
-    Tool     string // "bash", "file", "git", "grep"
+    Tool     string // "bash", "file", "git", "grep", "edit", "glob", "web_fetch", "web_search"
     Command  string
     ExitCode int
     Stderr   string
@@ -127,13 +134,40 @@ var (
 )
 ```
 
+## workflow/
+
+```go
+var (
+    ErrWorkflowTruncated = errors.New("workflow: instructions exceed budget, truncated")
+)
+
+// WorkflowError wraps file loading failures.
+type WorkflowError struct {
+    Path    string
+    Message string
+    Err     error
+}
+```
+
+## cmd/ghyll (sub-agent errors)
+
+```go
+var (
+    ErrSubAgentModelDown    = errors.New("subagent: model endpoint unreachable")
+    ErrSubAgentTurnLimit    = errors.New("subagent: maximum turn count reached")
+    ErrSubAgentTokenBudget  = errors.New("subagent: token budget exhausted")
+)
+```
+
 ## Error flow across boundaries
 
 ```
-tool/ errors     → wrapped by context/manager → surfaced by cmd/ghyll
-memory/ errors   → wrapped by context/manager → surfaced by cmd/ghyll
-stream/ errors   → handled by cmd/ghyll (retry/fallback logic)
-dialect/ errors  → handled by cmd/ghyll (parse failures)
-config/ errors   → handled by cmd/ghyll (startup, fatal)
-vault/ errors    → handled by memory/vault_client → logged, non-fatal
+tool/ errors       → wrapped by context/manager → surfaced by cmd/ghyll
+memory/ errors     → wrapped by context/manager → surfaced by cmd/ghyll
+stream/ errors     → handled by cmd/ghyll (retry/fallback logic)
+dialect/ errors    → handled by cmd/ghyll (parse failures)
+config/ errors     → handled by cmd/ghyll (startup, fatal)
+vault/ errors      → handled by memory/vault_client → logged, non-fatal
+workflow/ errors   → handled by cmd/ghyll (startup, non-fatal — warn and continue)
+subagent errors    → returned as tool result to parent context (non-fatal)
 ```

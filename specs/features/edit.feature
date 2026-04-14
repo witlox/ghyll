@@ -60,6 +60,26 @@ Feature: File edit tool
     Then the tool result indicates error "file modified during edit"
     And the file "/tmp/ghyll-test-edit/main.go" retains the other process's changes
 
+  Scenario: Edit CAS uses content hash not mtime
+    Given a file "/tmp/ghyll-test-edit/main.go" exists
+    And two edits happen within the same second to different regions
+    When the second edit_file call executes
+    Then the CAS check detects the content change via SHA256
+    And the second edit returns error "file modified during edit"
+
+  Scenario: Edit where old_string equals new_string
+    When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"hello\"" new_string "return \"hello\""
+    Then the tool result indicates success
+    And the file "/tmp/ghyll-test-edit/main.go" is unchanged
+
+  Scenario: Edit cleans up temp file on failure
+    Given a file "/tmp/ghyll-test-edit/main.go" exists
+    And the rename operation fails (simulated)
+    When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"hello\"" new_string "return \"hi\""
+    Then the tool result indicates error
+    And no temporary files remain in "/tmp/ghyll-test-edit/"
+    And the original file is unchanged
+
   Scenario: Edit respects tool timeout
     Given the tool timeout is 5 seconds
     And the file system is slow (simulated)

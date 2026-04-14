@@ -6,7 +6,7 @@ the only place that sees all packages and orchestrates cross-cutting flows.
 ## Lifecycle
 
 ```
-INIT → READY → TURN → (TURN | COMPACT | HANDOFF | BACKFILL) → ... → SHUTDOWN
+INIT → READY → TURN → (TURN | COMPACT | HANDOFF | BACKFILL | SUB-AGENT) → ... → SHUTDOWN
 ```
 
 ## States
@@ -14,24 +14,31 @@ INIT → READY → TURN → (TURN | COMPACT | HANDOFF | BACKFILL) → ... → SH
 ### INIT
 
 ```
-1. Load config (config/)
-2. Load or generate device key (memory/)
-3. Open sqlite store (memory/)
-4. Initialize embedder if available (memory/)
-5. Setup git worktree if needed (memory/sync)
-6. Acquire repo lockfile (<repo>/.ghyll.lock) — exit if held
-7. Start background sync goroutine (memory/sync)
-8. Pull remote checkpoints + public keys (memory/sync)
-9. Resolve active model from config + --model flag
-10. Build initial routing state
-11. Build system prompt via active dialect
-12. Initialize context manager (context/)
-13. Initialize stream client (stream/)
-14. → READY
+1.  Load config (config/)
+2.  Load or generate device key (memory/)
+3.  Open sqlite store (memory/)
+4.  Initialize embedder if available (memory/)
+5.  Setup git worktree if needed (memory/sync)
+6.  Acquire repo lockfile (<repo>/.ghyll.lock) — exit if held
+7.  Start background sync goroutine (memory/sync)
+8.  Pull remote checkpoints + public keys (memory/sync)
+9.  Resolve active model from config + --model flag
+10. Build initial routing state (PlanMode = false)
+11. Load workflow (workflow/):
+    a. Scan <repo>/.ghyll/ — if absent, try fallback folders (.claude/, etc.)
+    b. Load global ~/.ghyll/ instructions, roles, commands
+    c. Merge: global first, project appended (invariant 47)
+    d. Check instruction budget (config), truncate with warning if exceeded (invariant 48)
+12. Build system prompt: dialect base + workflow instructions (no role initially)
+13. If --resume flag: load last session checkpoint, prepare backfill (invariant 42, 43)
+14. Initialize context manager (context/)
+    If --resume: inject checkpoint summary as system-level backfill
+15. Initialize stream client (stream/)
+16. → READY
 ```
 
 If any step fails fatally (config missing, locked repo), exit with error.
-Non-fatal failures (embedder unavailable, sync fails): warn and continue.
+Non-fatal failures (embedder unavailable, sync fails, no workflow folder): warn and continue.
 
 ### READY
 
@@ -42,6 +49,10 @@ ghyll [m25] ~/repos/myproject ▸
 
 On user input → TURN.
 On `/deep` → set DeepOverride in routing state, → TURN (implicit).
+On `/plan` → set PlanMode in routing state, rebuild system prompt with plan mode overlay.
+On `/fast` → clear DeepOverride AND PlanMode, rebuild system prompt.
+On `/status` → display model, turn count, tool depth, plan mode state, active role.
+On `/<name>` → look up in workflow commands, inject as user message → TURN.
 On Ctrl-C or `/exit` → SHUTDOWN.
 
 ### TURN
@@ -82,9 +93,12 @@ The main execution cycle. Steps in order:
 6. UPDATE CONTEXT (context/manager)
    Add assistant message + tool calls to context
 
-7. EXECUTE TOOLS (tool/)
+7. EXECUTE TOOLS (tool/ or cmd/ghyll for special tools)
    For each tool call:
-     result = tool.Execute(call)
+     If call.Name == "agent" → SUB-AGENT (return result to context)
+     If call.Name == "enter_plan_mode" → set PlanMode, rebuild system prompt, result = "plan mode activated"
+     If call.Name == "exit_plan_mode" → clear PlanMode, rebuild system prompt, result = "plan mode deactivated"
+     Else: result = tool.Execute(call)  // bash, read_file, write_file, edit_file, grep, glob, git, web_fetch, web_search
      Add tool result to context (via context/manager)
      Increment toolDepth in routing state
 
@@ -163,6 +177,45 @@ Entered from TURN (drift detected).
 9. → return to TURN
 ```
 
+### SUB-AGENT
+
+Entered from TURN (model calls agent tool).
+
+```
+1. Parse task description from tool call arguments
+2. Resolve sub-agent model from config (default: fast tier)
+3. Build sub-agent system prompt:
+   dialect.SystemPrompt(workdir) + workflow.Instructions
+   NO role overlay (invariant 38)
+   NO plan mode overlay (sub-agents are focused, fast-tier tasks — plan mode adds unnecessary reasoning overhead)
+4. Create sub-agent context manager (isolated, own instance)
+   Inject system prompt + task description as user message
+5. Create sub-agent stream client (target model endpoint)
+6. Sub-agent turn loop:
+   a. Send to model (stream/)
+   b. Parse tool calls (dialect/)
+   c. Execute tools — same as parent EXCEPT:
+      - "agent" tool NOT available (invariant 41: depth 1 only)
+      - "enter_plan_mode" / "exit_plan_mode" NOT available
+   d. Add results to sub-agent context
+   e. Track cumulative tokens (invariant 41a: token budget)
+   f. If tokens > budget OR turns > max_turns → terminate with partial result
+   g. If model returns stop → collect final answer
+   h. Else → repeat from (a)
+7. Return sub-agent final answer as tool result to parent context
+8. → return to TURN step 7 (continue parent tool execution)
+```
+
+If sub-agent model is unreachable: return error as tool result.
+Sub-agent has no checkpoint creation, no drift detection, no sync.
+
+Design choice: sub-agent execution is SYNCHRONOUS — the parent session
+blocks while the sub-agent runs, same as a bash tool call that runs `make test`.
+The user sees sub-agent progress via terminal output but cannot type until
+the sub-agent completes. A wall-clock timeout (config.SubAgent.TimeoutSeconds,
+default 300s) bounds total sub-agent execution time. On timeout, the sub-agent
+is terminated and returns a partial result.
+
 ### SHUTDOWN
 
 ```
@@ -197,22 +250,52 @@ cmd/ghyll passes capabilities to packages that can't import each other:
 ```go
 // context/manager receives:
 type ManagerDeps struct {
-    TokenCount     func([]types.Message) int          // from dialect
-    CompactionCall func(CompactionRequest) (string, error) // wires stream
-    CreateCheckpoint func(CheckpointRequest) error     // from memory
+    TokenCount     func([]types.Message) int               // from dialect
+    CompactionCall func(CompactionRequest) (string, error)  // wires stream
+    CreateCheckpoint func(CheckpointRequest) error          // from memory
     Embed          func([]types.Message) ([]float32, error) // from memory
 }
 
 // dialect/router receives:
 type RouterInputs struct {
-    ContextDepth int
-    ToolDepth    int
-    ModelLocked  bool
-    DeepOverride bool
-    ActiveModel  string
+    ContextDepth      int
+    ToolDepth         int
+    ModelLocked       bool
+    DeepOverride      bool
+    ActiveModel       string
     BackfillTriggered bool
-    Config       config.RoutingConfig
+    Config            config.RoutingConfig
 }
+// PlanMode is session state in cmd/ghyll, NOT passed to router (invariant 36).
+
+// workflow/ is called at INIT — returns workflow.Workflow struct.
+// cmd/ghyll reads Workflow.Instructions, Workflow.Roles, Workflow.Commands
+// and wires them into the system prompt and REPL command dispatcher.
+// No callbacks needed — workflow/ is a pure loader.
 ```
 
 This keeps the dependency graph acyclic while allowing cross-cutting flows.
+
+## System prompt composition
+
+The system prompt is built by cmd/ghyll from multiple sources:
+
+```
+[dialect base prompt]        ← dialect.SystemPrompt(workdir)
+[workflow instructions]      ← workflow.Instructions (global + project, project last)
+[role overlay]               ← workflow.Roles[activeRole] (if any)
+[plan mode overlay]          ← dialect.PlanModePrompt() (if PlanMode active)
+```
+
+Total bounded by instruction budget (invariant 48). The dialect base prompt
+is NOT counted against the instruction budget — only workflow content is.
+
+Budget enforcement is two-phase (done by cmd/ghyll, not workflow/):
+1. If project instructions alone exceed budget → truncate project from end, drop global entirely
+2. If combined exceeds but project alone fits → drop global (partially or fully) until combined fits
+3. If combined fits → use both, no truncation
+This preserves project instructions (authoritative) over global instructions.
+
+On role switch: replace role overlay portion, keep everything else.
+On plan mode toggle: append/remove plan mode overlay.
+On handoff: rebuild with target dialect's base + same workflow + same role + plan mode flag.

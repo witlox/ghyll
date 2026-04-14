@@ -75,7 +75,7 @@ Things that must always be true. Violations are bugs.
 
 ## Edit Tool
 
-33. **Edit is atomic and compare-and-swap.** An edit_file call reads the file, records its modification time, finds the match, writes to a temp file, then renames only if the original file's mtime has not changed. If the file was modified between read and write, the tool returns an error ("file modified during edit") without changing the file. No partial writes.
+33. **Edit is atomic and compare-and-swap.** An edit_file call reads the file, computes a SHA256 hash of the content, finds the match, writes the replacement to a temp file, then re-reads the original and compares SHA256 hashes. The temp file is renamed to the original only if the hash is unchanged. If the file was modified between read and write, the tool returns an error ("file modified during edit") without changing the file. No partial writes. Uses content hash (not mtime) to avoid filesystem timestamp resolution issues.
 34. **Edit match must be unambiguous.** If old_string matches zero times or more than once in the file, the tool returns an error. Exactly one match required.
 
 ## Glob Tool

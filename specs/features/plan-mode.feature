@@ -57,3 +57,35 @@ Feature: Plan mode
     When the user types "/plan"
     Then plan mode remains active
     And no error is displayed
+
+  Scenario: Plan mode recorded in checkpoint metadata
+    Given plan mode is active
+    When a checkpoint is created
+    Then the checkpoint has plan_mode = true
+
+  Scenario: Plan mode not active — checkpoint records false
+    Given plan mode is inactive
+    When a checkpoint is created
+    Then the checkpoint has plan_mode = false
+
+  Scenario: Plan mode does not affect routing decisions
+    Given plan mode is active
+    And context depth is below the escalation threshold
+    When the routing decision is evaluated
+    Then the decision is "none"
+    And plan mode is not considered in the routing evaluation
+
+  Scenario: /deep and /plan are independent
+    Given plan mode is active
+    When the user types "/deep"
+    Then plan mode is still active
+    And the model is escalated to "glm5"
+    And the system prompt contains GLM-5's planning instructions
+
+  Scenario: /fast clears both deep override and plan mode
+    Given plan mode is active
+    And deep override is active
+    When the user types "/fast"
+    Then plan mode is inactive
+    And deep override is inactive
+    And the system prompt is the base dialect prompt

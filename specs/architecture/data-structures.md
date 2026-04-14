@@ -40,11 +40,13 @@ type ToolResult struct {
 ```go
 // Config is the root configuration loaded from ~/.ghyll/config.toml.
 type Config struct {
-    Models  map[string]ModelConfig `toml:"models"`
-    Routing RoutingConfig          `toml:"routing"`
-    Memory  MemoryConfig           `toml:"memory"`
-    Tools   ToolsConfig            `toml:"tools"`
-    Vault   *VaultConfig           `toml:"vault,omitempty"`
+    Models   map[string]ModelConfig `toml:"models"`
+    Routing  RoutingConfig          `toml:"routing"`
+    Memory   MemoryConfig           `toml:"memory"`
+    Tools    ToolsConfig            `toml:"tools"`
+    SubAgent SubAgentConfig         `toml:"sub_agent"`
+    Workflow WorkflowConfig         `toml:"workflow"`
+    Vault    *VaultConfig           `toml:"vault,omitempty"`
 }
 
 type ModelConfig struct {
@@ -77,9 +79,24 @@ type EmbedderConfig struct {
 }
 
 type ToolsConfig struct {
-    BashTimeoutSeconds int  `toml:"bash_timeout_seconds"`
-    FileTimeoutSeconds int  `toml:"file_timeout_seconds"`
-    PreferRipgrep      bool `toml:"prefer_ripgrep"`
+    BashTimeoutSeconds    int    `toml:"bash_timeout_seconds"`
+    FileTimeoutSeconds    int    `toml:"file_timeout_seconds"`
+    WebTimeoutSeconds     int    `toml:"web_timeout_seconds"`     // default 30
+    WebMaxResponseTokens  int    `toml:"web_max_response_tokens"` // default 10000
+    WebSearchBackend      string `toml:"web_search_backend"`      // default "duckduckgo"
+    PreferRipgrep         bool   `toml:"prefer_ripgrep"`
+}
+
+type SubAgentConfig struct {
+    DefaultModel    string `toml:"default_model"`      // default: routing.default_model
+    MaxTurns        int    `toml:"max_turns"`           // default 20 (invariant 40)
+    TokenBudget     int    `toml:"token_budget"`        // default 50000 (invariant 41a)
+    TimeoutSeconds  int    `toml:"timeout_seconds"`     // default 300 (wall-clock limit)
+}
+
+type WorkflowConfig struct {
+    InstructionBudgetTokens int      `toml:"instruction_budget_tokens"` // default 2000
+    FallbackFolders         []string `toml:"fallback_folders"`          // default [".claude"]
 }
 
 type VaultConfig struct {
@@ -95,7 +112,7 @@ type VaultConfig struct {
 // Invariant 3: never modified after creation.
 // Invariant 4: Hash = hex(sha256(canonical JSON of all fields except Hash and Signature)).
 type Checkpoint struct {
-    Version      int       `json:"v"`
+    Version      int       `json:"v"`  // bump to 2 for new fields
     Hash         string    `json:"hash"`
     ParentHash   string    `json:"parent"`
     DeviceID     string    `json:"device"`
@@ -106,12 +123,21 @@ type Checkpoint struct {
     SessionID    string    `json:"session"`
     Turn         int       `json:"turn"`
     ActiveModel  string    `json:"model"`
+    PlanMode     bool      `json:"plan_mode,omitempty"`      // finding 6: travels through handoff
+    ResumedFrom  *ResumeRef `json:"resumed_from,omitempty"`  // finding 7: predecessor link
     Summary      string    `json:"summary"`
     Embedding    []float32 `json:"emb"`
     FilesTouched []string  `json:"files"`
     ToolsUsed    []string  `json:"tools"`
     InjectionSig []string  `json:"injections,omitempty"`
     Signature    string    `json:"sig"`
+}
+
+// ResumeRef links a resumed session to its predecessor.
+// Invariant 42: resume loads checkpoint, not history.
+type ResumeRef struct {
+    SessionID      string `json:"session"`
+    CheckpointHash string `json:"hash"`
 }
 
 // VerificationResult reports the outcome of hash chain + signature verification.
@@ -140,6 +166,8 @@ type CheckpointRequest struct {
     SessionID    string
     Turn         int
     ActiveModel  string
+    PlanMode     bool
+    ResumedFrom  *ResumeRef      // set on first checkpoint of a resumed session
     Summary      string
     Messages     []types.Message // for embedding
     FilesTouched []string
@@ -157,6 +185,7 @@ type RoutingState struct {
     ActiveModel  string // current model key ("m25", "glm5")
     ModelLocked  bool   // true if --model flag set (invariant 11)
     DeepOverride bool   // true if /deep active (invariant 11a)
+    PlanMode     bool   // true if plan mode active (invariant 36, 37)
     AutoRouting  bool   // true if routing decisions are automatic
     ToolDepth    int    // sequential tool calls without user input
 }
@@ -235,6 +264,7 @@ The function signatures are the contract. See routing-logic.md for the router.
 //
 // glm5.go:
 //   func GLM5SystemPrompt(workdir string) string
+//   func GLM5PlanModePrompt() string                          // NEW: appended when plan mode active
 //   func GLM5BuildMessages(msgs []types.Message, systemPrompt string) []map[string]any
 //   func GLM5ParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error)
 //   func GLM5CompactionPrompt() string
@@ -243,6 +273,7 @@ The function signatures are the contract. See routing-logic.md for the router.
 //
 // minimax_m25.go:
 //   func M25SystemPrompt(workdir string) string
+//   func M25PlanModePrompt() string                            // NEW: appended when plan mode active
 //   func M25BuildMessages(msgs []types.Message, systemPrompt string) []map[string]any
 //   func M25ParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error)
 //   func M25CompactionPrompt() string
@@ -263,6 +294,8 @@ type RouterInputs struct {
     BackfillTriggered bool
     Config            config.RoutingConfig
 }
+// Note: PlanMode is NOT in RouterInputs — it's session state managed by cmd/ghyll.
+// Invariant 36: plan mode is advisory, does not affect routing decisions.
 
 type RoutingDecision struct {
     Action         string // "none", "escalate", "de_escalate"
@@ -280,7 +313,63 @@ type, and memory/ does not import dialect/.
 
 ```go
 // tool/ uses types.ToolResult as its return type.
-// No additional types needed — tool/ is thin wrappers around OS calls.
+// Each tool function: func XxxTool(ctx context.Context, args XxxArgs) types.ToolResult
+
+// EditArgs is the input for the edit_file tool.
+// Invariant 33: compare-and-swap via mtime check.
+// Invariant 34: exactly one match required.
+type EditArgs struct {
+    Path      string `json:"path"`
+    OldString string `json:"old_string"`
+    NewString string `json:"new_string"` // empty = deletion (finding 10)
+}
+
+// GlobArgs is the input for the glob tool.
+// Invariant 35: only existing, workspace-local paths returned.
+type GlobArgs struct {
+    Pattern   string `json:"pattern"`
+    Path      string `json:"path"` // base directory
+}
+
+// WebFetchArgs is the input for the web_fetch tool.
+// Invariant 44: retry with backoff on transient failure.
+// Invariant 45: response truncated to MaxResponseTokens.
+type WebFetchArgs struct {
+    URL               string `json:"url"`
+    MaxResponseTokens int    // from config, default 10000
+}
+
+// WebSearchArgs is the input for the web_search tool.
+type WebSearchArgs struct {
+    Query string `json:"query"`
+}
+
+// WebSearchResult is a single search result.
+type WebSearchResult struct {
+    Title   string `json:"title"`
+    URL     string `json:"url"`
+    Snippet string `json:"snippet"`
+}
+```
+
+## workflow/
+
+```go
+// Workflow is the loaded result of scanning .ghyll/ (or fallback .claude/).
+// Invariant 46: instructions survive compaction (system-level).
+// Invariant 47: global prepended, project appended (project has last word).
+// Invariant 48: total tokens bounded by instruction budget.
+// Invariant 51: fallback to .claude/ with CLAUDE.md → instructions mapping.
+// Workflow is the loaded result of scanning .ghyll/ (or fallback .claude/).
+// workflow/ is a pure loader — it reads files, merges global + project, returns raw content.
+// Budget enforcement (invariant 48) is done by cmd/ghyll using dialect.TokenCount.
+type Workflow struct {
+    GlobalInstructions  string            // from ~/.ghyll/instructions.md (raw)
+    ProjectInstructions string            // from <repo>/.ghyll/instructions.md or CLAUDE.md (raw)
+    Roles               map[string]string // role name → content (from roles/ directory)
+    Commands            map[string]string // command name → content (from commands/ directory)
+    Source              string            // "ghyll", "claude", "none" — which folder was loaded
+}
 ```
 
 ## vault/
