@@ -11,13 +11,24 @@ cmd/ghyll ──→ dialect/ ──→ config/
     │              │       │
     ├──→ tool/ ────┤       └──→ types/
     │              │
-    └──→ config/ ──┘
+    ├──→ config/ ──┘
+    │              │
+    └──→ workflow/  ──→ config/  (new: loads .ghyll/, roles, commands)
                    │
              all ──→ types/  (leaf)
 
 cmd/ghyll-vault ──→ vault/ ──→ memory/
                                └──→ config/
 ```
+
+Note: workflow/ is a new package responsible for loading and merging
+project instructions, roles, and slash commands. It depends on config/
+for instruction budget settings. cmd/ghyll orchestrates workflow loading
+at session start and role switching during the session.
+
+The tool/ package gains: edit_file, glob, web_fetch, web_search.
+Sub-agent execution lives in cmd/ghyll (session) — it creates a mini
+session with its own context/manager and stream/client instances.
 
 See `specs/architecture/package-graph.md` for the authoritative graph.
 
@@ -42,11 +53,14 @@ context/manager (detects context depth > threshold)
 → dialect/ (get CompactionPrompt for current model)
 → stream/client (separate API call: turns-to-summarize + compaction prompt)
 → context/manager (replace old turns with summary)
-→ memory/checkpoint (create compaction + handoff checkpoint)
+→ memory/checkpoint (create compaction + handoff checkpoint; includes plan_mode flag in metadata)
 → dialect/handoff (format compacted context for target model)
+→ cmd/ghyll (if plan mode active: apply target dialect's planning instructions to new system prompt)
 → context/manager (replace context with handoff context)
 → stream/client (next request goes to new endpoint)
 ```
+Note: plan mode flag travels through the handoff checkpoint metadata.
+The target dialect's planning instructions replace the source dialect's.
 
 ### Flow 3: Drift detection and backfill
 ```
@@ -118,6 +132,89 @@ stream/client (model rejects with context_length_exceeded)
 → stream/client (retry original request once with compacted context)
 ```
 
+### Flow 9: Sub-agent execution
+```
+dialect/ (model returns tool call: agent(task="..."))
+→ cmd/ghyll (session recognizes agent tool)
+→ cmd/ghyll (create sub-agent):
+  → config/ (read sub-agent defaults: model=m25, max_turns=20)
+  → cmd/ghyll (load workflow: project instructions, no role unless specified)
+  → dialect/ (build system prompt for sub-agent's model + instructions)
+  → context/manager (new, isolated — system prompt + task only)
+  → stream/client (connect to sub-agent's model endpoint)
+→ cmd/ghyll (sub-agent turn-loop):
+  → stream/client (send to model)
+  → dialect/ (parse tool calls)
+  → tool/ (execute — same tools minus agent)
+  → context/manager (update sub-agent context)
+  → [repeat until model returns stop or max_turns reached]
+→ cmd/ghyll (collect final answer from sub-agent)
+→ context/manager (parent: inject result as tool result)
+→ cmd/ghyll (parent session continues)
+```
+Note: sub-agent has its own context/manager instance. Parent's context is untouched
+during sub-agent execution. Sub-agent cannot call the agent tool (depth 1 only).
+
+### Flow 10: Session resume
+```
+cmd/ghyll (--resume flag detected)
+→ memory/store (query: most recent checkpoint where reason="shutdown" and repo=current)
+→ memory/store (return checkpoint summary, metadata, active_model)
+→ dialect/ (format checkpoint summary as backfill message for target model)
+→ context/manager (inject summary as system-level backfill)
+→ cmd/ghyll (session starts normally with backfilled context)
+```
+
+### Flow 11: Web fetch with Tarn retry
+```
+dialect/ (model returns tool call: web_fetch(url="..."))
+→ tool/web (attempt HTTP GET)
+→ tool/web (connection error — Tarn may be blocking)
+→ tool/web (retry 1: wait 1s, attempt again)
+→ tool/web (retry 2: wait 2s, attempt again)
+→ tool/web (retry 3: wait 4s, attempt again)
+→ tool/web (all retries failed → return error: "domain not reachable")
+  OR
+→ tool/web (retry N succeeds → parse HTML to markdown → return content)
+```
+Note: 4xx errors are not retried. Only connection errors and 5xx trigger retry.
+
+### Flow 12: Workflow loading at session start
+```
+cmd/ghyll (session initialization)
+→ cmd/ghyll (check <repo>/.ghyll/ exists)
+  If yes: load instructions.md, roles/, commands/
+  If no: check <repo>/.claude/ (fallback)
+  If no: no workflow — bare dialect prompt
+→ cmd/ghyll (check ~/.ghyll/ for global instructions, roles, commands)
+→ cmd/ghyll (merge: global first, project overlays — project wins on conflict)
+→ config/ (check instruction budget)
+→ cmd/ghyll (truncate if over budget, warn user)
+→ dialect/ (prepend instructions to system prompt)
+→ context/manager (mark instructions as system-level, exempt from compaction)
+```
+
+### Flow 13: Role switch
+```
+dialect/ (model determines role switch needed based on workflow router)
+→ cmd/ghyll (session updates active role)
+→ cmd/ghyll (load role file from workflow)
+→ dialect/ (replace role overlay portion of system prompt)
+→ context/manager (system prompt updated — no compaction, no checkpoint)
+→ cmd/ghyll (display "Switching to [role]")
+```
+
+### Flow 14: Slash command execution
+```
+cmd/ghyll (user types "/name" in REPL)
+→ cmd/ghyll (check: is it a built-in command? /exit, /deep, /fast, /status, /plan)
+  If built-in: execute built-in handler
+  If not: check workflow commands/ for "name.md"
+→ cmd/ghyll (load command file content)
+→ context/manager (inject content as user message)
+→ [normal turn flow from Flow 1]
+```
+
 ## Data Ownership
 
 | Data | Owner | Readers |
@@ -129,3 +226,9 @@ stream/client (model rejects with context_length_exceeded)
 | Config | config/ | all packages |
 | ONNX model file | memory/embedder | context/drift |
 | Git orphan branch | memory/sync | memory/store |
+| Plan mode flag | cmd/ghyll (session) | dialect/, context/ |
+| Sub-agent execution | cmd/ghyll (session) | stream/, dialect/, context/, tool/ |
+| Workflow files (.ghyll/) | cmd/ghyll (loader) | dialect/, config/ |
+| Active role overlay | cmd/ghyll (session) | dialect/ |
+| Slash command defs | cmd/ghyll (loader) | — |
+| Instruction budget | config/ | cmd/ghyll, dialect/ |

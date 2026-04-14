@@ -72,3 +72,44 @@ Things that must always be true. Violations are bugs.
 
 31. **One session per repo.** Only one ghyll session can run per repository at a time. Enforced by a lockfile at `<repo>/.ghyll.lock`. Second session exits with error.
 32. **Lockfile released on exit.** The lockfile is released in SHUTDOWN, including on signal interrupts. Stale locks (dead PID) are detected and reclaimed.
+
+## Edit Tool
+
+33. **Edit is atomic and compare-and-swap.** An edit_file call reads the file, records its modification time, finds the match, writes to a temp file, then renames only if the original file's mtime has not changed. If the file was modified between read and write, the tool returns an error ("file modified during edit") without changing the file. No partial writes.
+34. **Edit match must be unambiguous.** If old_string matches zero times or more than once in the file, the tool returns an error. Exactly one match required.
+
+## Glob Tool
+
+35. **Glob returns only existing, workspace-local paths.** Every path in the glob result exists at the time of the call. Broken symlinks and symlinks pointing outside the workspace directory are excluded. No speculative paths.
+
+## Plan Mode
+
+36. **Plan mode is advisory.** Plan mode changes the system prompt only. It does not gate, block, or filter any tool calls. All tools remain fully available.
+37. **Plan mode survives compaction.** The plan mode flag is session state, not context state. Compaction does not deactivate plan mode.
+
+## Sub-Agents
+
+38. **Sub-agent context is isolated and role-free.** A sub-agent's context window contains only: the dialect's base system prompt with project instructions (no role overlay), the task description, and tool results from its own turn-loop. No parent conversation history. Sub-agents do not inherit the parent's active role — they operate with bare instructions only.
+39. **Sub-agent shares session lockfile.** A sub-agent is a tool call within the parent session, not a separate session. No additional lockfile is created.
+40. **Sub-agent turn-loop terminates.** A sub-agent has a configurable maximum turn count (default 20). If the sub-agent reaches the limit without completing, it returns a partial result to the parent.
+41. **Sub-agent tool calls are bounded.** Sub-agents are subject to the same tool depth limit as the parent (invariant 16 timeout applies per tool call). Sub-agents cannot spawn sub-agents (depth 1 only).
+41a. **Sub-agent token budget enforced.** A sub-agent has a configurable maximum token budget (default 50,000 tokens). The sub-agent's context manager tracks cumulative prompt + completion tokens. When the budget is exhausted, the sub-agent terminates and returns a partial result. The budget is separate from the parent's context budget.
+
+## Session Resume
+
+42. **Resume loads checkpoint, not history.** Session resume injects the previous session's final checkpoint summary as backfill. No raw message history is restored.
+43. **Resume requires a checkpoint to exist.** If no previous session checkpoint exists for the current repo, `--resume` starts a fresh session with a warning.
+
+## Web Fetch / Search
+
+44. **Web tools retry on transient failure.** Web fetch and web search retry with exponential backoff (3 attempts, same pattern as stream client) on connection errors. Non-retryable errors (4xx) fail immediately.
+45. **Web tool results are plain text and size-bounded.** Web fetch returns content as markdown text, truncated to a configurable maximum (default 10,000 tokens) with a "[truncated]" marker. Web search returns structured results (title, URL, snippet), limited to 10 results. No binary content, no JavaScript execution.
+
+## Workflow
+
+46. **Project instructions survive compaction.** Instructions and active role overlay are injected at system prompt level. They are never included in compaction summaries and are never removed.
+47. **Project instructions are authoritative.** When both `~/.ghyll/instructions.md` and `<repo>/.ghyll/instructions.md` exist, global instructions are prepended first, then project instructions are appended. The model treats later instructions as authoritative — no algorithmic conflict detection is attempted. Project instructions have the "last word."
+48. **Instruction budget enforced.** Total tokens for instructions + role overlay must not exceed the instruction budget. If combined content exceeds the budget, it is truncated with a warning. The instruction budget is separate from and subtracted from the context window budget.
+49. **Slash commands are prompt injection only.** A slash command injects the command file's content as a user message. It does not modify session state, change tools, or alter the system prompt. Slash command content is subject to normal context management (compaction), not the instruction budget — it is a user message, not a system instruction.
+50. **Role switch is non-destructive.** Switching roles replaces the role overlay portion of the system prompt. It does not modify the conversation history, trigger compaction, or create a checkpoint.
+51. **Workflow folder fallback.** Ghyll loads from `<repo>/.ghyll/` first. If absent, it attempts `<repo>/.claude/` (and similar known folders) with the following mapping: `CLAUDE.md` is treated as `instructions.md`; `roles/` and `commands/` directories are loaded identically to their `.ghyll/` equivalents. If none found, the session starts with no workflow — bare dialect prompt only.
