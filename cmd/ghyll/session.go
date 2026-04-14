@@ -461,6 +461,11 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 		CreateCheckpoint: s.createCheckpoint,
 	})
 
+	// Re-inject composed system prompt with workflow instructions + role + plan mode
+	// (INT-1: these were lost when creating a fresh context manager)
+	sysPrompt := s.composedSystemPrompt()
+	s.ctxManager.AddMessage(types.Message{Role: "system", Content: sysPrompt})
+
 	// Populate with handoff summary
 	for _, msg := range handoffMsgs {
 		s.ctxManager.AddMessage(msg)

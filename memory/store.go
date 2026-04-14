@@ -50,6 +50,8 @@ func OpenStore(path string) (*Store, error) {
 			session    TEXT NOT NULL,
 			turn       INTEGER NOT NULL,
 			model      TEXT NOT NULL,
+			plan_mode  INTEGER NOT NULL DEFAULT 0,
+			resumed_from TEXT,
 			summary    TEXT NOT NULL,
 			embedding  BLOB NOT NULL DEFAULT x'',
 			files      TEXT NOT NULL DEFAULT '[]',
@@ -99,13 +101,26 @@ func (s *Store) Append(cp *Checkpoint) error {
 		injectionsJSON = &s
 	}
 
+	// V2 fields
+	planMode := 0
+	if cp.PlanMode {
+		planMode = 1
+	}
+	var resumedFromJSON *string
+	if cp.ResumedFrom != nil {
+		b, _ := json.Marshal(cp.ResumedFrom)
+		s := string(b)
+		resumedFromJSON = &s
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO checkpoints
 			(hash, parent, device, author, ts, repo, branch, session, turn, model,
-			 summary, embedding, files, tools, injections, sig)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 plan_mode, resumed_from, summary, embedding, files, tools, injections, sig)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		cp.Hash, cp.ParentHash, cp.DeviceID, cp.AuthorID, cp.Timestamp,
 		cp.RepoRemote, cp.Branch, cp.SessionID, cp.Turn, cp.ActiveModel,
+		planMode, resumedFromJSON,
 		cp.Summary, embBytes, string(filesJSON), string(toolsJSON),
 		injectionsJSON, cp.Signature,
 	)
@@ -118,7 +133,7 @@ func (s *Store) Append(cp *Checkpoint) error {
 // GetByHash retrieves a single checkpoint by its hash.
 func (s *Store) GetByHash(hash string) (*Checkpoint, error) {
 	row := s.db.QueryRow(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints WHERE hash = ?`, hash)
 	return scanCheckpoint(row)
 }
@@ -126,7 +141,7 @@ func (s *Store) GetByHash(hash string) (*Checkpoint, error) {
 // ListBySession returns all checkpoints for a session, ordered by turn.
 func (s *Store) ListBySession(sessionID string) ([]Checkpoint, error) {
 	rows, err := s.db.Query(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints WHERE session = ? ORDER BY turn`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("memory: list by session: %w", err)
@@ -147,7 +162,7 @@ func (s *Store) ListBySession(sessionID string) ([]Checkpoint, error) {
 // ListAll returns all checkpoints ordered by timestamp.
 func (s *Store) ListAll() ([]Checkpoint, error) {
 	rows, err := s.db.Query(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints ORDER BY ts`)
 	if err != nil {
 		return nil, fmt.Errorf("memory: list all: %w", err)
@@ -168,7 +183,7 @@ func (s *Store) ListAll() ([]Checkpoint, error) {
 // LatestBySession returns the most recent checkpoint for a session.
 func (s *Store) LatestBySession(sessionID string) (*Checkpoint, error) {
 	row := s.db.QueryRow(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints WHERE session = ? ORDER BY turn DESC LIMIT 1`, sessionID)
 	return scanCheckpoint(row)
 }
@@ -177,7 +192,7 @@ func (s *Store) LatestBySession(sessionID string) (*Checkpoint, error) {
 // Used for session resume (invariant 42).
 func (s *Store) LatestByRepo(repoRemote string) (*Checkpoint, error) {
 	row := s.db.QueryRow(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints WHERE repo = ? ORDER BY ts DESC LIMIT 1`, repoRemote)
 	return scanCheckpoint(row)
 }
@@ -185,7 +200,7 @@ func (s *Store) LatestByRepo(repoRemote string) (*Checkpoint, error) {
 // SearchByEmbedding finds the top-k most similar checkpoints via brute-force cosine similarity.
 func (s *Store) SearchByEmbedding(query []float32, repoHash string, topK int) ([]SearchResult, error) {
 	rows, err := s.db.Query(`SELECT hash, parent, device, author, ts, repo, branch,
-		session, turn, model, summary, embedding, files, tools, injections, sig
+		session, turn, model, plan_mode, resumed_from, summary, embedding, files, tools, injections, sig
 		FROM checkpoints WHERE repo = ?`, repoHash)
 	if err != nil {
 		return nil, fmt.Errorf("memory: search: %w", err)
@@ -218,14 +233,24 @@ func scanCheckpoint(row *sql.Row) (*Checkpoint, error) {
 	var embBytes []byte
 	var filesJSON, toolsJSON string
 	var injectionsJSON *string
+	var planModeInt int
+	var resumedFromJSON *string
 
 	if err := row.Scan(&cp.Hash, &cp.ParentHash, &cp.DeviceID, &cp.AuthorID,
 		&cp.Timestamp, &cp.RepoRemote, &cp.Branch, &cp.SessionID, &cp.Turn,
-		&cp.ActiveModel, &cp.Summary, &embBytes, &filesJSON, &toolsJSON,
+		&cp.ActiveModel, &planModeInt, &resumedFromJSON,
+		&cp.Summary, &embBytes, &filesJSON, &toolsJSON,
 		&injectionsJSON, &cp.Signature); err != nil {
 		return nil, fmt.Errorf("memory: scan checkpoint: %w", err)
 	}
 
+	cp.PlanMode = planModeInt != 0
+	if resumedFromJSON != nil {
+		var ref ResumeRef
+		if json.Unmarshal([]byte(*resumedFromJSON), &ref) == nil {
+			cp.ResumedFrom = &ref
+		}
+	}
 	cp.Embedding = bytesToEmbed(embBytes)
 	_ = json.Unmarshal([]byte(filesJSON), &cp.FilesTouched)
 	_ = json.Unmarshal([]byte(toolsJSON), &cp.ToolsUsed)
@@ -240,14 +265,24 @@ func scanCheckpointRow(rows *sql.Rows) (*Checkpoint, error) {
 	var embBytes []byte
 	var filesJSON, toolsJSON string
 	var injectionsJSON *string
+	var planModeInt int
+	var resumedFromJSON *string
 
 	if err := rows.Scan(&cp.Hash, &cp.ParentHash, &cp.DeviceID, &cp.AuthorID,
 		&cp.Timestamp, &cp.RepoRemote, &cp.Branch, &cp.SessionID, &cp.Turn,
-		&cp.ActiveModel, &cp.Summary, &embBytes, &filesJSON, &toolsJSON,
+		&cp.ActiveModel, &planModeInt, &resumedFromJSON,
+		&cp.Summary, &embBytes, &filesJSON, &toolsJSON,
 		&injectionsJSON, &cp.Signature); err != nil {
 		return nil, fmt.Errorf("memory: scan checkpoint: %w", err)
 	}
 
+	cp.PlanMode = planModeInt != 0
+	if resumedFromJSON != nil {
+		var ref ResumeRef
+		if json.Unmarshal([]byte(*resumedFromJSON), &ref) == nil {
+			cp.ResumedFrom = &ref
+		}
+	}
 	cp.Embedding = bytesToEmbed(embBytes)
 	_ = json.Unmarshal([]byte(filesJSON), &cp.FilesTouched)
 	_ = json.Unmarshal([]byte(toolsJSON), &cp.ToolsUsed)
