@@ -1,6 +1,6 @@
 # Ghyll
 
-A purpose-built coding agent CLI for self-hosted open-weight models. Runs inside a sandbox (Tarn, bubblewrap, etc.). Uses git-native memory with Merkle DAG integrity.
+A purpose-built coding agent CLI for self-hosted open-weight models. Runs inside a sandbox (SRT, bubblewrap, etc.). Uses git-native memory with Merkle DAG integrity.
 
 ## Build
 
@@ -54,7 +54,7 @@ scripts/              scenario verification tooling
 ## Conventions
 
 - Go: standard gofmt, no globals, context.Context threaded through all I/O
-- No provider interfaces — each dialect is concrete functions
+- No provider interfaces — each dialect family is concrete functions (minimax.go, glm.go)
 - Tools are direct OS calls — no permission layer (sandbox handles security)
 - Commits: conventional commits (feat:, fix:, docs:, test:, ci:)
 - Tests: TDD (red-green-refactor), TestScenario_* naming, godog for acceptance
@@ -70,6 +70,7 @@ scripts/              scenario verification tooling
 - [ADR-004: Tool depth limit](docs/decisions/004-tool-depth-limit.md) — unbounded recursion guard
 - [ADR-005: Compaction separate API call](docs/decisions/005-compaction-separate-api-call.md) — context overflow prevention
 - [ADR-006: One session per repo](docs/decisions/006-one-session-per-repo.md) — lockfile concurrency
+- [ADR-007: Tier-based routing](docs/decisions/007-tier-based-routing.md) — decouple routing from model names
 
 ## Running
 

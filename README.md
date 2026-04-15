@@ -15,11 +15,40 @@ Purpose-built coding agent CLI for self-hosted open-weight models. Hyper-optimiz
 >
 > | Platform | Sandbox | Description |
 > |----------|---------|-------------|
-> | **macOS** | [Tarn](https://github.com/witlox/tarn) | Kernel-level via Endpoint Security. Purpose-built for ghyll. |
+> | **macOS / Linux** | [SRT](https://github.com/anthropic-experimental/sandbox-runtime) | **Recommended.** Anthropic's Sandbox Runtime — OS-level filesystem and network isolation via Seatbelt (macOS) and bubblewrap (Linux). |
 > | **macOS** | [Ash](https://github.com/nicholasgasior/ash) | App Sandbox profiles via `sandbox-exec`. |
 > | **Linux** | [bubblewrap](https://github.com/containers/bubblewrap) | Unprivileged namespace sandboxing. |
 > | **Linux** | [firejail](https://github.com/netblue30/firejail) | SUID sandbox with seccomp-bpf. |
 > | **Any** | Docker/Podman | Container isolation. |
+>
+> <details><summary>SRT example (recommended)</summary>
+>
+> ```bash
+> # Install SRT
+> npm install -g @anthropic-ai/sandbox-runtime
+>
+> # Run ghyll inside SRT
+> srt ghyll run .
+> ```
+>
+> SRT uses a settings file (`~/.srt-settings.json`) for fine-grained control:
+>
+> ```json
+> {
+>   "network": {
+>     "allowedDomains": ["inference.internal"]
+>   },
+>   "filesystem": {
+>     "denyRead": ["~/.ssh", "~/.aws"],
+>     "allowWrite": [".", "~/.ghyll"],
+>     "denyWrite": [".env"]
+>   }
+> }
+> ```
+>
+> Everything is denied by default — network, filesystem writes, and sensitive paths are blocked unless explicitly allowed. This makes it ideal for containing LLM-driven tool execution.
+>
+> </details>
 >
 > <details><summary>Linux example with bubblewrap</summary>
 >
