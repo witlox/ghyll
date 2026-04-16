@@ -9,6 +9,7 @@ import (
 func defaultRoutingConfig() config.RoutingConfig {
 	return config.RoutingConfig{
 		DefaultModel:          "m25",
+		DeepModel:             "glm5",
 		ContextDepthThreshold: 32000,
 		ToolDepthThreshold:    5,
 		EnableAutoRouting:     true,
@@ -185,5 +186,69 @@ func TestScenario_Routing_SteadyState(t *testing.T) {
 	})
 	if d.Action != "none" {
 		t.Errorf("action = %q, want %q", d.Action, "none")
+	}
+}
+
+// singleTierConfig returns a routing config with no deep tier configured.
+// Escalation is disabled; the router should degrade to steady-state.
+func singleTierConfig() config.RoutingConfig {
+	c := defaultRoutingConfig()
+	c.DeepModel = ""
+	return c
+}
+
+// TestScenario_Routing_SingleTierNoEscalate verifies that when DeepModel is
+// unset, the router never escalates regardless of trigger conditions. This
+// exercises the canEscalate guard on rows 2-5.
+func TestScenario_Routing_SingleTierNoEscalate(t *testing.T) {
+	cases := []struct {
+		name   string
+		inputs RouterInputs
+	}{
+		{"deep override", RouterInputs{ActiveModel: "m25", DeepOverride: true}},
+		{"backfill", RouterInputs{ActiveModel: "m25", BackfillTriggered: true}},
+		{"context depth", RouterInputs{ActiveModel: "m25", ContextDepth: 40000}},
+		{"tool depth", RouterInputs{ActiveModel: "m25", ToolDepth: 10}},
+	}
+	for _, tc := range cases {
+		tc.inputs.Config = singleTierConfig()
+		d := Evaluate(tc.inputs)
+		if d.Action != "none" {
+			t.Errorf("%s: action = %q, want %q (single-tier must not escalate)", tc.name, d.Action, "none")
+		}
+	}
+}
+
+// TestScenario_Routing_SingleTierNoDeEscalate verifies that Row 6
+// de-escalation cannot fire when DeepModel is unset (ADV-5 fix). Before
+// the fix, Row 6 lacked the canEscalate guard; with DeepModel="" the row
+// compared ActiveModel == "" which never matched, so it was dead code —
+// but the guard makes the intent explicit and defends against future
+// regressions.
+func TestScenario_Routing_SingleTierNoDeEscalate(t *testing.T) {
+	d := Evaluate(RouterInputs{
+		ActiveModel:           "m25",
+		ContextCompactedBelow: 10000,
+		Config:                singleTierConfig(),
+	})
+	if d.Action != "none" {
+		t.Errorf("action = %q, want %q (single-tier must not de-escalate)", d.Action, "none")
+	}
+}
+
+// TestScenario_Routing_DeepEqualsDefaultNoEscalate verifies that when
+// deep_model == default_model, escalation is disabled. This is the ADV-4
+// edge case — accepted as intended behaviour but pinned by a test so the
+// semantics cannot drift silently.
+func TestScenario_Routing_DeepEqualsDefaultNoEscalate(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.DeepModel = cfg.DefaultModel
+	d := Evaluate(RouterInputs{
+		ActiveModel:  "m25",
+		ContextDepth: 40000,
+		Config:       cfg,
+	})
+	if d.Action != "none" {
+		t.Errorf("action = %q, want %q (deep==default disables escalation)", d.Action, "none")
 	}
 }

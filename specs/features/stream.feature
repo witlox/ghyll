@@ -4,7 +4,7 @@ Feature: Streaming LLM client
 
   Background:
     Given ghyll is configured with endpoint "https://inference.internal:8001/v1"
-    And the active dialect is "minimax_m25"
+    And the active dialect is "minimax"
 
   Scenario: Successful streaming response
     Given the context window contains a user prompt

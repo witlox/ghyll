@@ -83,9 +83,9 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	}
 
 	buildPrompt := func() {
-		prompt := dialect.M25SystemPrompt("/tmp/test")
+		prompt := dialect.MinimaxSystemPrompt("/tmp/test")
 		if sessionModel == "glm5" {
-			prompt = dialect.GLM5SystemPrompt("/tmp/test")
+			prompt = dialect.GLMSystemPrompt("/tmp/test")
 		}
 		defaultPrompt = prompt
 
@@ -104,9 +104,9 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		}
 		if planMode {
 			if sessionModel == "glm5" {
-				prompt += "\n\n" + dialect.GLM5PlanModePrompt()
+				prompt += "\n\n" + dialect.GLMPlanModePrompt()
 			} else {
-				prompt += "\n\n" + dialect.M25PlanModePrompt()
+				prompt += "\n\n" + dialect.MinimaxPlanModePrompt()
 			}
 		}
 		systemPrompt = prompt
@@ -284,9 +284,9 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt contains the dialect's planning instructions$`, func() error {
-		planContent := dialect.M25PlanModePrompt()
+		planContent := dialect.MinimaxPlanModePrompt()
 		if sessionModel == "glm5" {
-			planContent = dialect.GLM5PlanModePrompt()
+			planContent = dialect.GLMPlanModePrompt()
 		}
 		if !strings.Contains(systemPrompt, planContent) {
 			return fmt.Errorf("plan mode instructions not in system prompt")
@@ -295,14 +295,14 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt contains GLM-(\d+)'s planning instructions$`, func(ver int) error {
-		if !strings.Contains(systemPrompt, dialect.GLM5PlanModePrompt()) {
+		if !strings.Contains(systemPrompt, dialect.GLMPlanModePrompt()) {
 			return fmt.Errorf("GLM-5 plan mode instructions not in prompt")
 		}
 		return nil
 	})
 
 	ctx.Step(`^the GLM-(\d+) system prompt contains GLM-(\d+)'s planning instructions$`, func(v1, v2 int) error {
-		if !strings.Contains(systemPrompt, dialect.GLM5PlanModePrompt()) {
+		if !strings.Contains(systemPrompt, dialect.GLMPlanModePrompt()) {
 			return fmt.Errorf("GLM-5 plan mode not in prompt")
 		}
 		return nil
@@ -416,6 +416,7 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 			ActiveModel:  sessionModel,
 			Config: config.RoutingConfig{
 				DefaultModel:          "m25",
+				DeepModel:             "glm5",
 				ContextDepthThreshold: 32000,
 				ToolDepthThreshold:    5,
 				EnableAutoRouting:     true,

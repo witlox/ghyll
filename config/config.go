@@ -51,6 +51,7 @@ type ModelConfig struct {
 
 type RoutingConfig struct {
 	DefaultModel          string `toml:"default_model"`
+	DeepModel             string `toml:"deep_model"`
 	ContextDepthThreshold int    `toml:"context_depth_threshold"`
 	ToolDepthThreshold    int    `toml:"tool_depth_threshold"`
 	EnableAutoRouting     bool   `toml:"enable_auto_routing"`
@@ -196,11 +197,32 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Every model must have an endpoint
+	// Deep model must have an endpoint (if configured)
+	if cfg.Routing.DeepModel != "" {
+		if _, ok := cfg.Models[cfg.Routing.DeepModel]; !ok {
+			return &ConfigError{
+				Message: fmt.Sprintf("deep model '%s' has no endpoint configured", cfg.Routing.DeepModel),
+				Err:     ErrConfigValidation,
+			}
+		}
+	}
+
+	// Every model must have an endpoint and valid dialect
+	knownDialects := map[string]bool{
+		"minimax": true, "minimax_m25": true, "minimax_m27": true,
+		"glm": true, "glm5": true, "glm51": true,
+		"": true, // empty defaults to minimax
+	}
 	for name, m := range cfg.Models {
 		if m.Endpoint == "" {
 			return &ConfigError{
 				Message: fmt.Sprintf("model '%s' has no endpoint", name),
+				Err:     ErrConfigValidation,
+			}
+		}
+		if !knownDialects[m.Dialect] {
+			return &ConfigError{
+				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known: minimax, glm)", name, m.Dialect),
 				Err:     ErrConfigValidation,
 			}
 		}

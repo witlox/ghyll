@@ -25,11 +25,11 @@ Rows are evaluated top to bottom. The first matching row wins.
 | # | Condition | Decision | Target | Needs Compaction | Note |
 |---|-----------|----------|--------|-----------------|------|
 | 1 | model_locked | none | (locked) | no | The --model flag is absolute. No routing changes occur. |
-| 2 | deep_override AND active == "m25" | escalate | glm5 | no | User requested /deep. Temporary override. |
-| 3 | backfill_triggered AND active == "m25" | escalate | glm5 | no | Drift detected, additional context loaded. |
-| 4 | context_depth > threshold AND active == "m25" | escalate | glm5 | **yes** | Context too large for fast tier. Compact first. |
-| 5 | tool_depth > tool_threshold AND active == "m25" | escalate | glm5 | no | Complex multi-tool chain detected. |
-| 6 | context_compacted_below < threshold AND active == "glm5" AND NOT deep_override | de-escalate | m25 | no | Context reduced enough to return to fast tier. |
+| 2 | deep_override AND active == default_model | escalate | deep_model | no | User requested /deep. Temporary override. |
+| 3 | backfill_triggered AND active == default_model | escalate | deep_model | no | Drift detected, additional context loaded. |
+| 4 | context_depth > threshold AND active == default_model | escalate | deep_model | **yes** | Context too large for fast tier. Compact first. |
+| 5 | tool_depth > tool_threshold AND active == default_model | escalate | deep_model | no | Complex multi-tool chain detected. |
+| 6 | context_compacted_below < threshold AND active == deep_model AND NOT deep_override | de-escalate | default_model | no | Context reduced enough to return to fast tier. |
 | 7 | (none of the above) | none | (current) | no | Steady state. Continue on current model. |
 
 The router returns a `RoutingDecision{Action, TargetModel, NeedCompaction}`. When `NeedCompaction` is true, `cmd/ghyll` runs compaction on the current model before executing the handoff. The router never calls compaction itself.

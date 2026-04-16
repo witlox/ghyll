@@ -14,16 +14,16 @@ Each model requires an endpoint, dialect, and max context size:
 ```toml
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
-dialect = "glm5"
+dialect = "glm"
 max_context = 200000
 ```
 
-Available dialects: `minimax_m25`, `glm5`.
+Available dialect families: `minimax` (MiniMax M2.5, M2.7, etc.), `glm` (GLM-5, GLM-5.1, etc.). See [ADR-007](../decisions/007-tier-based-routing.md).
 
 ## Routing
 
@@ -31,7 +31,8 @@ Controls automatic model selection:
 
 ```toml
 [routing]
-default_model = "m25"              # Start sessions on this model
+default_model = "m25"              # Fast tier model
+deep_model = "glm5"                # Deep tier model (escalation target)
 context_depth_threshold = 32000     # Escalate to deep tier above this
 tool_depth_threshold = 5            # Escalate after N sequential tool calls
 enable_auto_routing = true          # Set false to disable routing

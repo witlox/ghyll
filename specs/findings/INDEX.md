@@ -1,17 +1,20 @@
 # Adversarial Findings
 Last sweep: 2026-04-14
-Status: COMPLETE (spec + architecture + implementation, all resolved)
+Status: COMPLETE (spec + architecture + implementation + tier-routing, all resolved)
 
 ## Summary
 | Severity | Count | Resolved | Open |
 |----------|-------|----------|------|
 | Critical | 0     | 0        | 0    |
-| High     | 7     | 7        | 0    |
-| Medium   | 12    | 12       | 0    |
-| Low      | 10    | 10       | 0    |
+| High     | 8     | 8        | 0    |
+| Medium   | 14    | 13       | 1    |
+| Low      | 12    | 11       | 1    |
 
 ## Open findings
-(none)
+| # | Title | Severity | Category | Location | Status |
+|---|-------|----------|----------|----------|--------|
+| ADV-3 | ModelName in API request sends dialect family | Medium | Correctness | cmd/ghyll/session.go | Accepted — pre-existing, tracked |
+| ADV-4 | deep_model == default_model silently disables routing | Low | Correctness | config/config.go | Accepted — edge case |
 
 ## Resolved findings — implementation review
 | # | Title | Severity | Resolution | Resolved in |
@@ -26,6 +29,13 @@ Status: COMPLETE (spec + architecture + implementation, all resolved)
 | 29 | HOME not parameterized in session | Low | Added GlobalDir to SessionConfig, fallback to HOME | cmd/ghyll/session.go |
 | 30 | ResumeRef clearing comment misleading | Low | Clarified comment | cmd/ghyll/session.go |
 | 31 | Glob goroutine leak on timeout | Low | Context propagated to globImpl, WalkDir checks cancellation | tool/glob.go |
+
+## Resolved findings — tier-routing review (ADR-007)
+| # | Title | Severity | Resolution | Resolved in |
+|---|-------|----------|------------|-------------|
+| ADV-1 | Old dialect="glm5" silently gets minimax | High | normalizeDialect() maps legacy strings | cmd/ghyll/session.go |
+| ADV-2 | No dialect string validation | Medium | validate() rejects unknown dialects | config/config.go |
+| ADV-5 | Row 6 de-escalation dead code when DeepModel="" | Low | Added canEscalate guard to Row 6 | dialect/router.go |
 
 ## Resolved findings — architecture review (9)
 | # | Title | Severity | Resolution | Resolved in |

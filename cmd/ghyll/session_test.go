@@ -45,17 +45,18 @@ func testConfig(endpoint string) *config.Config {
 		Models: map[string]config.ModelConfig{
 			"m25": {
 				Endpoint:   endpoint + "/v1",
-				Dialect:    "minimax_m25",
+				Dialect:    "minimax",
 				MaxContext: 100000,
 			},
 			"glm5": {
 				Endpoint:   endpoint + "/v1",
-				Dialect:    "glm5",
+				Dialect:    "glm",
 				MaxContext: 200000,
 			},
 		},
 		Routing: config.RoutingConfig{
 			DefaultModel:          "m25",
+			DeepModel:             "glm5",
 			ContextDepthThreshold: 32000,
 			ToolDepthThreshold:    5,
 			EnableAutoRouting:     true,
@@ -274,11 +275,12 @@ func TestScenario_Session_TierFallback(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.ModelConfig{
-			"m25":  {Endpoint: m25Server.URL + "/v1", Dialect: "minimax_m25", MaxContext: 100000},
-			"glm5": {Endpoint: glm5Server.URL + "/v1", Dialect: "glm5", MaxContext: 200000},
+			"m25":  {Endpoint: m25Server.URL + "/v1", Dialect: "minimax", MaxContext: 100000},
+			"glm5": {Endpoint: glm5Server.URL + "/v1", Dialect: "glm", MaxContext: 200000},
 		},
 		Routing: config.RoutingConfig{
 			DefaultModel:          "m25",
+			DeepModel:             "glm5",
 			ContextDepthThreshold: 32000,
 			ToolDepthThreshold:    5,
 			EnableAutoRouting:     true,
@@ -486,5 +488,55 @@ func TestScenario_Session_BadToolArgs(t *testing.T) {
 	}
 	if reply != "handled error" {
 		t.Logf("reply = %q (model saw the parse error in tool result)", reply)
+	}
+}
+
+// TestScenario_Session_NormalizeDialect verifies legacy dialect strings map
+// to family names (ADV-1 fix). A config still carrying dialect = "glm5" or
+// "minimax_m25" must not silently fall through to the default minimax branch
+// in resolveDialect.
+func TestScenario_Session_NormalizeDialect(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"glm", "glm"},
+		{"glm5", "glm"},
+		{"glm51", "glm"},
+		{"minimax", "minimax"},
+		{"minimax_m25", "minimax"},
+		{"minimax_m27", "minimax"},
+		{"", ""},
+		{"unknown", "unknown"},
+	}
+	for _, tc := range cases {
+		if got := normalizeDialect(tc.input); got != tc.want {
+			t.Errorf("normalizeDialect(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestScenario_Session_ResolveDialectLegacyGLM5 verifies end-to-end that a
+// Session whose active model carries the legacy dialect string "glm5"
+// resolves to the GLM dialect functions, not the default minimax branch.
+// This is the ADV-1 failure mode: before the fix, the switch in
+// resolveDialect had `case "glm"` only, so "glm5" silently fell through.
+func TestScenario_Session_ResolveDialectLegacyGLM5(t *testing.T) {
+	s := &Session{
+		cfg: &config.Config{
+			Models: map[string]config.ModelConfig{
+				"glm5": {Endpoint: "http://x/v1", Dialect: "glm5", MaxContext: 200000},
+			},
+		},
+		activeModel: "glm5",
+	}
+	s.resolveDialect()
+
+	// GLM system prompt should be in effect. Compare against the canonical
+	// GLM prompt — if the default (minimax) branch fired, this would differ.
+	got := s.systemPrompt("/tmp/test")
+	want := dialect.GLMSystemPrompt("/tmp/test")
+	if got != want {
+		t.Errorf("legacy dialect \"glm5\" did not resolve to GLM system prompt")
 	}
 }

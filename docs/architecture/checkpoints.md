@@ -18,7 +18,7 @@ type Checkpoint struct {
     Branch       string    `json:"branch"`        // git branch at time of checkpoint
     SessionID    string    `json:"session"`       // unique per ghyll invocation
     Turn         int       `json:"turn"`
-    ActiveModel  string    `json:"model"`         // "m25" or "glm5"
+    ActiveModel  string    `json:"model"`         // model name from config (e.g., "m25", "glm5")
     Summary      string    `json:"summary"`       // structured natural language
     Embedding    []float32 `json:"emb"`           // vector from ONNX model
     FilesTouched []string  `json:"files"`

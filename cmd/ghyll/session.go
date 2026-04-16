@@ -190,23 +190,37 @@ func NewSession(sc SessionConfig) (*Session, error) {
 }
 
 func (s *Session) resolveDialect() {
-	switch s.cfg.Models[s.activeModel].Dialect {
-	case "glm5":
-		s.systemPrompt = dialect.GLM5SystemPrompt
-		s.planModePrompt = dialect.GLM5PlanModePrompt
-		s.buildMessages = dialect.GLM5BuildMessages
-		s.parseToolCalls = dialect.GLM5ParseToolCalls
-		s.compactionPrompt = dialect.GLM5CompactionPrompt
-		s.tokenCount = dialect.GLM5TokenCount
-		s.handoffSummary = dialect.GLM5HandoffSummary
-	default: // minimax_m25
-		s.systemPrompt = dialect.M25SystemPrompt
-		s.planModePrompt = dialect.M25PlanModePrompt
-		s.buildMessages = dialect.M25BuildMessages
-		s.parseToolCalls = dialect.M25ParseToolCalls
-		s.compactionPrompt = dialect.M25CompactionPrompt
-		s.tokenCount = dialect.M25TokenCount
-		s.handoffSummary = dialect.M25HandoffSummary
+	d := s.cfg.Models[s.activeModel].Dialect
+	switch normalizeDialect(d) {
+	case "glm":
+		s.systemPrompt = dialect.GLMSystemPrompt
+		s.planModePrompt = dialect.GLMPlanModePrompt
+		s.buildMessages = dialect.GLMBuildMessages
+		s.parseToolCalls = dialect.GLMParseToolCalls
+		s.compactionPrompt = dialect.GLMCompactionPrompt
+		s.tokenCount = dialect.GLMTokenCount
+		s.handoffSummary = dialect.GLMHandoffSummary
+	default: // minimax
+		s.systemPrompt = dialect.MinimaxSystemPrompt
+		s.planModePrompt = dialect.MinimaxPlanModePrompt
+		s.buildMessages = dialect.MinimaxBuildMessages
+		s.parseToolCalls = dialect.MinimaxParseToolCalls
+		s.compactionPrompt = dialect.MinimaxCompactionPrompt
+		s.tokenCount = dialect.MinimaxTokenCount
+		s.handoffSummary = dialect.MinimaxHandoffSummary
+	}
+}
+
+// normalizeDialect maps legacy dialect strings to family names.
+// "glm5" -> "glm", "minimax_m25" -> "minimax", etc.
+func normalizeDialect(d string) string {
+	switch d {
+	case "glm", "glm5", "glm51":
+		return "glm"
+	case "minimax", "minimax_m25", "minimax_m27":
+		return "minimax"
+	default:
+		return d
 	}
 }
 

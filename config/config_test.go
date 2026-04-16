@@ -15,12 +15,12 @@ func TestScenario_Config_LoadValid(t *testing.T) {
 	content := `
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
-dialect = "glm5"
+dialect = "glm"
 max_context = 200000
 
 [routing]
@@ -87,7 +87,7 @@ func TestScenario_Config_DefaultValues(t *testing.T) {
 	content := `
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -186,7 +186,7 @@ func TestScenario_Config_VaultOptional(t *testing.T) {
 	content := `
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -211,7 +211,7 @@ func TestScenario_Config_VaultWithToken(t *testing.T) {
 	content := `
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [vault]
@@ -234,5 +234,99 @@ token = "team-secret"
 	}
 	if cfg.Vault.Token != "team-secret" {
 		t.Errorf("vault token = %q", cfg.Vault.Token)
+	}
+}
+
+// TestScenario_Config_UnknownDialect verifies that an unrecognized dialect
+// string is rejected with a validation error (ADV-2 fix). Before the fix, a
+// typo like "minimx" was silently accepted and fell through to the default
+// minimax branch in resolveDialect.
+func TestScenario_Config_UnknownDialect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `
+[models.m25]
+endpoint = "https://inference.internal:8001/v1"
+dialect = "minimx"
+max_context = 1000000
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for unknown dialect")
+	}
+	if !IsValidation(err) {
+		t.Errorf("expected validation error, got: %v", err)
+	}
+}
+
+// TestScenario_Config_LegacyDialectsAccepted verifies that pre-ADR-007 config
+// strings ("glm5", "minimax_m25") still load successfully so users aren't
+// forced to migrate config files to upgrade. The session layer normalises
+// these to family names via normalizeDialect.
+func TestScenario_Config_LegacyDialectsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `
+[models.m25]
+endpoint = "https://inference.internal:8001/v1"
+dialect = "minimax_m25"
+max_context = 1000000
+
+[models.glm5]
+endpoint = "https://inference.internal:8002/v1"
+dialect = "glm5"
+max_context = 200000
+
+[routing]
+default_model = "m25"
+deep_model = "glm5"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy dialect strings should load, got: %v", err)
+	}
+	if cfg.Models["m25"].Dialect != "minimax_m25" {
+		t.Errorf("m25 dialect = %q, want %q (strings are not rewritten at load)", cfg.Models["m25"].Dialect, "minimax_m25")
+	}
+}
+
+// TestScenario_Config_DeepModelNoEndpoint verifies that a deep_model value
+// with no matching [models.<name>] entry is rejected. Without this check,
+// escalation to a non-existent model would fail at runtime with a less
+// obvious error.
+func TestScenario_Config_DeepModelNoEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `
+[models.m25]
+endpoint = "https://inference.internal:8001/v1"
+dialect = "minimax"
+max_context = 1000000
+
+[routing]
+default_model = "m25"
+deep_model = "glm5"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for deep_model with no endpoint")
+	}
+	if !IsValidation(err) {
+		t.Errorf("expected validation error, got: %v", err)
 	}
 }

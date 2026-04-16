@@ -9,20 +9,20 @@ import (
 	"github.com/witlox/ghyll/types"
 )
 
-// Test M2.5 dialect functions
+// Test Minimax dialect functions
 
-func TestM25_SystemPrompt(t *testing.T) {
-	prompt := M25SystemPrompt("/home/dev/project")
+func TestMinimax_SystemPrompt(t *testing.T) {
+	prompt := MinimaxSystemPrompt("/home/dev/project")
 	if prompt == "" {
 		t.Fatal("expected non-empty system prompt")
 	}
 }
 
-func TestM25_BuildMessages(t *testing.T) {
+func TestMinimax_BuildMessages(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "user", Content: "hello"},
 	}
-	built := M25BuildMessages(msgs, "You are a coding assistant.")
+	built := MinimaxBuildMessages(msgs, "You are a coding assistant.")
 	if len(built) != 2 { // system + user
 		t.Fatalf("expected 2 messages, got %d", len(built))
 	}
@@ -31,9 +31,9 @@ func TestM25_BuildMessages(t *testing.T) {
 	}
 }
 
-func TestM25_ParseToolCalls(t *testing.T) {
+func TestMinimax_ParseToolCalls(t *testing.T) {
 	raw := json.RawMessage(`[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]`)
-	calls, err := M25ParseToolCalls(raw)
+	calls, err := MinimaxParseToolCalls(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,25 +45,25 @@ func TestM25_ParseToolCalls(t *testing.T) {
 	}
 }
 
-func TestM25_CompactionPrompt(t *testing.T) {
-	prompt := M25CompactionPrompt()
+func TestMinimax_CompactionPrompt(t *testing.T) {
+	prompt := MinimaxCompactionPrompt()
 	if prompt == "" {
 		t.Fatal("expected non-empty compaction prompt")
 	}
 }
 
-func TestM25_TokenCount(t *testing.T) {
+func TestMinimax_TokenCount(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "user", Content: "hello world"},
 		{Role: "assistant", Content: "hi there"},
 	}
-	count := M25TokenCount(msgs)
+	count := MinimaxTokenCount(msgs)
 	if count <= 0 {
 		t.Errorf("expected positive token count, got %d", count)
 	}
 }
 
-func TestM25_HandoffSummary(t *testing.T) {
+func TestMinimax_HandoffSummary(t *testing.T) {
 	cp := memory.Checkpoint{
 		Summary:     "Working on auth module refactor",
 		ActiveModel: "m25",
@@ -73,7 +73,7 @@ func TestM25_HandoffSummary(t *testing.T) {
 		{Role: "user", Content: "fix the race condition"},
 		{Role: "assistant", Content: "I'll look at session.go"},
 	}
-	result := M25HandoffSummary(cp, recent)
+	result := MinimaxHandoffSummary(cp, recent)
 	if len(result) == 0 {
 		t.Fatal("expected non-empty handoff summary")
 	}
@@ -83,8 +83,8 @@ func TestM25_HandoffSummary(t *testing.T) {
 	}
 }
 
-func TestM25_PlanModePrompt(t *testing.T) {
-	prompt := M25PlanModePrompt()
+func TestMinimax_PlanModePrompt(t *testing.T) {
+	prompt := MinimaxPlanModePrompt()
 	if prompt == "" {
 		t.Fatal("expected non-empty plan mode prompt")
 	}
@@ -93,28 +93,28 @@ func TestM25_PlanModePrompt(t *testing.T) {
 	}
 }
 
-// Test GLM-5 dialect functions
+// Test GLM dialect functions
 
-func TestGLM5_SystemPrompt(t *testing.T) {
-	prompt := GLM5SystemPrompt("/home/dev/project")
+func TestGLM_SystemPrompt(t *testing.T) {
+	prompt := GLMSystemPrompt("/home/dev/project")
 	if prompt == "" {
 		t.Fatal("expected non-empty system prompt")
 	}
 }
 
-func TestGLM5_BuildMessages(t *testing.T) {
+func TestGLM_BuildMessages(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "user", Content: "explain this code"},
 	}
-	built := GLM5BuildMessages(msgs, "You are a coding assistant.")
+	built := GLMBuildMessages(msgs, "You are a coding assistant.")
 	if len(built) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(built))
 	}
 }
 
-func TestGLM5_ParseToolCalls(t *testing.T) {
+func TestGLM_ParseToolCalls(t *testing.T) {
 	raw := json.RawMessage(`[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}]`)
-	calls, err := GLM5ParseToolCalls(raw)
+	calls, err := GLMParseToolCalls(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,31 +123,31 @@ func TestGLM5_ParseToolCalls(t *testing.T) {
 	}
 }
 
-func TestGLM5_TokenCount(t *testing.T) {
+func TestGLM_TokenCount(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "user", Content: "hello world this is a longer message"},
 	}
-	count := GLM5TokenCount(msgs)
+	count := GLMTokenCount(msgs)
 	if count <= 0 {
 		t.Errorf("expected positive count, got %d", count)
 	}
 }
 
-func TestGLM5_PlanModePrompt(t *testing.T) {
-	prompt := GLM5PlanModePrompt()
+func TestGLM_PlanModePrompt(t *testing.T) {
+	prompt := GLMPlanModePrompt()
 	if prompt == "" {
 		t.Fatal("expected non-empty plan mode prompt")
 	}
 	if !strings.Contains(prompt, "PLAN MODE") {
 		t.Error("plan mode prompt should mention PLAN MODE")
 	}
-	// GLM-5 plan mode should be more detailed than M2.5
-	if len(prompt) <= len(M25PlanModePrompt()) {
-		t.Error("GLM-5 plan mode should be at least as detailed as M2.5")
+	// GLM plan mode should be more detailed than Minimax
+	if len(prompt) <= len(MinimaxPlanModePrompt()) {
+		t.Error("GLM plan mode should be at least as detailed as Minimax")
 	}
 }
 
-func TestGLM5_HandoffSummary(t *testing.T) {
+func TestGLM_HandoffSummary(t *testing.T) {
 	cp := memory.Checkpoint{
 		Summary:     "Debugging auth race condition",
 		ActiveModel: "glm5",
@@ -156,7 +156,7 @@ func TestGLM5_HandoffSummary(t *testing.T) {
 	recent := []types.Message{
 		{Role: "user", Content: "what about the lock?"},
 	}
-	result := GLM5HandoffSummary(cp, recent)
+	result := GLMHandoffSummary(cp, recent)
 	if len(result) == 0 {
 		t.Fatal("expected non-empty handoff summary")
 	}

@@ -1,6 +1,6 @@
 # Fidelity Index
 
-Last checkpoint: 2026-04-12 (updated)
+Last checkpoint: 2026-04-16 (updated for ADR-007 tier-based routing)
 Status: CHECKPOINT
 
 ## Summary
@@ -18,6 +18,21 @@ Status: CHECKPOINT
 | compaction/ | 9 | 8 | 0 | 0 | 1 | HIGH |
 | vault/ | 9 | 8 | 1 | 0 | 0 | HIGH |
 | **Total** | **84** | **75** | **3** | **0** | **5** | |
+
+## ADR-007 (tier-based routing) audit — 2026-04-16
+
+Routing and config scenarios were adapted, not augmented, by the refactor
+(same 9 + 9 scenarios, new dialect family strings). New code paths introduced
+by the adversary-fix commits have dedicated unit tests:
+
+| Code path | Purpose | Tests |
+|-----------|---------|-------|
+| `cmd/ghyll/session.go:normalizeDialect` | Legacy dialect string mapping (ADV-1) | `TestScenario_Session_NormalizeDialect`, `TestScenario_Session_ResolveDialectLegacyGLM5` |
+| `config/config.go:validate` dialect allow-list | Reject unknown dialects (ADV-2) | `TestScenario_Config_UnknownDialect`, `TestScenario_Config_LegacyDialectsAccepted` |
+| `config/config.go:validate` deep_model endpoint | Reject dangling deep_model reference | `TestScenario_Config_DeepModelNoEndpoint` |
+| `dialect/router.go` canEscalate on rows 2-6 | Single-tier and deep==default guards (ADV-5) | `TestScenario_Routing_SingleTierNoEscalate`, `TestScenario_Routing_SingleTierNoDeEscalate`, `TestScenario_Routing_DeepEqualsDefaultNoEscalate` |
+
+Confidence for routing/ and config/ remains HIGH after the refactor.
 
 ## Remaining gaps (5 NONE, 3 MODERATE)
 
@@ -44,10 +59,12 @@ Status: CHECKPOINT
 | 001-6 | Merkle DAG + ed25519 | ENFORCED (7 crypto tests) |
 | 001-7 | Always-yolo | ENFORCED |
 | 001-8 | ONNX lazy download | DOCUMENTED |
+| 007   | Tier-based routing + dialect families | ENFORCED (router reads DefaultModel/DeepModel; dialect family allow-list; legacy-string normalization) |
 
 ## Test counts
 
-141 unit/integration tests across 10 packages.
+141 unit/integration tests across 10 packages, plus 8 unit tests added in the
+2026-04-16 ADR-007 audit (2 session, 3 config, 3 router).
 84 godog acceptance scenarios wired (9 config with real assertions).
 
 Previous checkpoint: 53 THOROUGH, 8 MODERATE, 23 NONE.

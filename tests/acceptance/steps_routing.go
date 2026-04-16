@@ -18,6 +18,7 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	ctx.Step(`^ghyll is configured with endpoints for "([^"]*)" and "([^"]*)"$`, func(m1, m2 string) error {
 		routingCfg = config.RoutingConfig{
 			DefaultModel:          m1,
+			DeepModel:             m2,
 			EnableAutoRouting:     true,
 			ContextDepthThreshold: 32000,
 			ToolDepthThreshold:    5,
@@ -209,8 +210,8 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^context was auto-escalated due to depth$`, func() error {
-		// Simulate: we're on glm5 because context depth triggered escalation
-		state.ActiveModel = "glm5"
+		// Simulate: we're on deep tier because context depth triggered escalation
+		state.ActiveModel = routingCfg.DeepModel
 		state.DeepOverride = false
 		return nil
 	})
@@ -280,9 +281,9 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^the backfill context is formatted for the glm5 dialect$`, func() error {
-		// Behavioral assertion - verified by the model being glm5
-		if state.ActiveModel != "glm5" {
-			return fmt.Errorf("expected glm5 to be active for backfill formatting")
+		// Behavioral assertion - verified by the model being the deep tier
+		if state.ActiveModel != routingCfg.DeepModel {
+			return fmt.Errorf("expected deep model %s to be active for backfill formatting, got %s", routingCfg.DeepModel, state.ActiveModel)
 		}
 		return nil
 	})

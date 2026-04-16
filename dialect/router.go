@@ -33,30 +33,33 @@ func Evaluate(inputs RouterInputs) RoutingDecision {
 		return RoutingDecision{Action: "none", TargetModel: inputs.ActiveModel}
 	}
 
-	// Row 2: /deep override, currently on m25
-	if inputs.DeepOverride && inputs.ActiveModel == cfg.DefaultModel {
-		return RoutingDecision{Action: "escalate", TargetModel: "glm5"}
+	// No escalation possible without a deep tier model
+	canEscalate := cfg.DeepModel != "" && cfg.DeepModel != cfg.DefaultModel
+
+	// Row 2: /deep override, currently on fast tier
+	if canEscalate && inputs.DeepOverride && inputs.ActiveModel == cfg.DefaultModel {
+		return RoutingDecision{Action: "escalate", TargetModel: cfg.DeepModel}
 	}
 
-	// Row 3: backfill triggered, currently on m25
-	if inputs.BackfillTriggered && inputs.ActiveModel == cfg.DefaultModel {
-		return RoutingDecision{Action: "escalate", TargetModel: "glm5"}
+	// Row 3: backfill triggered, currently on fast tier
+	if canEscalate && inputs.BackfillTriggered && inputs.ActiveModel == cfg.DefaultModel {
+		return RoutingDecision{Action: "escalate", TargetModel: cfg.DeepModel}
 	}
 
-	// Row 4: context depth exceeds threshold, currently on m25
-	if inputs.ContextDepth > cfg.ContextDepthThreshold && inputs.ActiveModel == cfg.DefaultModel {
-		return RoutingDecision{Action: "escalate", TargetModel: "glm5", NeedCompaction: true}
+	// Row 4: context depth exceeds threshold, currently on fast tier
+	if canEscalate && inputs.ContextDepth > cfg.ContextDepthThreshold && inputs.ActiveModel == cfg.DefaultModel {
+		return RoutingDecision{Action: "escalate", TargetModel: cfg.DeepModel, NeedCompaction: true}
 	}
 
-	// Row 5: tool depth exceeds threshold, currently on m25
-	if inputs.ToolDepth > cfg.ToolDepthThreshold && inputs.ActiveModel == cfg.DefaultModel {
-		return RoutingDecision{Action: "escalate", TargetModel: "glm5"}
+	// Row 5: tool depth exceeds threshold, currently on fast tier
+	if canEscalate && inputs.ToolDepth > cfg.ToolDepthThreshold && inputs.ActiveModel == cfg.DefaultModel {
+		return RoutingDecision{Action: "escalate", TargetModel: cfg.DeepModel}
 	}
 
-	// Row 6: de-escalation — context compacted below threshold, on glm5, no /deep
-	if inputs.ContextCompactedBelow > 0 &&
+	// Row 6: de-escalation — context compacted below threshold, on deep tier, no /deep
+	if canEscalate && inputs.ContextCompactedBelow > 0 &&
 		inputs.ContextCompactedBelow < cfg.ContextDepthThreshold &&
-		inputs.ActiveModel == "glm5" &&
+		inputs.ActiveModel == cfg.DeepModel &&
 		!inputs.DeepOverride {
 		return RoutingDecision{Action: "de_escalate", TargetModel: cfg.DefaultModel}
 	}

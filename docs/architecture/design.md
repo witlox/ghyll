@@ -65,18 +65,19 @@ This section documents ghyll's internal architecture. Each page covers a specifi
 ```toml
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 description = "MiniMax M2.5 -- fast tier"
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
-dialect = "glm5"
+dialect = "glm"
 max_context = 200000
 description = "GLM-5 -- deep tier"
 
 [routing]
 default_model = "m25"
+deep_model = "glm5"
 context_depth_threshold = 32000
 tool_depth_threshold = 5
 enable_auto_routing = true

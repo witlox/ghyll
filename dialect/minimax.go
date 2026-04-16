@@ -8,13 +8,13 @@ import (
 	"github.com/witlox/ghyll/types"
 )
 
-// M25SystemPrompt returns the system prompt for MiniMax M2.5.
-func M25SystemPrompt(workdir string) string {
+// MinimaxSystemPrompt returns the system prompt for the MiniMax family (M2.5, M2.7, etc.).
+func MinimaxSystemPrompt(workdir string) string {
 	return fmt.Sprintf(`You are a coding assistant working in %s. You have access to tools for reading files, writing files, executing bash commands, and searching code. Use tools to accomplish tasks. Be concise and direct.`, workdir)
 }
 
-// M25BuildMessages formats messages for the MiniMax M2.5 OpenAI-compatible API.
-func M25BuildMessages(msgs []types.Message, systemPrompt string) []map[string]any {
+// MinimaxBuildMessages formats messages for MiniMax family OpenAI-compatible API.
+func MinimaxBuildMessages(msgs []types.Message, systemPrompt string) []map[string]any {
 	result := make([]map[string]any, 0, len(msgs)+1)
 
 	// System message first
@@ -43,15 +43,15 @@ func M25BuildMessages(msgs []types.Message, systemPrompt string) []map[string]an
 	return result
 }
 
-// M25ParseToolCalls parses tool calls from MiniMax M2.5 response format.
-// M2.5 uses the standard OpenAI tool_calls format.
-func M25ParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error) {
+// MinimaxParseToolCalls parses tool calls from MiniMax family response format.
+// MiniMax uses the standard OpenAI tool_calls format.
+func MinimaxParseToolCalls(raw json.RawMessage) ([]types.ToolCall, error) {
 	return parseOpenAIToolCalls(raw)
 }
 
-// M25PlanModePrompt returns additional system instructions for plan mode on M2.5.
+// MinimaxPlanModePrompt returns additional system instructions for plan mode on MiniMax.
 // Invariant 36: advisory only — all tools remain available.
-func M25PlanModePrompt() string {
+func MinimaxPlanModePrompt() string {
 	return `You are in PLAN MODE. Think before acting:
 1. Analyze the problem and constraints
 2. Consider approaches and trade-offs
@@ -60,8 +60,8 @@ func M25PlanModePrompt() string {
 All tools remain available. Plan first, then act.`
 }
 
-// M25CompactionPrompt returns the compaction instruction for M2.5.
-func M25CompactionPrompt() string {
+// MinimaxCompactionPrompt returns the compaction instruction for MiniMax.
+func MinimaxCompactionPrompt() string {
 	return `Summarize the following conversation turns into a concise summary. Preserve:
 - The original task/goal
 - Key decisions made
@@ -72,9 +72,9 @@ func M25CompactionPrompt() string {
 Format as a structured summary that another model instance can use to continue the work.`
 }
 
-// M25TokenCount estimates token count for M2.5 messages.
+// MinimaxTokenCount estimates token count for MiniMax family messages.
 // Uses a simple approximation: ~4 chars per token for English/code.
-func M25TokenCount(msgs []types.Message) int {
+func MinimaxTokenCount(msgs []types.Message) int {
 	total := 0
 	for _, msg := range msgs {
 		// Content tokens
@@ -89,8 +89,8 @@ func M25TokenCount(msgs []types.Message) int {
 	return total
 }
 
-// M25HandoffSummary formats a checkpoint for M2.5 to continue from.
-func M25HandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
+// MinimaxHandoffSummary formats a checkpoint for MiniMax to continue from.
+func MinimaxHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s",
 		cp.Turn, cp.ActiveModel, cp.Summary)
 

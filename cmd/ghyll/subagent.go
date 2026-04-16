@@ -48,15 +48,15 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		buildMsgFn     func([]types.Message, string) []map[string]any
 		tokenCountFn   func([]types.Message) int
 	)
-	switch modelCfg.Dialect {
-	case "glm5":
-		systemPromptFn = dialect.GLM5SystemPrompt
-		buildMsgFn = dialect.GLM5BuildMessages
-		tokenCountFn = dialect.GLM5TokenCount
+	switch normalizeDialect(modelCfg.Dialect) {
+	case "glm":
+		systemPromptFn = dialect.GLMSystemPrompt
+		buildMsgFn = dialect.GLMBuildMessages
+		tokenCountFn = dialect.GLMTokenCount
 	default:
-		systemPromptFn = dialect.M25SystemPrompt
-		buildMsgFn = dialect.M25BuildMessages
-		tokenCountFn = dialect.M25TokenCount
+		systemPromptFn = dialect.MinimaxSystemPrompt
+		buildMsgFn = dialect.MinimaxBuildMessages
+		tokenCountFn = dialect.MinimaxTokenCount
 	}
 	// parseToolCalls is handled by the stream client internally via dialect parsing
 

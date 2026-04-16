@@ -51,12 +51,12 @@ func registerConfigSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return writeConfig(`
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
-dialect = "glm5"
+dialect = "glm"
 max_context = 200000
 
 [routing]
@@ -69,7 +69,7 @@ enable_auto_routing = true
 		return writeConfig(`
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 `)
 	})
@@ -102,12 +102,12 @@ default_model = "%s"
 		return writeConfig(fmt.Sprintf(`
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
-dialect = "glm5"
+dialect = "glm"
 max_context = 200000
 
 [routing]
@@ -119,7 +119,7 @@ default_model = "%s"
 		return writeConfig(`
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 `)
 	})
@@ -128,7 +128,7 @@ max_context = 1000000
 		return writeConfig(fmt.Sprintf(`
 [models.m25]
 endpoint = "https://inference.internal:8001/v1"
-dialect = "minimax_m25"
+dialect = "minimax"
 max_context = 1000000
 
 [vault]

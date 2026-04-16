@@ -47,3 +47,4 @@
 - [ADR-004: Tool Call Depth Limit](decisions/004-tool-depth-limit.md)
 - [ADR-005: Compaction as Separate API Call](decisions/005-compaction-separate-api-call.md)
 - [ADR-006: One Session Per Repository](decisions/006-one-session-per-repo.md)
+- [ADR-007: Tier-Based Routing](decisions/007-tier-based-routing.md)

@@ -33,7 +33,7 @@ The context manager can't import dialect/ or stream/ (would create import cycles
 
 ```go
 ManagerDeps{
-    TokenCount:       dialect.M25TokenCount,
+    TokenCount:       dialect.MinimaxTokenCount,
     CompactionCall:   session.compactionCall,  // wires stream.Send
     CreateCheckpoint: session.createCheckpoint, // wires memory.Store
 }
