@@ -49,7 +49,7 @@ Organizations with self-hosted GPU infrastructure (e.g., Cray EX with GH200 node
 
 **Decision:** No permission system in ghyll. All tool calls execute immediately.
 
-**Rationale:** Tarn (companion project) provides kernel-level sandboxing via macOS Endpoint Security. Building a second permission layer inside ghyll would be redundant, add complexity, and create a false sense of security. Defense in depth is provided by two separate projects, not two layers in one project.
+**Rationale:** SRT (Anthropic's Sandbox Runtime) provides OS-level sandboxing via Seatbelt (macOS) and bubblewrap (Linux). Building a second permission layer inside ghyll would be redundant, add complexity, and create a false sense of security. Defense in depth is provided by two separate projects, not two layers in one project.
 
 ### 8. ONNX download over bundled model
 
@@ -62,5 +62,5 @@ Organizations with self-hosted GPU infrastructure (e.g., Cray EX with GH200 node
 - Adding a new model requires Go code changes and recompilation
 - No hot-swapping of model support
 - Git is a hard dependency for memory features
-- Tarn (or equivalent sandbox) is assumed but not enforced
+- SRT (or equivalent sandbox) is assumed but not enforced
 - Team memory trust depends on developer key management

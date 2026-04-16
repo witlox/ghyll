@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Ghyll is a purpose-built coding agent CLI for self-hosted open-weight models. It runs inside a Tarn sandbox and targets a Cray EX inference cluster with GH200 nodes serving GLM-5 and MiniMax M2.5 via SGLang.
+Ghyll is a purpose-built coding agent CLI for self-hosted open-weight models. It runs inside an SRT sandbox and targets a Cray EX inference cluster with GH200 nodes serving GLM-5 and MiniMax M2.5 via SGLang.
 
 This section documents ghyll's internal architecture. Each page covers a specific subsystem in detail.
 
@@ -8,7 +8,7 @@ This section documents ghyll's internal architecture. Each page covers a specifi
 
 ```
 +--------------------------------------------------+
-| Developer machine (inside Tarn sandbox)           |
+| Developer machine (inside SRT sandbox)            |
 |                                                   |
 |  ghyll (single Go binary)                         |
 |  +----------------------------------------------+ |

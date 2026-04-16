@@ -45,7 +45,7 @@ Existing tools (Claude Code, OpenCode, Gemini CLI) are designed for cloud API ba
 
 1. Hyper-optimized prompts and tool-calling for 2-3 specific models
 2. No wrapper layers — direct OS integration for tools
-3. Always-yolo (Tarn handles sandboxing)
+3. Always-yolo (SRT handles sandboxing)
 4. Model-aware compaction and context management
 5. Drift-aware memory with vector embeddings
 
@@ -75,8 +75,8 @@ Key insight: git is already a content-addressable Merkle DAG. Using an orphan br
 - ONNX Runtime for embeddings (lazy download, ~60MB model)
 - Concrete dialect modules over provider abstraction (no interfaces)
 - Checkpoint-based handoff for model switching (lossy but token-efficient)
-- Tarn (macOS Endpoint Security) for sandboxing — separate project
+- SRT (Anthropic's Sandbox Runtime) for sandboxing — Seatbelt on macOS, bubblewrap on Linux
 
 ## Name
 
-Ghyll: a narrow mountain ravine. Focused, channeled. Complements Tarn (mountain lake — contained, still).
+Ghyll: a narrow mountain ravine. Focused, channeled.

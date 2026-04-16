@@ -1,6 +1,6 @@
 # Injection Detection
 
-ghyll scans conversation turns for prompt injection patterns at checkpoint creation time. This is **detection only** --- Tarn handles enforcement at the kernel level.
+ghyll scans conversation turns for prompt injection patterns at checkpoint creation time. This is **detection only** --- SRT handles enforcement at the OS level.
 
 ## What's Detected
 
@@ -22,8 +22,8 @@ When injection signals are detected:
 1. The signal is recorded in the checkpoint's `injections` field
 2. A warning is displayed: `checkpoint 3: injection signal in turn 7`
 3. The checkpoint is still created (detection, not prevention)
-4. Tarn blocks any actual dangerous operations at the OS level
+4. SRT blocks any actual dangerous operations at the OS level
 
 ## Why Detection Only
 
-ghyll executes tools directly (always-yolo). Blocking at the ghyll level would create a false sense of security and could be bypassed. Tarn provides kernel-level sandboxing that cannot be circumvented from user space, regardless of what ghyll executes.
+ghyll executes tools directly (always-yolo). Blocking at the ghyll level would create a false sense of security and could be bypassed. SRT provides OS-level sandboxing (Seatbelt on macOS, bubblewrap on Linux) that cannot be circumvented from user space, regardless of what ghyll executes.

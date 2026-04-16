@@ -11,12 +11,12 @@ ghyll provides Claude Code-style agentic coding against self-hosted models runni
 - **Drift-aware memory** --- vector embeddings detect when conversation drifts from the task, automatically backfills relevant context
 - **Tamper-evident checkpoints** --- Merkle DAG with ed25519 signatures, synced via git orphan branch
 - **Team memory** --- checkpoints from all developers accessible via vector similarity search
-- **Always-yolo execution** --- Tarn handles sandboxing at the kernel level, ghyll executes tools directly
+- **Always-yolo execution** --- SRT handles sandboxing at the OS level, ghyll executes tools directly
 
 ## Architecture Overview
 
 ```
-Developer machine (inside Tarn sandbox)
+Developer machine (inside SRT sandbox)
 ├── ghyll CLI
 │   ├── dialect/     model-specific code (M2.5, GLM-5)
 │   ├── context/     compaction + drift + backfill
@@ -55,5 +55,5 @@ ghyll run .
 
 - Not a general-purpose LLM client (use LiteLLM, OpenCode, etc.)
 - Not model-agnostic --- adding a model means writing a new dialect file and recompiling
-- Not a sandbox --- that's [Tarn's](https://github.com/witlox/tarn) job
+- Not a sandbox --- that's [SRT's](https://github.com/anthropic-experimental/sandbox-runtime) job
 - Not a chat interface --- this is a tool-calling coding agent

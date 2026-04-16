@@ -5,7 +5,7 @@
 - Go 1.25+
 - Git (for memory sync)
 - Access to SGLang endpoints serving GLM-5 and/or MiniMax M2.5
-- [Tarn](https://github.com/witlox/tarn) sandbox (recommended)
+- [SRT](https://github.com/anthropic-experimental/sandbox-runtime) sandbox (recommended)
 
 ## Installation
 
