@@ -16,7 +16,7 @@ import (
 	"github.com/witlox/ghyll/catalogue"
 )
 
-// sharedCatalogue is loaded once across all init scenarios. The 17
+// sharedCatalogue is loaded once across all init scenarios. The 18
 // concept schemas don't change between scenarios; a single load avoids
 // repeated disk reads.
 var (
@@ -43,8 +43,11 @@ func registerInitSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	ctx.Step(`^the operator provides empty op-id "([^"]*)"$`, state.operatorProvidesEmptyOpID)
 	ctx.Step(`^session start is refused with "([^"]*)"$`, state.sessionStartIsRefusedWith)
 
-	// Auto-propose modify-rule steps.
-	ctx.Step(`^a proposed clause "([^"]+)\(([^)]*)\)"$`, state.aProposedClauseWithArgs)
+	// Auto-propose modify-rule steps. The regex matches the bare
+	// concept-call form only ("concept-name(args)") — the longer
+	// "role.id = concept(args)" form is owned by steps_propose.go's
+	// aProposedClauseFromRoleFile step.
+	ctx.Step(`^a proposed clause "([a-z][a-z0-9-]*)\(([^)]*)\)"$`, state.aProposedClauseWithArgs)
 	ctx.Step(`^the operator returns "modify" with \{([^}]+)\}$`, state.theOperatorReturnsModifyWith)
 	ctx.Step(`^the clause is recorded with threshold ([0-9.]+)$`, state.theClauseIsRecordedWithThreshold)
 	ctx.Step(`^the modification is allowed because [0-9.]+ > [0-9.]+ \(raise only\)$`, state.theModificationIsAllowed)

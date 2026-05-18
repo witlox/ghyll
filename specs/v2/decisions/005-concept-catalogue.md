@@ -23,7 +23,8 @@ The catalogue is **closed at the concept layer** and
 per-language **instrument bindings** decide *what tool runs the
 check*.
 
-The closed set of 17 concepts:
+The closed set of 18 concepts (originally 17; `tests-pass` added
+by ADR-013):
 
 **Universal base** (auto-applied):
 `compiles`, `lint-clean`, `no-todo-marker`, `every-step-bound`.
@@ -32,7 +33,7 @@ The closed set of 17 concepts:
 `no-open-finding`, `every-requirement-meets-min-depth`.
 
 **Per-arrow declared at init**:
-`no-orphan-symbol`, `mutation-score`,
+`no-orphan-symbol`, `mutation-score`, `tests-pass`,
 `kill-server-fails-integration`, `trace-link-present`,
 `acyclic-dependency-graph`, `unique-definition`, `predicate-form`,
 `arrow-artifact-present`, `cardinality-check`,

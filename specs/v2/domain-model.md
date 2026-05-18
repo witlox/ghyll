@@ -22,7 +22,7 @@ subset of the entities below.
 | **Pass Execution** | Per-arrow pass lifecycle, clause evaluation, status derivation, transition refusal | Pass, ArrowInstance, ClauseStatus, ArrowStatus, the runner-owned `(role, context)` lock |
 | **Adversarial Phase** | Per-arrow adversarial orchestration, fresh-context spawn, finding generation, remediation loop | AdversaryInstance, Finding (raised), RemediationRound |
 | **Operator Interaction** | Operator sessions, hint presentation, attestation capture, the operator event bus | OperatorSession, AttestationRequest, AttestationRecord, OperatorEvent |
-| **Catalogue** | The 17 catalogue concepts, per-concept schemas, language bindings | Concept, ConceptSchema, LanguageBinding, EvaluatorInvocation |
+| **Catalogue** | The 18 catalogue concepts, per-concept schemas, language bindings | Concept, ConceptSchema, LanguageBinding, EvaluatorInvocation |
 
 Cross-context interactions are documented in `specs/cross-context.md`
 (future) and the per-component specs' "Cross-component interactions"
@@ -204,7 +204,7 @@ One JSONL line in a per-pass attestation file. Append-only.
 
 A catalogue entry. Closed at the concept layer (language-agnostic).
 
-- **Identity:** `concept-name` (string from the closed 17-entry set).
+- **Identity:** `concept-name` (string from the closed 18-entry set).
 - **Attributes:** `arguments-schema`, `evaluator-contract`,
   `default-cost`, `language-bound: bool`.
 - **Persistence:** shipped with the harness as
@@ -422,10 +422,10 @@ separator per D37): e.g., `init__analyst`,
 
 ---
 
-## Catalogue (17 concepts)
+## Catalogue (18 concepts)
 
 Per `specs/direction/components/concepts.md`, the closed
-language-agnostic catalogue:
+language-agnostic catalogue (ADR-005 + ADR-013):
 
 **Universal base set** (auto-applied to every arrow):
 `compiles`, `lint-clean`, `no-todo-marker`, `every-step-bound`.
@@ -434,9 +434,10 @@ language-agnostic catalogue:
 `no-open-finding`, `every-requirement-meets-min-depth`.
 
 **Per-arrow declared at init:**
-`no-orphan-symbol`, `mutation-score`, `kill-server-fails-integration`,
-`trace-link-present`, `acyclic-dependency-graph`, `unique-definition`,
-`predicate-form`, `arrow-artifact-present`, `cardinality-check`,
+`no-orphan-symbol`, `mutation-score`, `tests-pass`,
+`kill-server-fails-integration`, `trace-link-present`,
+`acyclic-dependency-graph`, `unique-definition`, `predicate-form`,
+`arrow-artifact-present`, `cardinality-check`,
 `mode-determinable-from-repo`, `single-active-role-instance`.
 
 Each concept has a typed schema at `gates/concepts/<name>.yaml`

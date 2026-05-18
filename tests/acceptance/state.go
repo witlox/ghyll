@@ -81,6 +81,14 @@ type ScenarioState struct {
 	ModifyArgs      map[string]any
 	ModifyErr       error
 
+	// Auto-propose loop state (ADR-011 §B.2 + init.feature 89..121).
+	Proposal         *bootstrap.ArrowProposal
+	ProposalApplyErr error
+	// AllProposals captures the full diamond expansion for the
+	// "per (role-pair, context) arrow proposal" scenario.
+	AllProposals        []*bootstrap.ArrowProposal
+	BoundedContextCount int
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error

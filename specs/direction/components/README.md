@@ -20,7 +20,7 @@ Each spec follows the same outline (per `roles/analyst.md`):
 
 | # | Component | Scope |
 |---|---|---|
-| 1 | [concepts.md](concepts.md) | The 17 catalogue concepts. Each gets arguments, evaluator contract, default cost, language-binding pattern. The future `gates/concepts/*.yaml` files are implementations against this design. |
+| 1 | [concepts.md](concepts.md) | The 18 catalogue concepts (ADR-005 + ADR-013). Each gets arguments, evaluator contract, default cost, language-binding pattern. The `gates/concepts/*.yaml` files are implementations against this design. |
 | 2 | [init.md](init.md) | Project initialization. The must-have step-one when ghyll is invoked. Auto-propose + operator-confirm flow that turns v0 into the project's v1. |
 | 3 | [runner.md](runner.md) | The enforcement spine. Invokes machine evaluators, coordinates with attestation flow, derives arrow status, refuses transitions. |
 | 4 | [state-machine.md](state-machine.md) | The four state machines (clause, arrow, finding, pass) operationalized: persistence, derivation, query interface. |

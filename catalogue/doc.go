@@ -1,5 +1,5 @@
 // Package catalogue is the in-memory representation of the harness's
-// closed concept vocabulary (the 17 machine-clause concepts shipped at
+// closed concept vocabulary (the 18 machine-clause concepts shipped at
 // gates/concepts/*.yaml).
 //
 // Per ADR-005 and ADR-006, the catalogue is closed at the concept layer

@@ -87,7 +87,7 @@ data-shape vocabulary (entities, value objects) is in
 
 | Term | Definition |
 |---|---|
-| **Catalogue** | The closed set of 17 concept names that machine clauses can reference. Language-agnostic at the concept layer. New concepts enter only via deliberate harness changes. |
+| **Catalogue** | The closed set of 18 concept names that machine clauses can reference (originally 17; `tests-pass` added by ADR-013). Language-agnostic at the concept layer. New concepts enter only via deliberate harness changes. |
 | **Concept** | A named machine-clause type with a typed argument schema and an evaluator contract. Ships with the harness as `gates/concepts/<concept-name>.yaml`. |
 | **Concept schema** | The YAML file specifying a concept's arguments, types, evaluator contract, and default cost. Introspectable; validated against at init. |
 | **Language binding** | Per-concept per-language evaluator configuration. The shape is concept-specific (e.g., `lint-clean.go = "staticcheck && go vet"`; `no-orphan-symbol.rust = {extractor, index, mapper}`). Project-declared at init. Harness ships NO language defaults. |

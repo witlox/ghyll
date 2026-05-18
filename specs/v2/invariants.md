@@ -97,15 +97,16 @@ and a one-line statement of what must hold.
 
 ## Catalogue
 
-22. **Catalogue is closed at the concept layer.** 17 named concepts
+22. **Catalogue is closed at the concept layer.** 18 named concepts
     (`compiles`, `lint-clean`, `no-todo-marker`, `every-step-bound`,
-    `no-orphan-symbol`, `mutation-score`,
+    `no-orphan-symbol`, `mutation-score`, `tests-pass`,
     `kill-server-fails-integration`, `trace-link-present`,
     `acyclic-dependency-graph`, `unique-definition`,
     `predicate-form`, `arrow-artifact-present`, `no-open-finding`,
     `cardinality-check`, `mode-determinable-from-repo`,
     `single-active-role-instance`, `every-requirement-meets-min-depth`).
-    Concepts are language-agnostic. (`gates.md` §5.1)
+    Concepts are language-agnostic. `tests-pass` added by ADR-013.
+    (`gates.md` §5.1)
 23. **Universal base set is inherited.** `compiles`, `lint-clean`,
     `no-todo-marker`, `every-step-bound` apply to every arrow
     automatically. Roles may not opt out. (`gates.md` §5.2)

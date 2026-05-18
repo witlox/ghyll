@@ -11,7 +11,8 @@ import (
 // the test working directory (catalogue/).
 const conceptsDir = "../gates/concepts"
 
-// expectedConcepts is the closed set of 17 concept names per ADR-005.
+// expectedConcepts is the closed set of 18 concept names per ADR-005
+// (as amended by ADR-013, which added `tests-pass`).
 // If this list changes, the harness has gained or lost a primitive
 // vocabulary entry — and that requires deliberate consideration, not
 // silent acceptance.
@@ -31,12 +32,13 @@ var expectedConcepts = []string{
 	"no-todo-marker",
 	"predicate-form",
 	"single-active-role-instance",
+	"tests-pass",
 	"trace-link-present",
 	"unique-definition",
 }
 
 // loadShipped is a test helper for the common case of loading the
-// shipped 17 concepts from gates/concepts/.
+// shipped concepts from gates/concepts/.
 func loadShipped(t *testing.T) *Catalogue {
 	t.Helper()
 	cat, err := Load(conceptsDir)

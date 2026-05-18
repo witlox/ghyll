@@ -1,8 +1,8 @@
 # gates/concepts/
 
-The 17 catalogue-concept schemas that ship with the harness. Closed
+The 18 catalogue-concept schemas that ship with the harness. Closed
 vocabulary; new concepts enter only via deliberate harness changes
-(per ADR-005).
+(per ADR-005; `tests-pass` added by ADR-013).
 
 Each schema is YAML. The shape is fixed per ADR-006:
 
@@ -12,7 +12,7 @@ Each schema is YAML. The shape is fixed per ADR-006:
   per-language binding at init for each language used.
 - `arguments` — typed argument schema. Each arg has `type`,
   `required`, optional `default`, and an inline `description`.
-- `evaluator` — contract (`machine` for all 17) and `produces`
+- `evaluator` — contract (`machine` for all 18) and `produces`
   (the result shape, with `pass: boolean` and concept-specific
   `details`).
 - `default-cost` — the operator-action cost for clauses using this
@@ -21,7 +21,7 @@ Each schema is YAML. The shape is fixed per ADR-006:
   lowered.
 - `edge-cases` — notes for implementers and operators.
 
-## The 17 concepts, grouped
+## The 18 concepts, grouped
 
 ### Universal base set (auto-applied to every arrow per gates.md §5.2)
 
@@ -45,6 +45,7 @@ Each schema is YAML. The shape is fixed per ADR-006:
 |---|---|---|---|
 | [no-orphan-symbol](no-orphan-symbol.yaml) | 1 | yes | Bidirectional trace: every entity in scope traces to a counterpart in spec/code. |
 | [mutation-score](mutation-score.yaml) | 3 | yes | Mutation kill rate above threshold; defends shallow tests. |
+| [tests-pass](tests-pass.yaml) | 2 | yes | Every test in scope runs and passes under the per-language test runner. ADR-013. |
 | [kill-server-fails-integration](kill-server-fails-integration.yaml) | 3 | no | Integration tests fail when critical dep removed; defends against fully-mocked suites. |
 | [trace-link-present](trace-link-present.yaml) | 1 | no | A declared link from one artifact to another exists with declared multiplicity. |
 | [acyclic-dependency-graph](acyclic-dependency-graph.yaml) | 0 | yes | Module / call / type graph is acyclic. |

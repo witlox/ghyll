@@ -1,0 +1,45 @@
+# Concept: tests-pass
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: tests-pass
+description: Every test in the named scope passes under the per-language test runner. Defends against the obvious failure mode that mutation-score, lint-clean, and compiles together do NOT detect — a passing toolchain whose tests are red.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Test files (or test target patterns) to execute.
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language test-runner binding (e.g., `go test`, `pytest`, `cargo test`).
+  timeout:
+    type: duration
+    required: false
+    default: 5m
+    description: Maximum wall-clock for the full suite; exceeded → fail.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      passed: int            # number of tests that passed
+      failed: int            # number that failed
+      skipped: int           # number marked skip/xfail
+      timed-out: boolean     # true if the suite exceeded `timeout`
+      failures:
+        type: list
+        items:
+          name: string       # test identifier (package.TestName)
+          message: string    # truncated failure message
+
+default-cost: 2
+
+edge-cases:
+  - A scope that matches zero tests returns pass=false (vacuously-true is not allowed; if you have no tests, you have no signal).
+  - Skipped tests are recorded but do not affect pass/fail. Skipping is a depth signal the adversarial phase may flag separately.
+  - Tests that hang past `timeout` count as a failure, not a missing signal — the binding kills the runner and records timed-out=true.
+  - Flaky tests (different result on retry) are NOT auto-retried at this layer; the binding reports the first result. Flakiness mitigation is a separate concern.

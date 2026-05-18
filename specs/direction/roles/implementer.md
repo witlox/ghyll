@@ -110,7 +110,7 @@ Universal-base clauses (`gates.md` §5.2) are inherited automatically.
 
 | # | Clause | Concept (machine) or attested judgement | Eval | Depth |
 |---|---|---|---|---|
-| G1 | All test suites pass | (test-runner check; per-language binding) | machine | depth-robust |
+| G1 | All test suites pass | `tests-pass`(scope, language) | machine | depth-robust |
 | G2 | Mutation score for the implementation scope meets the per-arrow threshold | `mutation-score`(scope, threshold) | machine | depth-robust |
 | G3 | Every analyst feature in scope has at least one test linked to it | `trace-link-present`(feature → test) | machine | depth-robust |
 | G4 | Every architect module in scope is exercised by at least one integration-level test (no full-mock for cross-module wires) | `kill-server-fails-integration`(architect-modules) | machine | depth-robust |

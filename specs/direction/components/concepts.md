@@ -1,11 +1,12 @@
 # Component: catalogue concepts
 
-Per-concept specs for the 17 machine-clause concepts named in
-`gates.md` §5.1. The harness ships these concepts as the closed
-language-agnostic vocabulary of the gate system; per-arrow clause
-instances reference them by name and supply typed arguments.
+Per-concept specs for the 18 machine-clause concepts named in
+`gates.md` §5.1 (as amended by ADR-013, which added `tests-pass`).
+The harness ships these concepts as the closed language-agnostic
+vocabulary of the gate system; per-arrow clause instances reference
+them by name and supply typed arguments.
 
-This file is the **design** for the 17 schema files that will ship
+This file is the **design** for the 18 schema files that will ship
 as `gates/concepts/<concept-name>.yaml` (the YAML files are
 implementation; this is the spec).
 

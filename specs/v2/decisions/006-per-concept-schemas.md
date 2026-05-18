@@ -20,7 +20,7 @@ The choice was between:
 
 **Decision:**
 
-Each of the 17 catalogue concepts has a **typed schema file** at
+Each of the 18 catalogue concepts has a **typed schema file** at
 `gates/concepts/<concept-name>.yaml`. Schemas are shipped with the
 harness and are introspectable.
 
