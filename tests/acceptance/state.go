@@ -5,6 +5,7 @@ import (
 
 	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/catalogue"
+	"github.com/witlox/ghyll/runner"
 	"github.com/witlox/ghyll/types"
 )
 
@@ -125,6 +126,18 @@ type ScenarioState struct {
 	// Orphan-symbol extraction (init.feature 41).
 	ExtractedSymbols []bootstrap.ExportedSymbol
 	ExtractedOrphans []bootstrap.OrphanCandidate
+
+	// Runner (specs/v2/features/runner.feature).
+	RunnerClauses           []runner.ClauseDeriveInput
+	RunnerFindings          []runner.Finding
+	RunnerSeverityThresh    int
+	RunnerArrowStatus       runner.ArrowStatus
+	RunnerBlockingCount     int
+	RunnerUpstreamStatus    runner.ArrowStatus
+	RunnerUpstreamArrowID   string
+	RunnerDownstreamArrowID string
+	RunnerInvalidatingGV    int
+	RunnerTransitionErr     error
 
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string

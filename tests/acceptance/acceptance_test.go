@@ -18,6 +18,7 @@ func TestFeatures(t *testing.T) {
 			Paths: []string{
 				"../../specs/features",
 				"../../specs/v2/features/init.feature",
+				"../../specs/v2/features/runner-step3.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
@@ -65,6 +66,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerSessionRegistrySteps(ctx, state)
 	registerModifyNonMonotonicSteps(ctx, state)
 	registerOrphanSteps(ctx, state)
+
+	// Runner step definitions (specs/v2/features/runner.feature).
+	registerRunnerSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
