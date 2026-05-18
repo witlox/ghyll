@@ -1,6 +1,6 @@
 # specs/
 
-Two distinct bodies of spec live here.
+Three distinct bodies of spec live here.
 
 ## v1 — current code (continuity infrastructure)
 
@@ -28,10 +28,10 @@ Sub-directories:
 - [`findings/`](findings/) — v1 audit findings
 - [`integration/`](integration/) — v1 integration notes
 
-## v2 — design intent (gate enforcement)
+## v2 — design history (the *why*)
 
-The v2 pivot is in [`direction/`](direction/). v2 is **not yet
-built**; the design is the work that has happened so far.
+The v2 pivot's design history is in [`direction/`](direction/). v2 is
+not yet built; this directory records how the design was reached.
 
 Read order in `direction/`:
 
@@ -39,10 +39,16 @@ Read order in `direction/`:
 2. `gates.md` — the harness-wide gate schema (the meta-design).
 3. `roles/{analyst,architect,implementer,integrator}.md` — the four
    role contracts.
-4. `build-notes.md` — what is designed vs. not yet built.
+4. `components/*.md` — the seven component-level designs.
+5. `build-notes.md` — what is designed vs. not yet built.
 
-Supporting docs (validation passes + operator-decision rounds 1-4)
-are listed in [`direction/README.md`](direction/README.md).
+Supporting docs (validation passes 1–3 + operator-decision rounds
+1–5) are listed in [`direction/README.md`](direction/README.md).
 
-Component-level specs for v2 (init, machine-clause runner, etc.) are
-in progress under `direction/components/`.
+## v2 — implementation specs (the *what*)
+
+v2 implementation specs are in [`v2/`](v2/). These are the
+analyst-role outputs the v2 code will be built against: domain
+model, invariants, features (Gherkin), failure modes, glossary.
+
+In progress; see [`v2/README.md`](v2/README.md).
