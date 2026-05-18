@@ -98,6 +98,13 @@ type ScenarioState struct {
 	PendingRisk   bootstrap.RiskAssessment
 	RiskEvaluated bool
 
+	// Re-init on missing binding (init.feature 49, 59).
+	BindingGrid           *bootstrap.Grid
+	RequiredBindings      []bootstrap.BindingKey
+	PendingClauseConcept  string
+	PendingClauseLanguage string
+	MissingBindingErr     error
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error
