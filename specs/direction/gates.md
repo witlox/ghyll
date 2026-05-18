@@ -20,7 +20,8 @@ This schema describes a **state-transition system over an extensible
 grid**. Read everything below through that lens:
 
 - **Cells** are points in the state space: `(stratum, bounded-context)`
-  pairs, each holding clause statuses, findings, and a derived arrow
+  pairs, each holding clause statuses, findings (each tagged with the
+  `grid-version` they were raised against), and a derived arrow
   status.
 - **Arrows** are *operators* that transition the state of one cell to
   the state of the next.
@@ -55,6 +56,24 @@ There is **no standalone adversary role** and **no standalone auditor
 role**. Adversarial scrutiny and depth classification are *phases of
 every arrow* (§11), not roles. A role in a sequence can be skipped; a
 phase of a transition cannot.
+
+### 1.1 Synthetic role-ids
+
+For attestation-path purposes (§10.2), two **synthetic role-ids**
+exist that are NOT role files (no `init.md`, no `adversary.md`):
+
+- `init` — the producer identity for the initialization arrow's
+  `attested` clauses (§2.3). Emits hints per §9 the same way any
+  producer would.
+- `adversary` — the producer identity for the per-arrow adversarial
+  phase (§11). Bound to a *fresh model instance with clean context*
+  per §11, separate from the upstream producer. Each remediation-
+  round re-attack spawns a fresh `adversary` instance.
+
+These identities label attestation paths and finding provenance.
+Attestation paths in §10.2 may therefore include them, e.g.,
+`init→analyst`, `analyst→adversary→architect`,
+`implementer→adversary→integrator`.
 
 A **role transition** is the move from one role to the next. Every
 transition IS an **arrow**. An arrow is a first-class artifact: it
@@ -198,10 +217,11 @@ undeclared cells** in the grid. Honest about *how much attention has
 been deferred*, not just how many holes there are.
 
 Undeclared cells have no clauses and therefore no clause costs.
-Cost-per-undeclared-cell is **imputed** at the conservative upper
-bound: the maximum per-clause cost in the harness catalogue (the value
-of `write-residue-note`, §10.1). This over-estimates rather than
-under-estimates — residue should never look smaller than it might be.
+Cost-per-undeclared-cell is **imputed exactly**: the harness knows
+what init would auto-propose for that cell (the role's full exit gate
+per §2.2); the imputed cost is the sum of operator-action costs of
+that auto-proposed gate. So R = Σ (full-exit-gate-cost) over
+undeclared cells. Honest and computable.
 
 A frozen grid would let the harness certify completeness against a
 definition known to be partial. That is false completeness promoted
@@ -326,7 +346,8 @@ The catalogue concepts ghyll ships:
 | `no-open-finding` | All findings on the arrow are `resolved` or `accepted-risk` (none `open`) |
 | `cardinality-check` | A named query returns exactly the declared cardinality (e.g., "1 bounded context") |
 | `mode-determinable-from-repo` | A named mode discriminator (e.g., greenfield / brownfield) is determinable from repo state |
-| `single-active-role-instance` | No other active role traversal exists for the same (role, stratum, context) tuple |
+| `every-requirement-meets-min-depth` | For every requirement on the arrow, the adversarial phase's depth-classification (§11.1) was at or above its declared minimum |
+| `single-active-role-instance` | No other active role traversal exists for the same (role, bounded-context) tuple — a role's work spans all strata for one context |
 
 This catalogue is the harness's primitive vocabulary. New concepts
 enter via deliberate harness changes, not per-role declaration.
@@ -470,10 +491,20 @@ Pass status set: `running`, `completed`, `aborted`.
 - `running` — the iteration is in progress.
 - `completed` — the iteration concluded; arrow status is whatever the
   clause/finding state derives.
-- `aborted` — the iteration was terminated mid-phase by an external
-  event (see §7.2 invalidation rule below). Findings discovered
-  before abort are retained; the arrow's status becomes
-  `invalidated`.
+- `aborted` — the iteration was terminated mid-phase before reaching
+  `completed`. Carries a required `reason` field on the enum:
+  - `invalidated` — upstream amendment per §7.2; arrow status becomes
+    `invalidated`; findings discovered before abort are retained,
+    tagged with their original `grid-version`.
+  - `operator-interrupt` — operator stopped the pass; arrow status
+    unchanged from the latest completed pass.
+  - `crash` — harness or model failure; arrow status unchanged.
+  - `manual-stop` — operator closed session mid-pass; arrow status
+    unchanged.
+
+Only `invalidated` aborts change the arrow's status. Other abort
+reasons leave the arrow at whatever the latest *completed* pass
+established.
 
 An arrow's *current* status is the latest pass's derived status. The
 checkpoint log holds the full pass history.
@@ -520,24 +551,34 @@ The count of conservatively-invalidated arrows on each grid amendment
 is a quality signal; if it stays high, dependency declarations are
 missing.
 
-**Mid-phase invalidation — abort and restart, preserve findings.**
-When invalidation lands while a cell's pass is in progress (in the
-adversarial, remediation, or verification phase, §11):
+**Mid-phase invalidation — global serialization, abort affected
+cells, preserve findings.** Grid amendments serialize through a
+**project-wide write-lock**:
 
-1. The iteration is **aborted**. The pass record is marked with
-   pass-status `aborted` (§7.1a).
-2. The arrow's status becomes `invalidated` per the precedence table
-   above.
+1. Amendments queue FIFO. While the lock is held, no other amendment
+   may write.
+2. When an amendment commits as v(N+1), every in-flight pass is
+   checked against its declared dependencies (§2.1):
+   - **Affected** (dependency on a changed artifact, or no
+     dependencies declared): pass is `aborted` with
+     `reason: invalidated`; arrow status becomes `invalidated`.
+   - **Unaffected**: pass continues against vN and records
+     completion normally.
 3. **Findings discovered before abort are retained** on the arrow's
-   finding log. Useful signal is not lost; the producer may treat
-   them as hints when the arrow is re-traversed.
-4. The next pass starts fresh — phases re-run from adversarial. There
-   is no "resume mid-phase."
+   finding log, **tagged with their original `grid-version`** so
+   they are distinguishable from findings on the new vN+1 arrow.
+   The producer may treat them as hints when the arrow is
+   re-traversed against vN+1.
+4. The next pass on an `invalidated` arrow starts fresh — phases
+   re-run from adversarial. There is no "resume mid-phase."
+5. After the v(N+1) write completes the lock releases; the next
+   queued amendment may proceed.
 
 State-space-frame rationale: invalidation is an operator that resets
-the cell to an earlier point. Partial iteration state at the time of
-reset is incoherent and discarded; only artifacts that survived as
-findings are preserved.
+affected cells to an earlier point and *extends* the state space
+(new grid version). Serializing amendments through a single lock
+keeps the iteration order well-defined; without it, two concurrent
+amendments produce an ambiguous v(N+1).
 
 **Arrow status set:**
 `complete`, `provisional`, `unevaluated`, `blocked`, `invalidated`.
@@ -583,6 +624,20 @@ arrow status `blocked` by §7.2 precedence.
 - Per-arrow override is allowed at arrow definition (raise only).
 - Findings below the threshold are recorded and visible but do not
   block the arrow.
+- **Bootstrap exception:** the initialization arrow itself uses the
+  harness-default threshold `medium` for its own `no-open-finding`
+  evaluation, since the project-wide threshold isn't declared yet at
+  that point. Init may change the *project-wide* threshold for all
+  other arrows; it cannot change its own arrow's threshold.
+
+**`unevaluated`-severity findings.** Severity assignment is
+depth-sensitive and may return `unevaluated` (D23). An
+`unevaluated`-severity finding is treated as blocking by
+`no-open-finding` — an arrow with any `unevaluated`-severity finding
+does not close. This aligns with §7.2's `unevaluated` arrow-status
+precedence above `provisional`. Re-route at deeper tier to clear;
+if still unevaluated after a remediation round, the operator
+attests severity directly (recording the basis).
 
 **Finding status set:** `open`, `resolved`, `accepted-risk`.
 
@@ -669,13 +724,26 @@ For each `attested` clause the operator returns:
   back into the role.
 - **`insufficient-basis`** — operator cannot attest (artifact
   ambiguous, context too large to judge). This is **not** a failure.
-  It routes per the escalation paths. It exists so an uncertain
-  operator is never forced to choose between a false `pass` and a
-  punitive `fail`.
+  It exists so an uncertain operator is never forced to choose
+  between a false `pass` and a punitive `fail`.
 
 An arrow with any `attested` clause in `awaiting-attestation` or
 `insufficient-basis` propagates status `provisional` per §7.2. A
 `provisional` arrow does not satisfy the next role's input.
+
+**`insufficient-basis` escalation.** Returning `insufficient-basis`
+keeps the arrow `provisional` indefinitely. The producer may
+re-emit the hint at a deeper depth tier in the next remediation
+round — a re-emit is itself a remediation step. After **N=3 rounds**
+of `insufficient-basis` on the same clause, the clause escalates:
+
+- Either the operator attests `accepted-risk` with a
+  `write-residue-note` recording why the basis remains insufficient,
+- Or the operator routes the finding back to the producer role
+  with `requires-deeper-artifact` as the rationale, which sends
+  the artifact for deeper rework upstream.
+
+The default `N=3` may be raised at initialization (§2.1).
 
 ### 10.1 Attestation weight
 
@@ -711,6 +779,9 @@ attestations/<grid-vN>/<context>/<stratum>/<role-pair>/<pass-id>.jsonl
 ```
 
 The path encodes the arrow identity (§7.1a) plus the grid version.
+`<role-pair>` may include synthetic role-ids per §1.1 (e.g.,
+`init→analyst`, `analyst→adversary→architect`).
+
 One line per attestation; the line shape depends on the unit:
 
 ```json
@@ -739,6 +810,13 @@ declared unit. Distinguishing genuine inspection from a fast-clicked
 confirm is procedural-only — the schema records the procedure, it
 does not enforce behavior behind it.
 
+**`op-id`** is a string declared by each operator at session start
+(conventionally an email or handle). Multi-operator projects have
+multiple `op-id`s active concurrently; each attestation records who
+returned the verdict. Ad-hoc handoff between operators within a
+single pass is allowed; the attestations-`<pass-id>.jsonl` file
+shows the full attestation chain.
+
 ---
 
 ## 11. Arrow phases
@@ -766,11 +844,20 @@ Every arrow carrying any `depth-sensitive` clause has three phases:
    do not spin.
 
 3. **Verification.** Gate clauses evaluated. If the adversarial phase
-   ran on this arrow, the harness **auto-inserts** a `no-open-finding`
-   machine clause into the verification step (regardless of whether
-   the arrow's definition declared it). This guarantees that an arrow
-   that hosted findings cannot close while findings above the severity
-   threshold are still `open`.
+   ran on this arrow, the harness **auto-inserts two machine clauses**
+   into the verification step (regardless of whether the arrow's
+   definition declared them):
+   - `no-open-finding` — guarantees the arrow cannot close while
+     findings above the severity threshold (or `unevaluated`-severity
+     findings) are still `open`.
+   - `every-requirement-meets-min-depth` — guarantees the arrow
+     cannot close while any requirement is classified below its
+     declared minimum on the depth ladder (§11.1).
+
+   Each remediation round's re-attack spawns a **fresh `adversary`
+   instance** (§1.1) with clean context. There is no persistent state
+   across re-attack rounds; the same finding may be re-discovered or
+   not, but that discovery is from a fresh context.
 
 A purely `machine` / `depth-robust` arrow runs **verification only** —
 adversarial scrutiny of a deterministic check buys nothing, and depth

@@ -50,7 +50,7 @@ State the mode in the first line of output.
 ## Work in layers — analyst's projection of the strata
 
 The analyst's layers map directly onto the six strata defined in
-`gates.md` §2.1. A layer is stable when its exit-gate clauses for that
+`gates.md` §3.1. A layer is stable when its exit-gate clauses for that
 stratum pass — not when it "feels" complete.
 
 | Stratum | Analyst's work in this layer |

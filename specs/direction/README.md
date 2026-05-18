@@ -36,6 +36,13 @@ Supporting documents:
   state-space framing, severity enum, dependency granularity,
   mid-phase invalidation, language-binding init policy, attestation
   records, init auto-propose).
+- **[validation-pass-2.md](validation-pass-2.md)** — end-to-end
+  coherence findings (17 items) against the round-3-reconciled
+  schema.
+- **[operator-decisions-round-4.md](operator-decisions-round-4.md)** —
+  D21–D29 (synthetic role-ids, amendment serialization, terminal
+  routing, op-id, init bootstrap, depth-ladder gating, residue
+  imputation, role-instance scope, aborted reasons).
 
 ## Scope note
 

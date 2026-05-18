@@ -29,6 +29,14 @@ unbuilt parts.
   severity enum, dependency granularity, mid-phase invalidation,
   language-binding init policy, attestation records, init
   auto-propose).
+- **`validation-pass-2.md`** — end-to-end coherence findings against
+  the round-3-reconciled schema (17 items).
+- **`operator-decisions-round-4.md`** — D21–D29 (synthetic role-ids
+  `init`/`adversary`, global amendment serialization,
+  `insufficient-basis`/`unevaluated`-finding terminal routing,
+  `op-id` provenance, init bootstrap threshold, depth-ladder gating
+  clause, residue R per-cell imputation, `single-active-role-instance`
+  scope, `aborted` reason field).
 
 ## Provenance
 
@@ -67,10 +75,11 @@ proofs.
   catalogue, the v0 grid bootstrap.
 - The analyst role contract, reconciled to the schema.
 
-All 15 validation-pass-1 findings are resolved across rounds 1+2 +
-prior commits. Of the 15 phase-3 architect-lens findings, 13 are
-resolved by round 3 + prior commits; the remaining 2 are
-implementation concurrency primitives (see below), not schema work.
+All 15 validation-pass-1 findings, all 15 phase-3 architect-lens
+findings, and all 17 validation-pass-2 findings are now resolved
+across rounds 1–4. The schema's contracts, multi-cell dynamics,
+terminal-state routing, and concurrency surface (at the schema
+level) are typed. What remains is implementation work.
 
 ## What is NOT built — do not confabulate these
 

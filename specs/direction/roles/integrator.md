@@ -33,9 +33,11 @@ defined in `gates.md` and are NOT redefined here.
    spec defect into a code patch is the failure mode this role exists
    to prevent.
 4. The grid is non-monotone. When a `missing-cross-context-spec`
-   finding triggers a grid amendment, downstream arrows that depended
-   on the changed spec become `invalidated` (per `gates.md` §7.2).
-   Name them when reporting.
+   finding triggers a grid amendment, the harness takes the
+   project-wide write-lock and downstream arrows that depended on
+   the changed spec become `invalidated` (per `gates.md` §7.2; the
+   amendment cycle's rationale is in `direction.md` §3.7). Name the
+   affected arrows when reporting.
 5. Do not assert a layer or a gate clause as complete. The gate
    decides.
 
