@@ -11,7 +11,9 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
+	"github.com/witlox/ghyll/internal/pathglob"
 	"github.com/witlox/ghyll/internal/skipdirs"
 )
 
@@ -24,19 +26,13 @@ import (
 // The evaluator scans every line of every file under `scope` for any
 // marker. A hit becomes a fail with details listing file/line/marker
 // /surrounding-text per the concept's `produces` shape.
-//
-// Universal-base concepts (compiles, lint-clean, no-todo-marker,
-// every-step-bound) ship with built-in evaluators. no-todo-marker is
-// the simplest of the four — pure regex scan, no language binding.
 
 // defaultTodoMarkers matches gates/concepts/no-todo-marker.yaml's
-// `markers` default. Kept in sync manually; if the schema changes,
-// this list does too (the schema is the canonical source).
+// `markers` default.
 var defaultTodoMarkers = []string{"TODO", "TBD", "???", "FIXME", "XXX"}
 
 // EvaluateNoTodoMarker is the built-in evaluator for the
-// no-todo-marker concept. Exposed for the runner's Registry but
-// callable directly in tests.
+// no-todo-marker concept.
 func EvaluateNoTodoMarker(ctx context.Context, c Clause) (*Result, error) {
 	scope, err := requireStringArg(c.Args, "scope")
 	if err != nil {
@@ -50,6 +46,15 @@ func EvaluateNoTodoMarker(ctx context.Context, c Clause) (*Result, error) {
 		}
 		if len(markers) == 0 {
 			return nil, errors.New("no-todo-marker: markers list is empty")
+		}
+		// Validation-pass-3 F3 (Critical): refuse zero-length
+		// elements. An empty-string marker silently matches every
+		// line of every file, failing every no-todo-marker clause
+		// universally.
+		for i, m := range markers {
+			if m == "" {
+				return nil, fmt.Errorf("no-todo-marker: markers[%d] is empty (would match every line)", i)
+			}
 		}
 	}
 	caseSensitive := false
@@ -69,31 +74,39 @@ func EvaluateNoTodoMarker(ctx context.Context, c Clause) (*Result, error) {
 	}
 	hits := []map[string]any{}
 	matched := false
+	skipped := []map[string]any{}
 
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// Validation-pass-3 F44: filter recoverable errors so a
+			// permission-denied subdir doesn't abort the whole scan.
+			if errors.Is(walkErr, fs.ErrPermission) || errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			// Skip harness/build dirs to avoid scanning vendored or
-			// generated TODOs. Mirrors bootstrap.dirsToSkipForProfile;
-			// we duplicate the smaller relevant set here to keep
-			// runner from importing bootstrap.
-			if path != root && isSkippedDir(d.Name()) {
+			// Validation-pass-3 F30: only skip at IMMEDIATE root depth.
+			// Otherwise `src/cli/build/release.go` would be hidden
+			// because basename "build" is in the skip set.
+			if path != root && filepath.Dir(path) == root && skipdirs.IsBuildOrHarness(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
-		if !matchesScope(scope, rel) {
+		if !pathglob.Match(scope, rel) {
 			return nil
 		}
-		fileHits, err := scanFileForMarkers(ctx, path, rel, matcher)
+		fileHits, fileSkip, err := scanFileForMarkers(ctx, path, rel, matcher)
 		if err != nil {
 			return err
+		}
+		if fileSkip != nil {
+			skipped = append(skipped, fileSkip)
 		}
 		if len(fileHits) > 0 {
 			matched = true
@@ -104,14 +117,27 @@ func EvaluateNoTodoMarker(ctx context.Context, c Clause) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no-todo-marker: walk %q: %w", root, err)
 	}
+	// Validation-pass-3 F32: a file the scanner couldn't read
+	// completely (>1MB line, e.g.) returns Unevaluated so the
+	// operator triages rather than the clause silently passing.
+	if len(skipped) > 0 && len(hits) == 0 {
+		return &Result{
+			Unevaluated: true,
+			Reason:      fmt.Sprintf("%d file(s) had unscannable content (e.g., minified single-line); see details.skipped", len(skipped)),
+			Details:     map[string]any{"skipped": skipped, "hits": hits},
+		}, nil
+	}
+	details := map[string]any{"hits": hits}
+	if len(skipped) > 0 {
+		details["skipped"] = skipped
+	}
 	return &Result{
 		Pass:    !matched,
-		Details: map[string]any{"hits": hits},
+		Details: details,
 	}, nil
 }
 
-// requireStringArg returns args[key] as a string or an error if the
-// key is missing or the value is not a string.
+// requireStringArg returns args[key] as a string or an error.
 func requireStringArg(args map[string]any, key string) (string, error) {
 	v, ok := args[key]
 	if !ok {
@@ -125,9 +151,7 @@ func requireStringArg(args map[string]any, key string) (string, error) {
 }
 
 // coerceStringList accepts []string or []any (yaml-decoded) and
-// returns the canonical []string form. A bare string is NOT accepted
-// — validation-pass-2 F45: silently coercing a string to a single-
-// element list masks the common "forgot the brackets" typo.
+// returns the canonical []string form.
 func coerceStringList(v any) ([]string, error) {
 	switch x := v.(type) {
 	case []string:
@@ -152,19 +176,18 @@ func coerceStringList(v any) ([]string, error) {
 type markerMatcher func(line string) (marker string, ok bool)
 
 // compileMarkerMatcher builds a matcher that finds any of the markers
-// as a substring. Case-insensitive matching lowercases both sides
-// before comparison.
+// as a substring. Both case-sensitive and case-insensitive matchers
+// return the file's actual matched substring so the hit report
+// reflects what was found, not what was configured.
 //
-// Both case-sensitive and case-insensitive matchers return the
-// file's actual matched substring (not the configured marker form)
-// — validation-pass-2 F41 — so the hit report reflects what was
-// found, not what was configured.
+// Validation-pass-3 F12: case-insensitive matcher previously sliced
+// the original line using byte offsets from the lowered line.
+// strings.ToLower can change byte length (U+0130 "İ" → "i"), so the
+// slice ended on a wrong byte boundary, producing mojibake. Fixed
+// by walking the original line via strings.EqualFold over rune
+// substrings.
 func compileMarkerMatcher(markers []string, caseSensitive bool) markerMatcher {
 	if caseSensitive {
-		// Build a single regex with word-boundary-ish matching. We
-		// keep it permissive (substring) to match the concept's
-		// "captures the work-not-done signal that prose can hide"
-		// description — strict word-boundary would miss "TODO:".
 		alts := make([]string, len(markers))
 		for i, m := range markers {
 			alts[i] = regexp.QuoteMeta(m)
@@ -178,136 +201,129 @@ func compileMarkerMatcher(markers []string, caseSensitive bool) markerMatcher {
 			return line[loc[0]:loc[1]], true
 		}
 	}
-	lowerMarkers := make([]string, len(markers))
-	for i, m := range markers {
-		lowerMarkers[i] = strings.ToLower(m)
-	}
+	// Case-insensitive: find the longest matching marker via
+	// EqualFold-based substring scan over the original line. The
+	// scan walks rune positions in the original so the returned
+	// slice is on rune boundaries.
 	return func(line string) (string, bool) {
-		lower := strings.ToLower(line)
-		// Pick the longest matching marker first to avoid mis-
-		// attributing e.g. "TODO-FIXME" to the shorter "TODO" prefix.
-		bestStart := -1
-		bestEnd := -1
-		for _, m := range lowerMarkers {
-			idx := strings.Index(lower, m)
-			if idx < 0 {
-				continue
-			}
-			end := idx + len(m)
-			if bestStart < 0 || (end-idx) > (bestEnd-bestStart) {
-				bestStart = idx
-				bestEnd = end
+		bestStart, bestEnd := -1, -1
+		// For each rune-start position in line:
+		runeStarts := runeBoundaries(line)
+		for _, start := range runeStarts {
+			tail := line[start:]
+			for _, m := range markers {
+				// Find m as a case-insensitive prefix of tail.
+				end := caseInsensitivePrefixEnd(tail, m)
+				if end < 0 {
+					continue
+				}
+				absEnd := start + end
+				// Prefer the longest match found at the earliest
+				// position. Earliest position dominates; for ties,
+				// longest wins.
+				if bestStart < 0 || (start < bestStart) ||
+					(start == bestStart && absEnd > bestEnd) {
+					bestStart = start
+					bestEnd = absEnd
+				}
 			}
 		}
 		if bestStart < 0 {
 			return "", false
 		}
-		// Return the file's actual substring at the match position
-		// so the operator sees real casing, not the configured form.
 		return line[bestStart:bestEnd], true
 	}
 }
 
-// matchesScope reports whether rel (a path under the project root)
-// matches the scope glob. Uses the same recursive-glob matcher
-// bootstrap.modify uses for path-glob comparison so both sides
-// agree on what "src/**" means.
-func matchesScope(scope, rel string) bool {
-	if scope == rel {
-		return true
+// runeBoundaries returns the byte offset of each rune-start in s.
+func runeBoundaries(s string) []int {
+	out := make([]int, 0, len(s))
+	for i := range s {
+		out = append(out, i)
 	}
-	if !strings.Contains(scope, "**") {
-		ok, err := filepath.Match(scope, rel)
-		return err == nil && ok
+	return out
+}
+
+// caseInsensitivePrefixEnd returns the byte offset in s where the
+// case-insensitive prefix matching marker ends, or -1 if no match.
+// Uses strings.EqualFold over a prefix scanned rune-by-rune.
+func caseInsensitivePrefixEnd(s, marker string) int {
+	if marker == "" {
+		return -1 // defensive — empty markers rejected at evaluator entry
 	}
-	// ** expansion: split scope at the first **, enumerate segment
-	// substitutions in `rel`, and try each candidate.
-	idx := strings.Index(scope, "**")
-	prefix := strings.TrimSuffix(scope[:idx], "/")
-	suffix := strings.TrimPrefix(scope[idx+2:], "/")
-	segments := strings.Split(rel, "/")
-	for i := 0; i <= len(segments); i++ {
-		for j := i; j <= len(segments); j++ {
-			var middle string
-			if j > i {
-				middle = strings.Join(segments[i:j], "/")
-			}
-			parts := []string{}
-			if prefix != "" {
-				parts = append(parts, prefix)
-			}
-			if middle != "" {
-				parts = append(parts, middle)
-			}
-			if suffix != "" {
-				parts = append(parts, suffix)
-			}
-			candidate := strings.Join(parts, "/")
-			ok, err := filepath.Match(candidate, rel)
-			if err == nil && ok {
-				return true
-			}
+	// Walk runes in marker; for each, consume one rune from s
+	// and EqualFold-compare the rune pair.
+	si := 0
+	mi := 0
+	for mi < len(marker) {
+		if si >= len(s) {
+			return -1
 		}
+		sRune, sSize := nextRune(s, si)
+		mRune, mSize := nextRune(marker, mi)
+		if !runeEqualFold(sRune, mRune) {
+			return -1
+		}
+		si += sSize
+		mi += mSize
 	}
-	return false
+	return si
 }
 
-// isSkippedDir reports whether a directory name is in the harness/
-// build skip set. Delegates to internal/skipdirs for a single
-// canonical definition (validation-pass-2 F39).
-//
-// The runner uses IsBuildOrHarness, NOT IsSourceWalkSkip — operators
-// may declare no-todo-marker clauses with scope `specs/**`, so
-// runner-side scans must descend into specs/docs/tests/test
-// directories.
-func isSkippedDir(name string) bool {
-	return skipdirs.IsBuildOrHarness(name)
+// nextRune decodes the rune at byte offset i in s and returns the
+// rune + its encoded byte size.
+func nextRune(s string, i int) (rune, int) {
+	return utf8.DecodeRuneInString(s[i:])
 }
 
-// scanFileForMarkers scans one file line-by-line, returning a hit
-// record per matched line. Each record carries file (relative path),
-// line number, the matched marker, and the surrounding text.
+// runeEqualFold reports whether r1 and r2 are equal under Unicode
+// simple case folding.
+func runeEqualFold(r1, r2 rune) bool {
+	return strings.EqualFold(string(r1), string(r2))
+}
+
+// scanFileForMarkers scans one file line-by-line. Returns:
+//   - hits: matched lines.
+//   - skipped: a record describing why the file wasn't fully
+//     scanned (e.g., a >1MB single line). nil if the scan was
+//     complete. Validation-pass-3 F32 — line-too-long no longer
+//     produces a fake "hit" that fails the clause; instead the
+//     file is flagged for operator triage as Unevaluated.
 //
-// Files exceeding maxTodoScanFileSize are skipped (returns nil,
-// nil) — large binaries / generated artifacts would slow the scan
-// without producing useful signal. A skipped file is silent; the
-// operator's coverage residue catches it.
+// Files exceeding maxTodoScanFileSize are skipped silently (size
+// is a hard binary/generated-artifact filter, not a triage
+// signal).
 //
-// validation-pass-2 F17: opens with O_NOFOLLOW so a symlink-swap
-// race between the walk's lstat and our open cannot redirect us to
-// out-of-scope content. The size check is done via fstat on the
-// already-open fd to close the TOCTOU window.
+// Validation-pass-2 F17: opens with O_NOFOLLOW (where supported).
+// validation-pass-3 F31: accepts EMLINK as a portable symlink-on-
+// open error in addition to ELOOP.
 //
-// F12: refuses non-regular files (named pipes, devices, sockets)
-// so the scanner can't block forever on read.
-//
-// F18: a single >1MB line returns bufio.ErrTooLong which we now
-// translate to a skip-with-record rather than abort-the-walk.
-//
-// F40: checks ctx.Err() every 1024 lines so a cancelled context
-// interrupts long-file scans.
-func scanFileForMarkers(ctx context.Context, absPath, relPath string, matcher markerMatcher) ([]map[string]any, error) {
+// F12: refuses non-regular files. F40: ctx.Err() checked per
+// 1024 lines.
+func scanFileForMarkers(ctx context.Context, absPath, relPath string, matcher markerMatcher) ([]map[string]any, map[string]any, error) {
 	f, err := openNoFollow(absPath)
 	if err != nil {
-		// Symlinks fail O_NOFOLLOW with ELOOP — silently skip.
 		if isSymlinkOpenError(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		// Validation-pass-3 F44: permission-denied at file-open is
+		// recoverable too. Skip the file silently.
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
 	}
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		// Refuse fifos, sockets, devices, dirs — read would hang or
-		// behave weirdly.
-		return nil, nil
+		return nil, nil, nil
 	}
 	if info.Size() > maxTodoScanFileSize {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var hits []map[string]any
@@ -318,7 +334,7 @@ func scanFileForMarkers(ctx context.Context, absPath, relPath string, matcher ma
 		line++
 		if line%1024 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		text := scanner.Text()
@@ -334,41 +350,36 @@ func scanFileForMarkers(ctx context.Context, absPath, relPath string, matcher ma
 		})
 	}
 	if err := scanner.Err(); err != nil {
-		// validation-pass-2 F18: a single line longer than the
-		// scanner buffer (1MB) returns ErrTooLong. Skip the file
-		// rather than aborting the entire evaluation; record the
-		// skip as a hit so the operator triages.
 		if errors.Is(err, bufio.ErrTooLong) {
-			hits = append(hits, map[string]any{
-				"file":             relPath,
-				"line":             line + 1,
-				"marker":           "(line-too-long)",
-				"surrounding-text": "file contains a line longer than 1MB; scan partial",
-			})
-			return hits, nil
+			// File contains a line longer than 1 MB (minified,
+			// generated, etc.). Return what we have plus a skipped
+			// record. The evaluator surfaces this as Unevaluated
+			// per F32.
+			return hits, map[string]any{
+				"file":   relPath,
+				"reason": "line-too-long",
+				"detail": "file contains a line longer than 1MB; partial scan",
+			}, nil
 		}
-		return nil, fmt.Errorf("scan %q: %w", absPath, err)
+		return nil, nil, fmt.Errorf("scan %q: %w", absPath, err)
 	}
-	return hits, nil
+	return hits, nil, nil
 }
 
-// maxTodoScanFileSize bounds the per-file scan to keep memory safe
-// when projects include vendored binaries or generated artifacts in
-// scope. 4 MB covers all realistic source files.
+// maxTodoScanFileSize bounds the per-file scan.
 const maxTodoScanFileSize = 4 * 1024 * 1024
 
 // openNoFollow opens a file refusing to traverse a final-component
-// symlink. On Linux this uses O_NOFOLLOW; on platforms without it,
-// falls back to a Lstat-guarded Open (TOCTOU window remains but
-// shrinks to lstat→open). Used by no-todo-marker's scan to defend
-// the TOCTOU described in validation-pass-2 F17.
+// symlink. Validation-pass-3 F31: clamped to platforms with
+// syscall.O_NOFOLLOW (Linux/BSD/macOS — Windows would need a
+// different approach not currently in scope).
 func openNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 }
 
-// isSymlinkOpenError reports whether err is the
-// "symlink-encountered-with-O_NOFOLLOW" failure. On Linux this is
-// ELOOP. We unwrap to *os.PathError → syscall.Errno.
+// isSymlinkOpenError reports whether err is one of the platform-
+// specific "symlink encountered with O_NOFOLLOW" errnos. ELOOP on
+// Linux; EMLINK on some BSDs (validation-pass-3 F31).
 func isSymlinkOpenError(err error) bool {
 	var pe *os.PathError
 	if !errors.As(err, &pe) {
@@ -378,28 +389,31 @@ func isSymlinkOpenError(err error) bool {
 	if !errors.As(pe.Err, &errno) {
 		return false
 	}
-	return errno == syscall.ELOOP
+	return errno == syscall.ELOOP || errno == syscall.EMLINK
 }
 
 // RegisterBuiltins adds the universal-base evaluators implemented
-// in the runner package (currently: no-todo-marker; compiles,
-// lint-clean, every-step-bound will follow).
-//
-// Uses Replace when the concept is already registered so calling
-// RegisterBuiltins a second time during init re-entry (D18) bumps
-// the registration's Generation rather than panicking on
-// ErrConceptAlreadyRegistered.
+// in the runner package.
 func RegisterBuiltins(r *Registry) {
 	registerOrReplace(r, "no-todo-marker", EvaluateNoTodoMarker)
 }
 
-// registerOrReplace tries Register first; if the concept is already
-// registered, falls back to Replace. The runner's typical lifecycle
-// has a single RegisterBuiltins call at startup; this helper allows
-// idempotent setup in tests and re-entry flows.
+// registerOrReplace tries Register; on ErrConceptAlreadyRegistered
+// falls back to Replace. Other Register errors propagate via the
+// fallback's Replace call (which will fail with ErrConceptNotRegistered
+// if Register's failure was something other than dup-registration —
+// fail-loud rather than silent per validation-pass-3 F10).
 func registerOrReplace(r *Registry, concept string, e Evaluator) {
-	if err := r.Register(concept, e); err == nil {
+	regErr := r.Register(concept, e)
+	if regErr == nil {
 		return
 	}
-	_ = r.Replace(concept, e)
+	if !errors.Is(regErr, ErrConceptAlreadyRegistered) {
+		// Truly unexpected — surface via panic so the operator
+		// sees the misuse at startup.
+		panic(fmt.Sprintf("RegisterBuiltins: %v", regErr))
+	}
+	if err := r.Replace(concept, e); err != nil {
+		panic(fmt.Sprintf("RegisterBuiltins: Replace fallback: %v", err))
+	}
 }

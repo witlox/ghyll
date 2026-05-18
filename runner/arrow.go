@@ -12,24 +12,44 @@ import (
 //
 // Precedence (highest-blocking first):
 //
-//   1. Any clause status fail OR any open finding above severity
-//      threshold → ArrowStatusBlocked.
+//   1. Any clause status fail OR any open finding at-or-above
+//      severity threshold (validation-pass-3 F6 pins inclusive
+//      semantics) → ArrowStatusBlocked.
 //   2. Any clause status unevaluated → ArrowStatusUnevaluated.
 //      (Unevaluated trumps provisional: an undecidable clause means
-//      the arrow's gate state is unknowable, not "tentatively pass".)
-//   3. Any clause status awaiting-attestation → ArrowStatusProvisional.
-//      (Some clauses pending operator verdict; not yet decidable but
-//      no failure observed.)
-//   4. Any clause status pending or running → ArrowStatusInProgress.
+//      the arrow's gate state is unknowable, not "tentatively
+//      pass".)
+//   3. All non-attested clauses pass AND at least one attested
+//      clause is awaiting-attestation or insufficient-basis
+//      → ArrowStatusProvisional. (Validation-pass-3 F4: spec demands
+//      the all-evaluated-clauses-pass precondition. F5: insufficient-
+//      basis is a peer of awaiting-attestation per gates.md §7.2 + §10.)
+//   4. Any clause status pending or running (not attested) →
+//      ArrowStatusInProgress. (Internal-only state; not in the
+//      spec's persisted 5-status set — validation-pass-3 F24.)
 //   5. All clauses pass → ArrowStatusComplete.
+//
+// THREAD SAFETY: DeriveArrowStatus does NOT copy its inputs. Callers
+// must not mutate the clauses or findings slices concurrently with
+// the call (validation-pass-3 F23).
 
 // ArrowStatus is the derived state of an arrow's exit gate.
 type ArrowStatus int
 
 const (
+	// ArrowStatusUnset is the zero value — a defensive sentinel
+	// signalling "no status assigned" (e.g., uninitialized struct
+	// field). DeriveArrowStatus never returns this; if a caller
+	// observes it in a record, the record is corrupt
+	// (validation-pass-3 F24).
+	ArrowStatusUnset ArrowStatus = iota
+
 	// ArrowStatusInProgress: at least one clause is still pending
-	// or running. Not yet decidable.
-	ArrowStatusInProgress ArrowStatus = iota
+	// or running (and not awaiting attestation). Runner-INTERNAL
+	// state — not in gates.md §7.2's persisted status set. Should
+	// not appear in attestation records; the runner sees it
+	// transiently before clauses reach a terminal state.
+	ArrowStatusInProgress
 
 	// ArrowStatusComplete: every clause is pass; no blocking
 	// findings. The arrow satisfies the next role's input.
@@ -46,9 +66,10 @@ const (
 	// unknowable; the next role's transition is refused.
 	ArrowStatusUnevaluated
 
-	// ArrowStatusProvisional: some clauses await attestation but
-	// none has failed. Operator verdict pending; the next role's
-	// transition is refused until resolution.
+	// ArrowStatusProvisional: every evaluated clause is pass AND
+	// at least one attested clause is awaiting-attestation or
+	// insufficient-basis. Operator verdict pending; the next
+	// role's transition is refused until resolution.
 	ArrowStatusProvisional
 
 	// ArrowStatusInvalidated: the grid amendment component has
@@ -58,9 +79,23 @@ const (
 	ArrowStatusInvalidated
 )
 
+// IsPersisted reports whether the status is one of gates.md §7.2's
+// persistable values. Used by attestation writers to refuse to log
+// the runner-internal Unset/InProgress states.
+func (s ArrowStatus) IsPersisted() bool {
+	switch s {
+	case ArrowStatusComplete, ArrowStatusBlocked, ArrowStatusUnevaluated,
+		ArrowStatusProvisional, ArrowStatusInvalidated:
+		return true
+	}
+	return false
+}
+
 // String returns the wire form used in attestation records.
 func (s ArrowStatus) String() string {
 	switch s {
+	case ArrowStatusUnset:
+		return "unset"
 	case ArrowStatusInProgress:
 		return "in-progress"
 	case ArrowStatusComplete:
@@ -86,7 +121,6 @@ func (s ArrowStatus) SatisfiesNextRole() bool {
 }
 
 // FindingStatus is the lifecycle state of a per-arrow finding.
-// Mirrors gates.md §7.3's finding-status enum.
 type FindingStatus int
 
 const (
@@ -97,49 +131,94 @@ const (
 	FindingStatusUnevaluated
 )
 
-// Finding is the minimal shape DeriveArrowStatus needs: status and
-// severity rank. The full finding record (id, raised-by-clause,
-// remediation-history, etc.) lives in the state-machine engine;
-// this struct is just the derive-status input.
+// Severity rank constants per gates.md §7.3 (5-value enum, ranks
+// 0..4). Used by ThresholdRank checks. Validation-pass-3 F17.
+const (
+	SeverityInfo     = 0
+	SeverityLow      = 1
+	SeverityMedium   = 2
+	SeverityHigh     = 3
+	SeverityCritical = 4
+)
+
+// Finding is the minimal shape DeriveArrowStatus needs.
+//
+// SeverityRank is meaningful only when Status is NOT
+// FindingStatusUnevaluated (a finding whose severity itself is
+// unevaluated propagates regardless of rank per gates.md §7.3 —
+// validation-pass-3 F25).
 type Finding struct {
 	Status       FindingStatus
-	SeverityRank int // higher = stricter; 0 = info, 5 = critical
+	SeverityRank int // 0=info..4=critical per the constants above.
 }
 
 // ClauseDeriveInput is the per-clause input to DeriveArrowStatus.
-// AwaitingAttestation is the "running, pending operator verdict"
-// state for attested clauses — modeled here as a flag rather than a
-// new ClauseStatus value so the runner's clause-state-machine
-// transition table (validTransitions in runner.go) stays focused
-// on machine-evaluator lifecycles.
+//
+// AwaitingAttestation and InsufficientBasis are the two peer markers
+// that drive an attested clause toward ArrowStatusProvisional. Only
+// valid when Status == StatusRunning (gates.md §7.1: attested-
+// awaiting transitions from running). Per validation-pass-3 F7.
 type ClauseDeriveInput struct {
 	Status              ClauseStatus
-	AwaitingAttestation bool
+	AwaitingAttestation bool // operator verdict pending
+	InsufficientBasis   bool // operator returned insufficient-basis; awaiting more depth
+}
+
+// IsAttestedPending reports whether the clause is currently
+// awaiting attestation OR insufficient-basis. Both flag a clause
+// as in-flight on the attestation pathway.
+func (c ClauseDeriveInput) IsAttestedPending() bool {
+	return c.AwaitingAttestation || c.InsufficientBasis
 }
 
 // DeriveArrowStatus computes the arrow's status from per-clause
-// derive inputs and per-finding status/severity. severityThreshold
-// is the operator-declared cutoff (gates.md §7.2 + no-open-finding
-// concept); findings above or equal to this rank with status open
-// or running are blocking.
+// derive inputs and per-finding status/severity.
 //
-// Returns (status, blockingClauseCount). Callers attach the count
-// to transition-refusal errors so the operator sees "blocked by N
-// clauses" at a glance.
-func DeriveArrowStatus(clauses []ClauseDeriveInput, findings []Finding, severityThreshold int) (ArrowStatus, int) {
+// severityThreshold is the operator-declared cutoff (per
+// gates.md §7.3 + no-open-finding concept). Threshold semantics:
+// INCLUSIVE (≥) — a finding at exactly the threshold blocks
+// (validation-pass-3 F6).
+//
+// Returns (status, blockingClauses, blockingFindings). The split
+// (validation-pass-3 F22) clarifies which axis is blocking — a
+// fail-count of 2 with 3 open findings produces (2, 3) rather than
+// a conflated 5.
+//
+// Out-of-range ClauseStatus values are treated as unevaluated
+// (validation-pass-3 F8) — corruption should not silently pass.
+//
+// AwaitingAttestation / InsufficientBasis are honored only when
+// Status == StatusRunning (F7); other combinations are
+// reinterpreted as if the flag were false.
+func DeriveArrowStatus(clauses []ClauseDeriveInput, findings []Finding, severityThreshold int) (ArrowStatus, int, int) {
 	if len(clauses) == 0 {
 		// An arrow with no clauses is degenerate; treat as
 		// in-progress so the runner doesn't claim "complete" on
-		// nothing. The catalogue's universal-base set (compiles,
-		// lint-clean, no-todo-marker, every-step-bound) ensures
+		// nothing. The catalogue's universal-base set ensures
 		// real arrows always have clauses; this path is defensive.
-		return ArrowStatusInProgress, 0
+		return ArrowStatusInProgress, 0, 0
 	}
 
-	// Precedence step 1: any clause-fail or open finding above
+	// Normalize: treat out-of-range Status as unevaluated, and
+	// invalid (AwaitingAttestation|InsufficientBasis with Status
+	// != StatusRunning) combinations as plain Status.
+	normalized := make([]ClauseDeriveInput, len(clauses))
+	for i, c := range clauses {
+		if !isKnownClauseStatus(c.Status) {
+			c.Status = StatusUnevaluated
+			c.AwaitingAttestation = false
+			c.InsufficientBasis = false
+		} else if c.Status != StatusRunning {
+			c.AwaitingAttestation = false
+			c.InsufficientBasis = false
+		}
+		normalized[i] = c
+	}
+
+	// Precedence step 1: any clause-fail or open finding at-or-above
 	// threshold → blocked.
 	failCount := 0
-	for _, c := range clauses {
+	for _, c := range normalized {
 		if c.Status == StatusFail {
 			failCount++
 		}
@@ -152,50 +231,72 @@ func DeriveArrowStatus(clauses []ClauseDeriveInput, findings []Finding, severity
 		}
 	}
 	if failCount > 0 || openBlockingFindings > 0 {
-		return ArrowStatusBlocked, failCount + openBlockingFindings
+		return ArrowStatusBlocked, failCount, openBlockingFindings
 	}
 
-	// Precedence step 2: any unevaluated clause → unevaluated.
-	unevalCount := 0
-	for _, c := range clauses {
+	// Precedence step 2: any unevaluated clause OR unevaluated
+	// finding → unevaluated.
+	unevalClauses := 0
+	for _, c := range normalized {
 		if c.Status == StatusUnevaluated {
-			unevalCount++
+			unevalClauses++
 		}
 	}
-	// Unevaluated findings also push the arrow to unevaluated (a
-	// finding that the harness couldn't decide is itself a depth
-	// signal).
+	unevalFindings := 0
 	for _, f := range findings {
 		if f.Status == FindingStatusUnevaluated {
-			unevalCount++
+			unevalFindings++
 		}
 	}
-	if unevalCount > 0 {
-		return ArrowStatusUnevaluated, unevalCount
+	if unevalClauses > 0 || unevalFindings > 0 {
+		return ArrowStatusUnevaluated, unevalClauses, unevalFindings
 	}
 
-	// Precedence step 3: any awaiting-attestation → provisional.
+	// Precedence step 3: provisional requires
+	//   (a) every non-attested clause is StatusPass, AND
+	//   (b) at least one attested clause is awaiting/insufficient.
+	// Validation-pass-3 F4.
 	awaitingCount := 0
-	for _, c := range clauses {
-		if c.AwaitingAttestation {
+	nonAttestedAllPass := true
+	for _, c := range normalized {
+		if c.IsAttestedPending() {
 			awaitingCount++
+			continue
+		}
+		if c.Status != StatusPass {
+			nonAttestedAllPass = false
 		}
 	}
-	if awaitingCount > 0 {
-		return ArrowStatusProvisional, awaitingCount
+	if awaitingCount > 0 && nonAttestedAllPass {
+		return ArrowStatusProvisional, awaitingCount, 0
 	}
 
-	// Precedence step 4: any pending or running → in-progress.
+	// Precedence step 4: any pending/running (not awaiting) →
+	// in-progress.
 	inProgressCount := 0
-	for _, c := range clauses {
+	for _, c := range normalized {
+		if c.IsAttestedPending() {
+			continue
+		}
 		if c.Status == StatusPending || c.Status == StatusRunning {
 			inProgressCount++
 		}
 	}
 	if inProgressCount > 0 {
-		return ArrowStatusInProgress, inProgressCount
+		return ArrowStatusInProgress, inProgressCount, 0
 	}
 
 	// Precedence step 5: all pass → complete.
-	return ArrowStatusComplete, 0
+	return ArrowStatusComplete, 0, 0
+}
+
+// isKnownClauseStatus reports whether s is a recognized
+// ClauseStatus value. Out-of-range values are corruption signals
+// per validation-pass-3 F8.
+func isKnownClauseStatus(s ClauseStatus) bool {
+	switch s {
+	case StatusPending, StatusRunning, StatusPass, StatusFail, StatusUnevaluated:
+		return true
+	}
+	return false
 }

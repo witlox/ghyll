@@ -13,6 +13,8 @@ package runner
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -63,10 +65,15 @@ func (s ClauseStatus) String() string {
 // validTransitions lists the legal next states for each ClauseStatus.
 // The runner only drives transitions through this map; an attempt to
 // move along an unlisted edge returns ErrInvalidTransition.
+//
+// Validation-pass-3 F29: the pending→unevaluated edge previously
+// allowed for a depth-below-required short-circuit was dead code
+// (Evaluate always transitions to running first). Removed; if a
+// depth-gate short-circuit is added later, the edge comes back
+// with the wiring that drives it.
 var validTransitions = map[ClauseStatus]map[ClauseStatus]struct{}{
 	StatusPending: {
-		StatusRunning:     {},
-		StatusUnevaluated: {}, // skipped before run (depth-below-required)
+		StatusRunning: {},
 	},
 	StatusRunning: {
 		StatusPass:        {},
@@ -91,6 +98,7 @@ var (
 	ErrEvaluatorUnknown   = errors.New("runner-evaluator-unknown")
 	ErrEvaluatorPanicked  = errors.New("runner-evaluator-panicked")
 	ErrEvaluatorReturnNil = errors.New("runner-evaluator-returned-nil")
+	ErrEvaluatorContract  = errors.New("runner-evaluator-contract-violation")
 )
 
 // Result is one evaluator's return value. Pass is the boolean verdict;
@@ -168,6 +176,7 @@ type Registry struct {
 // Registry errors.
 var (
 	ErrConceptAlreadyRegistered = errors.New("runner-concept-already-registered")
+	ErrConceptNotRegistered     = errors.New("runner-concept-not-registered")
 )
 
 // NewRegistry returns an empty registry.
@@ -201,13 +210,14 @@ func (r *Registry) Register(concept string, e Evaluator) error {
 // Replace overwrites an existing registration and bumps the
 // Generation counter so subsequent EvaluationRun records carry the
 // new identity. Used during init re-entry when an operator amends a
-// binding (D18). Returns ErrConceptAlreadyRegistered if the concept
-// is not registered yet (use Register first).
+// binding (D18). Returns ErrConceptNotRegistered (validation-pass-3
+// F10 — was misnamed ErrConceptAlreadyRegistered in the docstring)
+// if the concept is not registered yet; use Register first.
 func (r *Registry) Replace(concept string, e Evaluator) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.by[concept]; !exists {
-		return fmt.Errorf("Replace: concept %q not registered", concept)
+		return fmt.Errorf("%w: %s", ErrConceptNotRegistered, concept)
 	}
 	r.gen[concept]++
 	r.by[concept] = registered{
@@ -332,13 +342,18 @@ func (r *Runner) WithIDGen(g func() string) *Runner {
 //
 // Evaluator panics are caught via deferred recover() and reported as
 // ErrEvaluatorPanicked with a fail-status run record. CAVEATS
-// (validation-pass-2 F16):
+// (validation-pass-2 F16 + validation-pass-3 F9):
 //   - recover() only catches panics on the goroutine it's deferred
 //     in. An evaluator that spawns its own goroutines and panics
 //     there will crash the process. Evaluators MUST NOT spawn
 //     goroutines that outlive the call.
 //   - A stack-overflow panic may be unrecoverable depending on
 //     remaining stack budget. Evaluators MUST NOT recurse unbounded.
+//   - runtime.Goexit is NOT caught — recover() returns nil during
+//     Goexit, the named returns stay at zero, and Evaluate's
+//     goroutine vanishes without producing an EvaluationRun.
+//     Evaluators MUST NOT call runtime.Goexit (or trigger it via
+//     testing.T.FailNow / similar).
 //
 // Future subprocess-based evaluators (language bindings) get
 // stronger isolation than the in-process built-ins.
@@ -364,6 +379,16 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	if c.PassID == "" {
 		c.PassID = passID
 	}
+	// Validation-pass-3 F27: shallow-clone the Args map so a
+	// mutating evaluator can't leak state across invocations of
+	// the same clause. The caller's map is preserved verbatim.
+	if c.Args != nil {
+		cloned := make(map[string]any, len(c.Args))
+		for k, v := range c.Args {
+			cloned[k] = v
+		}
+		c.Args = cloned
+	}
 
 	startedAt := r.now()
 	startStatus := StatusPending
@@ -381,6 +406,18 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 		runErrText = runErr.Error()
 	}
 
+	// Validation-pass-3 F26: snapshot Result.Details into a fresh
+	// map so post-return mutation by the evaluator can't corrupt
+	// the persisted EvaluationRun.
+	if result != nil && result.Details != nil {
+		result = &Result{
+			Pass:        result.Pass,
+			Details:     snapshotDetails(result.Details),
+			Unevaluated: result.Unevaluated,
+			Reason:      result.Reason,
+		}
+	}
+
 	return &EvaluationRun{
 		ID:          r.idgen(),
 		ClauseID:    clauseID,
@@ -395,10 +432,52 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	}, runErr
 }
 
+// snapshotDetails returns a deep copy of the Details map so that a
+// retaining evaluator (or future binding) cannot mutate the
+// persisted EvaluationRun. Recursive over map[string]any and []any.
+// Validation-pass-3 F26.
+func snapshotDetails(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = snapshotValue(v)
+	}
+	return out
+}
+
+func snapshotValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return snapshotDetails(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = snapshotValue(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(x))
+		for i, item := range x {
+			out[i] = snapshotDetails(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(x))
+		copy(out, x)
+		return out
+	}
+	return v // scalars: string, int, float, bool, nil
+}
+
 // deriveEndStatus maps the evaluator's (result, err) pair to the
 // terminal ClauseStatus. The transition (running → end) is validated;
 // unreachable edges shouldn't happen given validTransitions but are
 // defended.
+//
+// Validation-pass-3 F11: enforces Result invariants. An evaluator
+// returning {Unevaluated:true, Reason:""} is treated as a contract
+// violation (the operator cannot triage an unevaluated clause with
+// no justification). {Unevaluated:true, Pass:true} is also a
+// violation (the two are exclusive per Result's docstring).
 func (r *Runner) deriveEndStatus(from ClauseStatus, result *Result, err error) (ClauseStatus, error) {
 	if err != nil {
 		// Evaluator-side error: not a clause-status transition;
@@ -409,6 +488,17 @@ func (r *Runner) deriveEndStatus(from ClauseStatus, result *Result, err error) (
 	}
 	if result == nil {
 		return StatusFail, ErrEvaluatorReturnNil
+	}
+	// F11: enforce invariants documented on Result.
+	if result.Unevaluated {
+		if result.Reason == "" {
+			return StatusFail, fmt.Errorf("%w: Unevaluated=true requires non-empty Reason",
+				ErrEvaluatorContract)
+		}
+		if result.Pass {
+			return StatusFail, fmt.Errorf("%w: Unevaluated and Pass are mutually exclusive",
+				ErrEvaluatorContract)
+		}
 	}
 	var to ClauseStatus
 	switch {
@@ -438,17 +528,28 @@ func safeInvoke(ctx context.Context, e Evaluator, c Clause) (result *Result, err
 	return e(ctx, c)
 }
 
-// defaultIDGen returns a sortable timestamp-derived id with a
-// monotonic process-wide counter appended (validation-pass-2 F43):
-// "ev-YYYYMMDD-HHMMSS-nanos-counter". Two Evaluate calls in the same
-// nanosecond produce different IDs because the counter differs.
-// Not cryptographically random; the runner needs uniqueness, not
-// unpredictability.
+// processIDPrefix is a per-process random hex string seeded once at
+// package init. Appended to every EvaluationRun.ID so two concurrent
+// processes (runner + vault replay, two ghyll sessions in different
+// repos) cannot produce identical IDs even when their wall clocks
+// and counters align. Validation-pass-3 F28.
+var processIDPrefix = func() string {
+	var b [4]byte
+	_, _ = cryptorand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}()
+
+// defaultIDGen returns a sortable timestamp-derived id with the
+// process prefix and a monotonic counter appended: "ev-YYYYMMDD-
+// HHMMSS-nanos-<procprefix>-<counter>". Two Evaluate calls in the
+// same nanosecond on the same process produce different IDs via
+// the counter; concurrent processes don't collide via the random
+// prefix.
 func defaultIDGen() string {
 	t := time.Now().UTC()
 	n := runIDCounter.Add(1)
-	return fmt.Sprintf("ev-%04d%02d%02d-%02d%02d%02d-%09d-%d",
+	return fmt.Sprintf("ev-%04d%02d%02d-%02d%02d%02d-%09d-%s-%d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(),
-		t.Nanosecond(), n)
+		t.Nanosecond(), processIDPrefix, n)
 }

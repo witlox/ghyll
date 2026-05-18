@@ -27,7 +27,6 @@ func TestCanTransition(t *testing.T) {
 		from, to ClauseStatus
 	}{
 		{StatusPending, StatusRunning},
-		{StatusPending, StatusUnevaluated},
 		{StatusRunning, StatusPass},
 		{StatusRunning, StatusFail},
 		{StatusRunning, StatusUnevaluated},
@@ -40,12 +39,13 @@ func TestCanTransition(t *testing.T) {
 	illegal := []struct {
 		from, to ClauseStatus
 	}{
-		{StatusPending, StatusPass},     // must go through running
-		{StatusPending, StatusFail},     // same
-		{StatusPass, StatusFail},        // terminal
-		{StatusFail, StatusPass},        // terminal
-		{StatusUnevaluated, StatusPass}, // terminal
-		{StatusRunning, StatusPending},  // no backwards
+		{StatusPending, StatusPass},        // must go through running
+		{StatusPending, StatusFail},        // same
+		{StatusPending, StatusUnevaluated}, // F29: dead edge removed
+		{StatusPass, StatusFail},           // terminal
+		{StatusFail, StatusPass},           // terminal
+		{StatusUnevaluated, StatusPass},    // terminal
+		{StatusRunning, StatusPending},     // no backwards
 	}
 	for _, c := range illegal {
 		if CanTransition(c.from, c.to) {

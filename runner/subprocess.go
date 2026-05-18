@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,29 +23,33 @@ import (
 // and parsing {pass, details} JSON from stdout.
 //
 // Defenses:
-//   - timeout via context.WithTimeout; on expiry the runner sends
-//     SIGTERM to the process group, waits GraceSeconds, then SIGKILL.
-//     Process-group kill reaps the binding's child processes too —
-//     no zombies.
-//   - output size cap (MaxOutputBytes). Stdout exceeding the cap is
-//     a fail with reason "evaluator-output-oversized"; the process
-//     is killed once the cap trips.
-//   - malformed JSON is fail with reason "evaluator-output-malformed";
-//     raw output (truncated to 16KB) is preserved on the run record
-//     for forensic inspection.
-//   - stderr is captured as metadata; it does NOT influence pass/fail.
+//   - Env allowlist (validation-pass-3 F1). The subprocess receives
+//     a minimal env (PATH, HOME, LANG, LC_*, TMPDIR, USER, SHELL,
+//     TERM) by default. Operators opt secrets in explicitly via
+//     WithInheritEnv or WithEnv. Default behavior does NOT leak
+//     ANTHROPIC_API_KEY, GHYLL_*, SSH_AUTH_SOCK, etc.
+//   - Timeout: SIGTERM → grace → SIGKILL via process group. The
+//     process group kill reaps children that stay in the group
+//     (setsid escape requires sandbox containment — see F41 below).
+//   - Output size cap: when captureBuf overflows, the subprocess is
+//     killed immediately (F2 — previously the cap only checked
+//     after Wait returned).
+//   - Forensic redaction: stderr/stdout blobs attached to fail
+//     records pass through a redaction filter that masks common
+//     secret patterns (Bearer tokens, sk-/api-/key prefixes,
+//     anything matching ^[A-Z_]*_(KEY|TOKEN|SECRET)=). F33.
 //
 // Sandbox-external: the binding runs as exec.Cmd. SRT / bubblewrap
-// at the kernel level handles security. The runner does not enforce
-// permissions, network restrictions, or filesystem isolation — that
-// is the sandbox's job.
+// at the kernel level handles security (FS isolation, network
+// restrictions, session containment). The runner enforces process-
+// level boundaries (env, timeout, output cap, kill); the sandbox
+// enforces system-level boundaries.
 
-// Defaults for the binding evaluator. These are conservative; the
-// operator can tune per-binding via BindingOption.
+// Defaults for the binding evaluator.
 const (
 	// DefaultBindingTimeout is the wall-clock cap for the whole
 	// subprocess (and its process group). Beyond this, SIGTERM →
-	// 5s → SIGKILL.
+	// grace → SIGKILL.
 	DefaultBindingTimeout = 5 * time.Minute
 
 	// DefaultBindingMaxOutputBytes caps stdout. A binding that
@@ -53,57 +59,88 @@ const (
 	// DefaultBindingGrace is the SIGTERM-to-SIGKILL window.
 	DefaultBindingGrace = 5 * time.Second
 
-	// maxRawOutputForForensics caps the raw-output blob attached to
-	// run records on malformed-output failures. 16 KiB is enough
-	// for a JSON syntax-error context window without bloating the
-	// pass log.
+	// minBindingGrace is the floor for the grace period. A grace of
+	// 0 (or negative) skips the SIGTERM step entirely (F34).
+	minBindingGrace = 100 * time.Millisecond
+
+	// maxRawOutputForForensics caps the raw-output blob attached
+	// to run records on malformed-output failures.
 	maxRawOutputForForensics = 16 * 1024
+
+	// maxStderrCapture is the upper bound on stderr the runner
+	// retains as metadata. Larger than the forensic cap because
+	// stderr is typically a log stream.
+	maxStderrCapture = 32 * 1024
+
+	// maxDetailsJSONDepth bounds the recursive depth of the
+	// Details payload (F35). Limits ballooning by hostile bindings
+	// that emit deeply nested structures inside the stdout cap.
+	maxDetailsJSONDepth = 8
 )
 
 // Result-detail reason codes surfaced by the subprocess evaluator.
-// Kept as constants so callers can errors.Is-style compare on the
-// reason text (no separate error types — the failure flows through
-// Result.Details["error"]).
 const (
 	ReasonTimeout         = "evaluator-timeout"
+	ReasonCancelled       = "evaluator-cancelled" // F40
 	ReasonMalformedOutput = "evaluator-output-malformed"
 	ReasonOversizedOutput = "evaluator-output-oversized"
-	ReasonOOMKilled       = "evaluator-killed: oom"
+	ReasonKilledBySignal  = "evaluator-killed-by-signal" // F42 (was OOMKilled)
 	ReasonSpawnFailed     = "evaluator-spawn-failed"
 )
 
+// defaultEnvAllowlist is the minimal env the subprocess inherits.
+// Bindings that need more (e.g., a build-tool needs CARGO_HOME)
+// declare it via WithInheritEnv at registration time. Validation-
+// pass-3 F1.
+var defaultEnvAllowlist = []string{
+	"PATH", "HOME", "LANG", "TMPDIR", "USER", "SHELL", "TERM",
+	"LOGNAME", "PWD",
+}
+
+// defaultEnvAllowlistPrefixes match anything starting with these
+// (LC_* covers all locale variables).
+var defaultEnvAllowlistPrefixes = []string{"LC_"}
+
+// secretRedactRE matches common secret-like strings. Used by the
+// forensic-redaction filter (F33).
+var secretRedactRE = regexp.MustCompile(
+	`(?i)(bearer\s+[A-Za-z0-9._-]+|sk-[A-Za-z0-9_-]{16,}|` +
+		`[A-Z][A-Z0-9_]*_(KEY|TOKEN|SECRET|PASSWORD|PASSWD)=[^\s]+|` +
+		`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)`)
+
 // BindingEvaluator is the evaluator implementation for language-
-// bound concepts. Construct via NewBindingEvaluator; the returned
-// Evaluator is suitable for Registry.Register or Registry.Replace.
+// bound concepts.
 type BindingEvaluator struct {
-	// Command is the shell command the binding expanded to (e.g.,
-	// "go-mutesting" or "staticcheck && go vet"). Run via
-	// `sh -c <command>` so the operator can use shell features.
+	// Command is the shell command the binding expanded to.
 	Command string
 
-	// Timeout is the wall-clock cap. Zero means use
-	// DefaultBindingTimeout.
+	// Timeout is the wall-clock cap. Zero means default.
 	Timeout time.Duration
 
-	// MaxOutputBytes caps stdout. Zero means use
-	// DefaultBindingMaxOutputBytes.
+	// MaxOutputBytes caps stdout. Zero means default.
 	MaxOutputBytes int64
 
-	// Grace is the SIGTERM-to-SIGKILL window. Zero means use
-	// DefaultBindingGrace.
+	// Grace is the SIGTERM-to-SIGKILL window. Zero means default.
+	// Clamped to a minBindingGrace floor at kill time so a
+	// direct-struct construction with Grace: 0 doesn't skip
+	// SIGTERM (F34).
 	Grace time.Duration
 
-	// Env overlays extra environment on the subprocess inheriting
-	// from the parent. Empty means inherit-only.
+	// Env is additional env to overlay on the allowlist. Each
+	// entry is "KEY=VALUE".
 	Env []string
 
-	// WorkingDir is the subprocess's working directory. Empty means
-	// inherit the parent's.
+	// InheritEnv is a list of additional parent env-var names to
+	// pass through to the subprocess (F1). The default allowlist
+	// (PATH/HOME/locale/etc.) is always included; this is opt-in
+	// for tool-specific extras (CARGO_HOME, GOPATH, etc.).
+	InheritEnv []string
+
+	// WorkingDir is the subprocess working directory.
 	WorkingDir string
 }
 
 // BindingOption mutates a BindingEvaluator at construction time.
-// Used for per-binding tuning without re-stating the whole struct.
 type BindingOption func(*BindingEvaluator)
 
 // WithTimeout sets the binding's wall-clock cap.
@@ -121,9 +158,16 @@ func WithGrace(d time.Duration) BindingOption {
 	return func(b *BindingEvaluator) { b.Grace = d }
 }
 
-// WithEnv adds environment-variable overlays.
+// WithEnv adds environment-variable overlays (each "KEY=VALUE").
 func WithEnv(env ...string) BindingOption {
 	return func(b *BindingEvaluator) { b.Env = append(b.Env, env...) }
+}
+
+// WithInheritEnv adds parent env-var names to inherit (F1).
+// Default allowlist (PATH/HOME/locale/etc.) is always included;
+// this opts in tool-specific extras.
+func WithInheritEnv(keys ...string) BindingOption {
+	return func(b *BindingEvaluator) { b.InheritEnv = append(b.InheritEnv, keys...) }
 }
 
 // WithWorkingDir sets the subprocess working directory.
@@ -131,24 +175,71 @@ func WithWorkingDir(dir string) BindingOption {
 	return func(b *BindingEvaluator) { b.WorkingDir = dir }
 }
 
-// NewBindingEvaluator constructs a BindingEvaluator and returns an
-// Evaluator function. The Evaluator can be registered against the
-// Registry under any concept name. command is run via `sh -c`.
+// NewBindingEvaluator constructs a BindingEvaluator and returns
+// an Evaluator function. command is run via `sh -c`.
 func NewBindingEvaluator(command string, opts ...BindingOption) Evaluator {
 	b := &BindingEvaluator{Command: command}
 	for _, opt := range opts {
 		opt(b)
 	}
+	return b.Evaluate
+}
+
+// ensureDefaults fills in default values for unset fields. Called
+// at the top of Evaluate so direct-struct construction also gets
+// the defaults applied (previously NewBindingEvaluator did this,
+// but a `&BindingEvaluator{Command: ...}` direct construction
+// bypassed the defaults — F34).
+func (b *BindingEvaluator) ensureDefaults() {
 	if b.Timeout == 0 {
 		b.Timeout = DefaultBindingTimeout
 	}
 	if b.MaxOutputBytes == 0 {
 		b.MaxOutputBytes = DefaultBindingMaxOutputBytes
 	}
-	if b.Grace == 0 {
+	if b.Grace < minBindingGrace {
 		b.Grace = DefaultBindingGrace
 	}
-	return b.Evaluate
+}
+
+// buildEnv constructs the env passed to the subprocess: the
+// default allowlist (PATH, HOME, locale, etc.), the binding's
+// explicit InheritEnv extras, then the binding's explicit Env
+// overlays last (so they win). Validation-pass-3 F1.
+func (b *BindingEvaluator) buildEnv() []string {
+	parent := os.Environ()
+	parentMap := make(map[string]string, len(parent))
+	for _, kv := range parent {
+		if eq := strings.IndexByte(kv, '='); eq > 0 {
+			parentMap[kv[:eq]] = kv[eq+1:]
+		}
+	}
+	want := func(key string) bool {
+		for _, allow := range defaultEnvAllowlist {
+			if key == allow {
+				return true
+			}
+		}
+		for _, prefix := range defaultEnvAllowlistPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				return true
+			}
+		}
+		for _, opt := range b.InheritEnv {
+			if key == opt {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, 0, len(defaultEnvAllowlist)+len(b.InheritEnv)+len(b.Env))
+	for k, v := range parentMap {
+		if want(k) {
+			out = append(out, k+"="+v)
+		}
+	}
+	out = append(out, b.Env...)
+	return out
 }
 
 // Evaluate is the Evaluator function. Spawns the binding, feeds
@@ -156,29 +247,29 @@ func NewBindingEvaluator(command string, opts ...BindingOption) Evaluator {
 // from stdout. Honors ctx for caller-initiated cancellation in
 // addition to its own Timeout.
 func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, error) {
-	if b.Command == "" {
-		return nil, errors.New("BindingEvaluator: empty Command")
+	if strings.TrimSpace(b.Command) == "" {
+		// F38: whitespace-only command is operator misconfiguration,
+		// not a malformed-output failure.
+		return failResult(ReasonSpawnFailed, "binding command is empty (after whitespace trim)", nil), nil
 	}
+	b.ensureDefaults()
 
-	// Combine caller ctx with our timeout.
-	deadline := time.Now().Add(b.Timeout)
-	subCtx, cancel := context.WithDeadline(ctx, deadline)
+	// We use exec.Command (not CommandContext) and route ctx through
+	// our own kill path so exec's built-in ctx-kill doesn't race with
+	// killProcessGroup (F15). Ctx cancellation cancels via subCtx
+	// below.
+	subCtx, cancel := context.WithTimeout(ctx, b.Timeout)
 	defer cancel()
 
-	// Build the subprocess.
-	cmd := exec.CommandContext(subCtx, "sh", "-c", b.Command)
-	cmd.Env = append(os.Environ(), b.Env...)
+	cmd := exec.Command("sh", "-c", b.Command)
+	cmd.Env = b.buildEnv()
 	if b.WorkingDir != "" {
 		cmd.Dir = b.WorkingDir
 	}
-	// Put the subprocess in its own process group so SIGTERM/SIGKILL
-	// can reach the binding's children (no zombies). On Linux,
-	// SysProcAttr.Setpgid + Pgid=0 starts a new group with PGID =
-	// the subprocess's PID. Killing -PGID then signals the whole
-	// group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// stdin: JSON-encoded clause input.
+	// stdin: JSON clause input. Owned pump so a binding that
+	// partial-reads doesn't deadlock Wait (F16).
 	stdinPayload, err := json.Marshal(map[string]any{
 		"clause-id":   c.ClauseID,
 		"pass-id":     c.PassID,
@@ -189,26 +280,38 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	if err != nil {
 		return nil, fmt.Errorf("BindingEvaluator: marshal clause input: %w", err)
 	}
-	cmd.Stdin = bytes.NewReader(stdinPayload)
-
-	// stdout: capped reader.
-	var stdoutCap captureBuf
-	stdoutCap.max = b.MaxOutputBytes
-	cmd.Stdout = &stdoutCap
-
-	// stderr: capped reader (separate cap, smaller — stderr is
-	// metadata, not the result channel).
-	var stderrCap captureBuf
-	stderrCap.max = maxRawOutputForForensics * 2
-	cmd.Stderr = &stderrCap
-
-	startErr := cmd.Start()
-	if startErr != nil {
-		return failResult(ReasonSpawnFailed, fmt.Sprintf("spawn: %v", startErr), nil, nil), nil
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("BindingEvaluator: stdin pipe: %w", err)
 	}
 
-	// Wait in a goroutine so we can race the subprocess against the
-	// output-cap trip.
+	// Kill closure passed to captureBuf so cap-overflow triggers
+	// immediate process-group termination (F2). One-shot via
+	// sync.Once.
+	var killOnce sync.Once
+	doKill := func() {
+		killOnce.Do(func() {
+			killProcessGroup(cmd, b.Grace)
+		})
+	}
+
+	stdoutCap := newCaptureBuf(b.MaxOutputBytes, doKill)
+	stderrCap := newCaptureBuf(maxStderrCapture, nil) // stderr overflow doesn't trigger kill
+	cmd.Stdout = stdoutCap
+	cmd.Stderr = stderrCap
+
+	if err := cmd.Start(); err != nil {
+		return failResult(ReasonSpawnFailed, fmt.Sprintf("spawn: %v", err), nil), nil
+	}
+
+	// stdin pump: write payload, close write-end, ignore EPIPE
+	// (binding may have exited or partial-read).
+	go func() {
+		_, _ = stdinPipe.Write(stdinPayload)
+		_ = stdinPipe.Close()
+	}()
+
+	// Wait in a goroutine so we can race against ctx + cap-kill.
 	waitErrCh := make(chan error, 1)
 	go func() {
 		waitErrCh <- cmd.Wait()
@@ -217,61 +320,72 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	var waitErr error
 	select {
 	case waitErr = <-waitErrCh:
-		// Subprocess finished on its own.
+		// Subprocess finished on its own (possibly killed by
+		// captureBuf overflow).
 	case <-subCtx.Done():
-		// Deadline expired or caller cancelled. Send SIGTERM to the
-		// process group; wait `Grace`; SIGKILL if still running.
-		killProcessGroup(cmd, b.Grace)
-		// Drain the wait goroutine.
+		// Caller cancelled or our timeout fired.
+		doKill()
 		<-waitErrCh
-		if errors.Is(subCtx.Err(), context.DeadlineExceeded) {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			return failResult(ReasonCancelled,
+				"caller cancelled the evaluation", &subprocessMetadata{
+					Stderr: stderrCap.bytes(),
+					Stdout: stdoutCap.bytes(),
+				}), nil
+		case errors.Is(subCtx.Err(), context.DeadlineExceeded):
 			return failResult(ReasonTimeout,
 				fmt.Sprintf("evaluator did not return within %s; sent SIGTERM then SIGKILL", b.Timeout),
-				nil, &subprocessMetadata{
+				&subprocessMetadata{
 					Stderr:        stderrCap.bytes(),
 					Stdout:        stdoutCap.bytes(),
 					TimedOutAfter: b.Timeout,
 				}), nil
+		default:
+			return failResult(ReasonCancelled,
+				fmt.Sprintf("subCtx: %v", subCtx.Err()),
+				&subprocessMetadata{
+					Stderr: stderrCap.bytes(),
+					Stdout: stdoutCap.bytes(),
+				}), nil
 		}
-		return failResult(ReasonTimeout,
-			fmt.Sprintf("evaluator cancelled: %v", subCtx.Err()),
-			nil, &subprocessMetadata{
-				Stderr: stderrCap.bytes(),
-				Stdout: stdoutCap.bytes(),
-			}), nil
 	}
 
-	// Stdout cap tripped? errOversized was buffered by captureBuf.
-	if stdoutCap.overflow {
-		// Try to terminate if still running (should not be — Wait
-		// returned — but defense-in-depth).
-		killProcessGroup(cmd, b.Grace)
+	// Stdout cap tripped? captureBuf has already killed if it had
+	// a doKill closure; the wait above caught the kill. Report
+	// oversized.
+	if stdoutCap.overflowed() {
 		return failResult(ReasonOversizedOutput,
 			fmt.Sprintf("stdout exceeded %d bytes", b.MaxOutputBytes),
-			nil, &subprocessMetadata{
+			&subprocessMetadata{
 				Stderr:   stderrCap.bytes(),
 				Stdout:   stdoutCap.bytes(),
 				Oversize: true,
 			}), nil
 	}
 
-	// Exit error: any non-zero exit, including OOM-kill.
+	// Exit error: non-zero exit incl. signal kill.
 	if waitErr != nil {
-		// Distinguish OOM (signal 9) from other failures.
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			ws, _ := exitErr.Sys().(syscall.WaitStatus)
-			if ws.Signaled() && ws.Signal() == syscall.SIGKILL {
-				return failResult(ReasonOOMKilled,
-					"subprocess killed by signal 9 (likely OOM); no graceful exit",
-					nil, &subprocessMetadata{
+			if ws.Signaled() {
+				// Any signal-kill (operator kill, OOM, sandbox,
+				// our own grace-expired SIGKILL) lands here. We
+				// no longer claim "likely OOM" — we report the
+				// signal and let the operator triage (F42).
+				return failResult(ReasonKilledBySignal,
+					fmt.Sprintf("subprocess killed by signal %d (%s); no graceful exit",
+						ws.Signal(), ws.Signal()),
+					&subprocessMetadata{
 						Stderr: stderrCap.bytes(),
 						Stdout: stdoutCap.bytes(),
+						Signal: int(ws.Signal()),
 					}), nil
 			}
-			// Other non-zero exits flow through to parse — a binding
-			// may legitimately exit non-zero AND produce a valid
-			// pass=false JSON. We don't presume.
+			// Other non-zero exits flow through to parse — a
+			// binding may legitimately exit non-zero AND produce
+			// pass=false JSON.
 		}
 	}
 
@@ -280,7 +394,7 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	if len(strings.TrimSpace(string(out))) == 0 {
 		return failResult(ReasonMalformedOutput,
 			"stdout was empty; expected {pass, details} JSON",
-			nil, &subprocessMetadata{
+			&subprocessMetadata{
 				Stderr: stderrCap.bytes(),
 				Stdout: out,
 			}), nil
@@ -292,7 +406,16 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return failResult(ReasonMalformedOutput,
 			fmt.Sprintf("stdout is not valid JSON: %v", err),
-			nil, &subprocessMetadata{
+			&subprocessMetadata{
+				Stderr: stderrCap.bytes(),
+				Stdout: out,
+			}), nil
+	}
+	// F35: cap details depth.
+	if depthExceeds(parsed.Details, maxDetailsJSONDepth) {
+		return failResult(ReasonMalformedOutput,
+			fmt.Sprintf("details payload exceeds max depth %d", maxDetailsJSONDepth),
+			&subprocessMetadata{
 				Stderr: stderrCap.bytes(),
 				Stdout: out,
 			}), nil
@@ -300,38 +423,36 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	if parsed.Details == nil {
 		parsed.Details = map[string]any{}
 	}
-	// Attach stderr as metadata (non-failure signal).
+	// Attach stderr as metadata (non-failure signal); redact secrets.
 	if len(stderrCap.bytes()) > 0 {
-		parsed.Details["stderr"] = truncateForForensics(stderrCap.bytes())
+		parsed.Details["stderr"] = redactSecrets(truncateForForensics(stderrCap.bytes()))
 	}
 	return &Result{Pass: parsed.Pass, Details: parsed.Details}, nil
 }
 
-// subprocessMetadata accompanies a fail Result on subprocess errors;
-// captures stderr / stdout / size flag for forensic inspection.
+// subprocessMetadata accompanies a fail Result on subprocess errors.
 type subprocessMetadata struct {
 	Stderr        []byte
 	Stdout        []byte
 	TimedOutAfter time.Duration
 	Oversize      bool
+	Signal        int
 }
 
 // failResult builds a Result encoding a subprocess failure as
-// pass=false with details.error + reason. Callers receive a
-// non-nil Result so EvaluationRun.Result is recorded (the runner
-// distinguishes "broken binding" from "real fail" via RunError,
-// which the caller sets via the returned error).
-func failResult(reason, detail string, _ error, meta *subprocessMetadata) *Result {
+// pass=false with details.error + reason. Forensic blobs are
+// redacted (F33).
+func failResult(reason, detail string, meta *subprocessMetadata) *Result {
 	details := map[string]any{
 		"error":  reason,
 		"detail": detail,
 	}
 	if meta != nil {
 		if len(meta.Stderr) > 0 {
-			details["stderr"] = truncateForForensics(meta.Stderr)
+			details["stderr"] = redactSecrets(truncateForForensics(meta.Stderr))
 		}
 		if len(meta.Stdout) > 0 {
-			details["stdout"] = truncateForForensics(meta.Stdout)
+			details["stdout"] = redactSecrets(truncateForForensics(meta.Stdout))
 		}
 		if meta.TimedOutAfter > 0 {
 			details["timed-out-after"] = meta.TimedOutAfter.String()
@@ -339,13 +460,14 @@ func failResult(reason, detail string, _ error, meta *subprocessMetadata) *Resul
 		if meta.Oversize {
 			details["stdout-oversize"] = true
 		}
+		if meta.Signal > 0 {
+			details["signal"] = meta.Signal
+		}
 	}
 	return &Result{Pass: false, Details: details}
 }
 
-// truncateForForensics caps a byte blob at maxRawOutputForForensics
-// and returns the head as a string (sufficient for JSON-error
-// context without bloating the pass log).
+// truncateForForensics caps a byte blob at maxRawOutputForForensics.
 func truncateForForensics(b []byte) string {
 	if int64(len(b)) <= maxRawOutputForForensics {
 		return string(b)
@@ -353,72 +475,149 @@ func truncateForForensics(b []byte) string {
 	return string(b[:maxRawOutputForForensics]) + "\n... (truncated)"
 }
 
+// redactSecrets replaces common secret patterns with "[REDACTED]".
+// Validation-pass-3 F33 — forensic blobs were durably persisted
+// into EvaluationRun and then synced to the orphan branch; this
+// filter is best-effort, not exhaustive.
+func redactSecrets(s string) string {
+	return secretRedactRE.ReplaceAllString(s, "[REDACTED]")
+}
+
+// depthExceeds reports whether v's JSON nesting depth exceeds max.
+// Used to bound the details payload at parse time (F35).
+func depthExceeds(v any, max int) bool {
+	if max < 0 {
+		return true
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for _, item := range x {
+			if depthExceeds(item, max-1) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if depthExceeds(item, max-1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // killProcessGroup sends SIGTERM to the subprocess's process group,
-// waits grace, then SIGKILL if the process is still alive. On Linux,
-// negating PID targets the whole group, so children spawned by the
-// binding are signalled too — no zombies.
+// waits grace, then SIGKILL if the process is still alive. On
+// Linux, negating PID targets the whole group.
+//
+// Refuses to signal if cmd.ProcessState != nil (process already
+// reaped — prevents PID-recycle race per validation-pass-3 F14).
 func killProcessGroup(cmd *exec.Cmd, grace time.Duration) {
 	if cmd.Process == nil {
 		return
+	}
+	// F14: if cmd already reaped, do nothing (PID may have been
+	// recycled to another process).
+	if cmd.ProcessState != nil {
+		return
+	}
+	// F34: clamp grace at floor.
+	if grace < minBindingGrace {
+		grace = minBindingGrace
 	}
 	pgid, err := syscall.Getpgid(cmd.Process.Pid)
 	if err != nil {
 		// Fall back to direct PID signalling.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		time.Sleep(grace)
-		_ = cmd.Process.Kill()
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+		}
 		return
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	// Wait up to `grace` for the group to exit; if it doesn't,
-	// SIGKILL. We can't synchronously wait on a process group from
-	// outside cmd.Wait, so poll with a short interval.
+	// Poll until either the process is reaped (via cmd.Wait
+	// elsewhere) or grace expires. Checking cmd.ProcessState
+	// avoids the signal-0 PID-recycle window.
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		// Send signal 0 to check if the group still exists.
-		if err := syscall.Kill(-pgid, 0); err != nil {
-			return // group is gone
+		if cmd.ProcessState != nil {
+			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	if cmd.ProcessState == nil {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
 }
 
-// captureBuf is an io.Writer that buffers up to `max` bytes; further
-// writes are dropped and the overflow flag is set. Used to cap
-// subprocess stdout/stderr at a known maximum.
+// captureBuf is an io.Writer with a byte cap. When the cap trips,
+// kill (if non-nil) is invoked once via sync.Once so the subprocess
+// is terminated immediately rather than streaming to a discarded
+// sink for the full Timeout. Validation-pass-3 F2.
 type captureBuf struct {
-	max      int64
-	buf      bytes.Buffer
-	written  int64
-	overflow bool
+	mu      sync.Mutex
+	max     int64
+	buf     bytes.Buffer
+	written int64
+	over    bool
+	kill    func()
+	killOne sync.Once
+}
+
+// newCaptureBuf constructs a captureBuf. kill may be nil if the
+// caller doesn't want overflow-triggered termination (e.g., stderr,
+// where overflow truncates but the subprocess continues).
+func newCaptureBuf(max int64, kill func()) *captureBuf {
+	return &captureBuf{max: max, kill: kill}
 }
 
 func (c *captureBuf) Write(p []byte) (int, error) {
-	if c.overflow {
-		// Pretend to accept (we already overflowed; further writes
-		// don't change the state). Returning the byte count without
-		// io.ErrShortWrite avoids confusing the os/exec plumbing.
-		return len(p), nil
-	}
+	c.mu.Lock()
 	remaining := c.max - c.written
 	if remaining <= 0 {
-		c.overflow = true
+		if !c.over {
+			c.over = true
+			c.mu.Unlock()
+			c.fireKill()
+			return len(p), nil
+		}
+		c.mu.Unlock()
 		return len(p), nil
 	}
 	if int64(len(p)) > remaining {
 		_, _ = c.buf.Write(p[:remaining])
 		c.written += remaining
-		c.overflow = true
+		c.over = true
+		c.mu.Unlock()
+		c.fireKill()
 		return len(p), nil
 	}
 	n, err := c.buf.Write(p)
 	c.written += int64(n)
+	c.mu.Unlock()
 	return n, err
 }
 
 func (c *captureBuf) bytes() []byte {
-	return c.buf.Bytes()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]byte, c.buf.Len())
+	copy(out, c.buf.Bytes())
+	return out
+}
+
+func (c *captureBuf) overflowed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.over
+}
+
+func (c *captureBuf) fireKill() {
+	if c.kill == nil {
+		return
+	}
+	c.killOne.Do(c.kill)
 }
 
 // Compile-time check that captureBuf is an io.Writer.

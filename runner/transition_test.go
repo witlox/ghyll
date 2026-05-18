@@ -147,6 +147,50 @@ func TestTransitionRefusal_InvalidatedErrorString(t *testing.T) {
 	}
 }
 
+// ---- validation-pass-3 fixes ----
+
+func TestCheckTransition_RejectsEmptyArrowIDs(t *testing.T) {
+	// validation-pass-3 F19
+	err := CheckTransition("", "B", ArrowStatusComplete, 0, 0)
+	if !errors.Is(err, ErrTransitionInvalidInput) {
+		t.Errorf("empty upstream: got %v; want ErrTransitionInvalidInput", err)
+	}
+	err = CheckTransition("A", "", ArrowStatusComplete, 0, 0)
+	if !errors.Is(err, ErrTransitionInvalidInput) {
+		t.Errorf("empty downstream: got %v; want ErrTransitionInvalidInput", err)
+	}
+}
+
+func TestCheckTransition_RejectsNegativeCounts(t *testing.T) {
+	// validation-pass-3 F19
+	err := CheckTransition("A", "B", ArrowStatusBlocked, -1, 0)
+	if !errors.Is(err, ErrTransitionInvalidInput) {
+		t.Errorf("negative blockingClauses: got %v; want ErrTransitionInvalidInput", err)
+	}
+}
+
+func TestCheckTransition_InvalidatedRejectsZeroGridVersion(t *testing.T) {
+	// validation-pass-3 F20
+	err := CheckTransition("A", "B", ArrowStatusInvalidated, 0, 0)
+	if !errors.Is(err, ErrTransitionInvalidInput) {
+		t.Errorf("invalidated with v0: got %v; want ErrTransitionInvalidInput", err)
+	}
+}
+
+func TestCheckTransition_InvalidatedPreservesBlockingClauses(t *testing.T) {
+	// validation-pass-3 F21: BlockingClauses populated for
+	// invalidated refusal too (findings raised pre-invalidation
+	// are retained per gates.md §7.2).
+	err := CheckTransition("A", "B", ArrowStatusInvalidated, 4, 7)
+	tr := AsTransitionRefusal(err)
+	if tr == nil {
+		t.Fatal("expected refusal")
+	}
+	if tr.BlockingClauses != 4 {
+		t.Errorf("BlockingClauses = %d; want 4 (preserved for invalidated)", tr.BlockingClauses)
+	}
+}
+
 func TestAsTransitionRefusal_NotMatching(t *testing.T) {
 	if got := AsTransitionRefusal(nil); got != nil {
 		t.Error("AsTransitionRefusal(nil) should be nil")

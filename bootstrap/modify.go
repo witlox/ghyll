@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path"
 	"reflect"
 	"strings"
 
 	"github.com/witlox/ghyll/catalogue"
+	"github.com/witlox/ghyll/internal/pathglob"
 )
 
 // ErrModifyWeakening is returned by CheckModification when a proposed
@@ -229,33 +229,20 @@ func toFloat(val any) (float64, bool) {
 }
 
 // isPathGlobNarrowing reports whether `proposed` is *demonstrably* a
-// narrower (or equal) path-glob than `orig`. This is a HEURISTIC, not
-// a subset decision — validation-pass-2 F1:
+// narrower (or equal) path-glob than `orig`. This is a HEURISTIC,
+// not a subset decision — validation-pass-2 F1.
 //
-//   - Equality always reports narrowing.
-//   - If `proposed` is a literal path (no wildcards) AND the original
-//     glob matches it, reports narrowing.
-//   - All other cases (glob-vs-glob, literal-not-matched-by-orig)
-//     report "not narrowing" — refusing the modification.
-//
-// In particular, glob-vs-glob is ALWAYS refused even when one is a
-// strict subset of the other. Deciding glob subset in general is
-// intractable for the harness; the operator who wants to change a
-// glob shape uses extend or skip.
-//
-// For the init.feature 184 outline:
-//
-//   - "src/**"     → "src/main.go" : narrowing (literal under glob)
-//   - "src/main.go" → "src/**"      : refused   (widening)
-//   - "src/*.go"   → "src/**/*.go"  : refused   (glob-vs-glob)
-//   - "src/**/*.go" → "src/*.go"   : refused   (glob-vs-glob, even
-//     though strictly narrower — heuristic plays safe)
+// Glob-vs-glob is ALWAYS refused. Deciding glob subset in general
+// is intractable; the operator who wants to change a glob shape
+// uses extend or skip. Delegates to internal/pathglob for the
+// canonical recursive matcher (validation-pass-3 F13 unified the
+// previously-duplicated bootstrap/runner implementations).
 func isPathGlobNarrowing(orig, proposed string) bool {
 	if orig == proposed {
 		return true
 	}
 	if isPathGlobLiteral(proposed) {
-		return pathGlobMatchRecursive(orig, proposed)
+		return pathglob.Match(orig, proposed)
 	}
 	return false
 }
@@ -265,67 +252,6 @@ func isPathGlobNarrowing(orig, proposed string) bool {
 // another glob.
 func isPathGlobLiteral(s string) bool {
 	return !strings.ContainsAny(s, "*?[")
-}
-
-// pathGlobMatchRecursive reports whether pattern matches name with
-// `**` as a multi-segment wildcard (matches zero or more path
-// segments). Multiple `**` tokens are handled by recursing on the
-// suffix (validation-pass-2 F13).
-//
-// Algorithm: split pattern on the first `**` into prefix and suffix.
-// Partition `name` into three parts at positions (i, j):
-//   - name segments [0:i] must match the prefix
-//   - name segments [i:j] are consumed by **
-//   - name segments [j:] must match the suffix (which may itself
-//     contain `**`, in which case we recurse)
-//
-// Returns false on malformed patterns — the modify check is a safety
-// gate, not a glob compiler; an unclosed bracket conservatively means
-// "doesn't match".
-func pathGlobMatchRecursive(pattern, name string) bool {
-	if !strings.Contains(pattern, "**") {
-		ok, err := path.Match(pattern, name)
-		return err == nil && ok
-	}
-	idx := strings.Index(pattern, "**")
-	prefix := strings.TrimSuffix(pattern[:idx], "/")
-	suffix := strings.TrimPrefix(pattern[idx+2:], "/")
-
-	var segments []string
-	if name != "" {
-		segments = strings.Split(name, "/")
-	}
-	for i := 0; i <= len(segments); i++ {
-		prefixCandidate := strings.Join(segments[:i], "/")
-		if !matchSegments(prefix, prefixCandidate) {
-			continue
-		}
-		for j := i; j <= len(segments); j++ {
-			suffixCandidate := strings.Join(segments[j:], "/")
-			if strings.Contains(suffix, "**") {
-				if pathGlobMatchRecursive(suffix, suffixCandidate) {
-					return true
-				}
-				continue
-			}
-			if matchSegments(suffix, suffixCandidate) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// matchSegments matches a no-`**` pattern against the name. Empty
-// pattern matches only an empty name. Uses path.Match (which does
-// not cross `/` boundaries for `*`, which is what we want for the
-// non-doublestar portions of a glob).
-func matchSegments(pattern, name string) bool {
-	if pattern == "" {
-		return name == ""
-	}
-	ok, err := path.Match(pattern, name)
-	return err == nil && ok
 }
 
 // equalAny reports whether two values are deeply equal for the

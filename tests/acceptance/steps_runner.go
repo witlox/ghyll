@@ -157,9 +157,9 @@ func (s *ScenarioState) anArrowWithMachineAttestedSplit(total, nMachine int, mac
 // derivedArrowStatusIs runs DeriveArrowStatus on the staged clauses
 // and verifies the derived status matches the expected wire form.
 func (s *ScenarioState) derivedArrowStatusIs(expected string) error {
-	got, count := runner.DeriveArrowStatus(s.RunnerClauses, s.RunnerFindings, s.RunnerSeverityThresh)
+	got, clauseCount, findingCount := runner.DeriveArrowStatus(s.RunnerClauses, s.RunnerFindings, s.RunnerSeverityThresh)
 	s.RunnerArrowStatus = got
-	s.RunnerBlockingCount = count
+	s.RunnerBlockingCount = clauseCount + findingCount
 	if got.String() != expected {
 		return fmt.Errorf("derived status = %q; want %q", got, expected)
 	}

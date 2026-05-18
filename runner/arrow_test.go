@@ -4,6 +4,7 @@ import "testing"
 
 func TestArrowStatus_String(t *testing.T) {
 	cases := map[ArrowStatus]string{
+		ArrowStatusUnset:       "unset",
 		ArrowStatusInProgress:  "in-progress",
 		ArrowStatusComplete:    "complete",
 		ArrowStatusBlocked:     "blocked",
@@ -23,6 +24,7 @@ func TestArrowStatus_String(t *testing.T) {
 
 func TestArrowStatus_SatisfiesNextRole(t *testing.T) {
 	for _, s := range []ArrowStatus{
+		ArrowStatusUnset,
 		ArrowStatusInProgress,
 		ArrowStatusBlocked,
 		ArrowStatusUnevaluated,
@@ -38,48 +40,63 @@ func TestArrowStatus_SatisfiesNextRole(t *testing.T) {
 	}
 }
 
+func TestArrowStatus_IsPersisted(t *testing.T) {
+	// validation-pass-3 F24: only the 5 spec'd statuses are
+	// persisted; Unset and InProgress are runner-internal.
+	for _, s := range []ArrowStatus{
+		ArrowStatusComplete, ArrowStatusBlocked, ArrowStatusUnevaluated,
+		ArrowStatusProvisional, ArrowStatusInvalidated,
+	} {
+		if !s.IsPersisted() {
+			t.Errorf("%s should be persisted", s)
+		}
+	}
+	for _, s := range []ArrowStatus{ArrowStatusUnset, ArrowStatusInProgress} {
+		if s.IsPersisted() {
+			t.Errorf("%s should NOT be persisted (runner-internal)", s)
+		}
+	}
+}
+
 func TestDeriveArrowStatus_AllPass(t *testing.T) {
-	// Scenario: All clauses pass — derived status complete.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusPass}, {Status: StatusPass},
 	}
-	got, n := DeriveArrowStatus(clauses, nil, 3)
+	got, c, f := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusComplete {
 		t.Errorf("got %s; want complete", got)
 	}
-	if n != 0 {
-		t.Errorf("count = %d; want 0", n)
+	if c != 0 || f != 0 {
+		t.Errorf("(clauses, findings) = (%d, %d); want (0, 0)", c, f)
 	}
 }
 
 func TestDeriveArrowStatus_OneFail(t *testing.T) {
-	// Scenario: One clause failed — blocked.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusPass}, {Status: StatusFail},
 	}
-	got, n := DeriveArrowStatus(clauses, nil, 3)
+	got, c, f := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusBlocked {
 		t.Errorf("got %s; want blocked", got)
 	}
-	if n != 1 {
-		t.Errorf("count = %d; want 1", n)
+	if c != 1 || f != 0 {
+		t.Errorf("(clauses, findings) = (%d, %d); want (1, 0)", c, f)
 	}
 }
 
 func TestDeriveArrowStatus_OneUnevaluatedNoFails(t *testing.T) {
-	// Scenario: One clause unevaluated with no fails — unevaluated.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusPass}, {Status: StatusUnevaluated},
 	}
-	got, n := DeriveArrowStatus(clauses, nil, 3)
+	got, c, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusUnevaluated {
 		t.Errorf("got %s; want unevaluated", got)
 	}
-	if n != 1 {
-		t.Errorf("count = %d; want 1", n)
+	if c != 1 {
+		t.Errorf("uneval clauses = %d; want 1", c)
 	}
 	if got.SatisfiesNextRole() {
 		t.Error("unevaluated must not satisfy next role's input")
@@ -87,70 +104,113 @@ func TestDeriveArrowStatus_OneUnevaluatedNoFails(t *testing.T) {
 }
 
 func TestDeriveArrowStatus_FailAndUnevaluatedCoexist(t *testing.T) {
-	// Scenario: Fail and unevaluated coexist — fail wins, blocked.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusFail}, {Status: StatusUnevaluated},
 	}
-	got, _ := DeriveArrowStatus(clauses, nil, 3)
+	got, _, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusBlocked {
 		t.Errorf("got %s; want blocked (fail trumps unevaluated)", got)
 	}
 }
 
-func TestDeriveArrowStatus_AwaitingAttestation(t *testing.T) {
-	// Scenario: Awaiting attestation produces provisional.
+func TestDeriveArrowStatus_AwaitingAttestationProvisional(t *testing.T) {
+	// validation-pass-3 F4: provisional requires all non-attested
+	// clauses pass.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusRunning, AwaitingAttestation: true},
 		{Status: StatusRunning, AwaitingAttestation: true},
 	}
-	got, n := DeriveArrowStatus(clauses, nil, 3)
+	got, c, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusProvisional {
 		t.Errorf("got %s; want provisional", got)
 	}
-	if n != 2 {
-		t.Errorf("count = %d; want 2 (awaiting count)", n)
+	if c != 2 {
+		t.Errorf("awaiting count = %d; want 2", c)
+	}
+}
+
+func TestDeriveArrowStatus_ProvisionalRequiresAllPass(t *testing.T) {
+	// validation-pass-3 F4: pending non-attested clauses block
+	// provisional (the spec demands all evaluated clauses pass).
+	clauses := []ClauseDeriveInput{
+		{Status: StatusPending}, // not yet evaluated
+		{Status: StatusRunning, AwaitingAttestation: true},
+	}
+	got, _, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
+	if got == ArrowStatusProvisional {
+		t.Errorf("got provisional; want in-progress (pending non-attested clause blocks provisional)")
+	}
+	if got != ArrowStatusInProgress {
+		t.Errorf("got %s; want in-progress", got)
+	}
+}
+
+func TestDeriveArrowStatus_InsufficientBasisProvisional(t *testing.T) {
+	// validation-pass-3 F5: insufficient-basis is a peer of
+	// awaiting-attestation.
+	clauses := []ClauseDeriveInput{
+		{Status: StatusPass}, {Status: StatusPass},
+		{Status: StatusRunning, InsufficientBasis: true},
+	}
+	got, c, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
+	if got != ArrowStatusProvisional {
+		t.Errorf("got %s; want provisional (insufficient-basis)", got)
+	}
+	if c != 1 {
+		t.Errorf("pending-attestation count = %d; want 1", c)
 	}
 }
 
 func TestDeriveArrowStatus_UnevaluatedTrumpsProvisional(t *testing.T) {
-	// Scenario: Unevaluated trumps provisional.
 	clauses := []ClauseDeriveInput{
 		{Status: StatusPass}, {Status: StatusPass}, {Status: StatusPass},
 		{Status: StatusUnevaluated},
 		{Status: StatusRunning, AwaitingAttestation: true},
 	}
-	got, _ := DeriveArrowStatus(clauses, nil, 3)
+	got, _, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusUnevaluated {
 		t.Errorf("got %s; want unevaluated (trumps provisional)", got)
 	}
 }
 
-func TestDeriveArrowStatus_OpenFindingAboveThresholdBlocks(t *testing.T) {
+func TestDeriveArrowStatus_AwaitingFlagIgnoredOnNonRunning(t *testing.T) {
+	// validation-pass-3 F7: AwaitingAttestation valid only when
+	// Status==StatusRunning. Pending+Awaiting is reinterpreted as
+	// plain pending.
 	clauses := []ClauseDeriveInput{
-		{Status: StatusPass}, {Status: StatusPass},
+		{Status: StatusPass},
+		{Status: StatusPending, AwaitingAttestation: true},
 	}
+	got, _, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
+	if got != ArrowStatusInProgress {
+		t.Errorf("got %s; want in-progress (awaiting on pending is invalid → plain pending)", got)
+	}
+}
+
+func TestDeriveArrowStatus_OpenFindingAtThresholdBlocks(t *testing.T) {
+	// validation-pass-3 F6: threshold inclusive. Finding at exactly
+	// threshold blocks.
+	clauses := []ClauseDeriveInput{{Status: StatusPass}}
 	findings := []Finding{
-		{Status: FindingStatusOpen, SeverityRank: 4}, // high, threshold=3 (medium)
+		{Status: FindingStatusOpen, SeverityRank: SeverityMedium},
 	}
-	got, n := DeriveArrowStatus(clauses, findings, 3)
+	got, _, f := DeriveArrowStatus(clauses, findings, SeverityMedium)
 	if got != ArrowStatusBlocked {
-		t.Errorf("got %s; want blocked", got)
+		t.Errorf("got %s; want blocked (at-threshold inclusive)", got)
 	}
-	if n != 1 {
-		t.Errorf("count = %d; want 1", n)
+	if f != 1 {
+		t.Errorf("blocking findings = %d; want 1", f)
 	}
 }
 
 func TestDeriveArrowStatus_OpenFindingBelowThresholdIgnored(t *testing.T) {
-	clauses := []ClauseDeriveInput{
-		{Status: StatusPass}, {Status: StatusPass},
-	}
+	clauses := []ClauseDeriveInput{{Status: StatusPass}}
 	findings := []Finding{
-		{Status: FindingStatusOpen, SeverityRank: 1}, // low, threshold=3 (medium)
+		{Status: FindingStatusOpen, SeverityRank: SeverityLow},
 	}
-	got, _ := DeriveArrowStatus(clauses, findings, 3)
+	got, _, _ := DeriveArrowStatus(clauses, findings, SeverityMedium)
 	if got != ArrowStatusComplete {
 		t.Errorf("got %s; want complete (low finding below threshold doesn't block)", got)
 	}
@@ -159,23 +219,38 @@ func TestDeriveArrowStatus_OpenFindingBelowThresholdIgnored(t *testing.T) {
 func TestDeriveArrowStatus_ResolvedFindingIgnored(t *testing.T) {
 	clauses := []ClauseDeriveInput{{Status: StatusPass}}
 	findings := []Finding{
-		{Status: FindingStatusResolved, SeverityRank: 5},
-		{Status: FindingStatusAcceptedRisk, SeverityRank: 4},
+		{Status: FindingStatusResolved, SeverityRank: SeverityCritical},
+		{Status: FindingStatusAcceptedRisk, SeverityRank: SeverityHigh},
 	}
-	got, _ := DeriveArrowStatus(clauses, findings, 3)
+	got, _, _ := DeriveArrowStatus(clauses, findings, SeverityMedium)
 	if got != ArrowStatusComplete {
 		t.Errorf("got %s; want complete (resolved/accepted-risk don't block)", got)
 	}
 }
 
 func TestDeriveArrowStatus_UnevaluatedFindingPropagates(t *testing.T) {
+	// validation-pass-3 F25: SeverityRank meaningless when Status
+	// is FindingStatusUnevaluated.
 	clauses := []ClauseDeriveInput{{Status: StatusPass}}
 	findings := []Finding{
-		{Status: FindingStatusUnevaluated, SeverityRank: 4},
+		{Status: FindingStatusUnevaluated, SeverityRank: SeverityHigh},
 	}
-	got, _ := DeriveArrowStatus(clauses, findings, 3)
+	got, _, f := DeriveArrowStatus(clauses, findings, SeverityMedium)
 	if got != ArrowStatusUnevaluated {
 		t.Errorf("got %s; want unevaluated (unevaluated finding propagates)", got)
+	}
+	if f != 1 {
+		t.Errorf("uneval findings = %d; want 1", f)
+	}
+}
+
+func TestDeriveArrowStatus_OutOfRangeClauseStatus(t *testing.T) {
+	// validation-pass-3 F8: out-of-range status → unevaluated, not
+	// silently complete.
+	clauses := []ClauseDeriveInput{{Status: ClauseStatus(99)}}
+	got, _, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
+	if got != ArrowStatusUnevaluated {
+		t.Errorf("got %s; want unevaluated (garbage status corrupts to safe state)", got)
 	}
 }
 
@@ -185,18 +260,40 @@ func TestDeriveArrowStatus_InProgress(t *testing.T) {
 		{Status: StatusPending},
 		{Status: StatusRunning},
 	}
-	got, n := DeriveArrowStatus(clauses, nil, 3)
+	got, c, _ := DeriveArrowStatus(clauses, nil, SeverityMedium)
 	if got != ArrowStatusInProgress {
 		t.Errorf("got %s; want in-progress", got)
 	}
-	if n != 2 {
-		t.Errorf("count = %d; want 2", n)
+	if c != 2 {
+		t.Errorf("count = %d; want 2", c)
 	}
 }
 
 func TestDeriveArrowStatus_EmptyClausesIsInProgress(t *testing.T) {
-	got, _ := DeriveArrowStatus(nil, nil, 3)
+	got, _, _ := DeriveArrowStatus(nil, nil, SeverityMedium)
 	if got != ArrowStatusInProgress {
 		t.Errorf("got %s; want in-progress (degenerate empty)", got)
+	}
+}
+
+func TestDeriveArrowStatus_SeparateClauseAndFindingCounts(t *testing.T) {
+	// validation-pass-3 F22: counts split into clauses + findings.
+	clauses := []ClauseDeriveInput{
+		{Status: StatusFail}, {Status: StatusFail},
+	}
+	findings := []Finding{
+		{Status: FindingStatusOpen, SeverityRank: SeverityCritical},
+		{Status: FindingStatusOpen, SeverityRank: SeverityCritical},
+		{Status: FindingStatusOpen, SeverityRank: SeverityCritical},
+	}
+	got, c, f := DeriveArrowStatus(clauses, findings, SeverityMedium)
+	if got != ArrowStatusBlocked {
+		t.Errorf("got %s; want blocked", got)
+	}
+	if c != 2 {
+		t.Errorf("blocking clauses = %d; want 2", c)
+	}
+	if f != 3 {
+		t.Errorf("blocking findings = %d; want 3", f)
 	}
 }

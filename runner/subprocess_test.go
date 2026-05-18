@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -187,7 +188,7 @@ func TestBindingEvaluator_SpawnFailedNoSuchCommand(t *testing.T) {
 
 func TestBindingEvaluator_OOMKilled(t *testing.T) {
 	// Simulate OOM by sending SIGKILL to ourselves. The runner
-	// observes signal 9 and reports ReasonOOMKilled.
+	// observes signal 9 and reports ReasonKilledBySignal.
 	eval := NewBindingEvaluator(`kill -KILL $$`, WithTimeout(2*time.Second))
 	res, err := eval(context.Background(), Clause{Concept: "test"})
 	if err != nil {
@@ -196,8 +197,8 @@ func TestBindingEvaluator_OOMKilled(t *testing.T) {
 	if res.Pass {
 		t.Errorf("Pass = true; want false (killed)")
 	}
-	if got := res.Details["error"]; got != ReasonOOMKilled {
-		t.Errorf("details.error = %v; want %s", got, ReasonOOMKilled)
+	if got := res.Details["error"]; got != ReasonKilledBySignal {
+		t.Errorf("details.error = %v; want %s", got, ReasonKilledBySignal)
 	}
 }
 
@@ -223,11 +224,24 @@ func TestBindingEvaluator_CallerCancellation(t *testing.T) {
 	}
 }
 
-func TestBindingEvaluator_EmptyCommandRejected(t *testing.T) {
-	eval := NewBindingEvaluator("")
-	_, err := eval(context.Background(), Clause{Concept: "test"})
-	if err == nil {
-		t.Error("empty command should error")
+func TestBindingEvaluator_EmptyCommandReportsSpawnFailed(t *testing.T) {
+	// validation-pass-3 F38: empty/whitespace-only command is
+	// operator misconfiguration; surfaces as ReasonSpawnFailed
+	// Result (not a runner-level error) so the EvaluationRun
+	// captures the issue with attribution.
+	for _, cmd := range []string{"", "   ", "\n", "\t"} {
+		eval := NewBindingEvaluator(cmd)
+		res, err := eval(context.Background(), Clause{Concept: "test"})
+		if err != nil {
+			t.Errorf("%q: unexpected runner-level error %v", cmd, err)
+			continue
+		}
+		if res.Pass {
+			t.Errorf("%q: should not pass", cmd)
+		}
+		if got := res.Details["error"]; got != ReasonSpawnFailed {
+			t.Errorf("%q: error = %v; want %s", cmd, got, ReasonSpawnFailed)
+		}
 	}
 }
 
@@ -260,7 +274,7 @@ func TestCaptureBuf_BoundedAndOverflows(t *testing.T) {
 	if n != 11 {
 		t.Errorf("Write returned %d; want 11 (full slice 'accepted')", n)
 	}
-	if !c.overflow {
+	if !c.overflowed() {
 		t.Error("overflow flag should be set")
 	}
 	if string(c.bytes()) != "hello" {
@@ -276,10 +290,144 @@ func TestCaptureBuf_BoundedAndOverflows(t *testing.T) {
 func TestCaptureBuf_UnderMaxRetainsAll(t *testing.T) {
 	c := &captureBuf{max: 100}
 	_, _ = c.Write([]byte("hello"))
-	if c.overflow {
+	if c.overflowed() {
 		t.Error("overflow set on under-cap write")
 	}
 	if string(c.bytes()) != "hello" {
 		t.Errorf("captured = %q", c.bytes())
+	}
+}
+
+func TestBindingEvaluator_EnvAllowlistByDefault(t *testing.T) {
+	// validation-pass-3 F1: secrets in parent env NOT inherited
+	// unless explicitly opted-in via WithInheritEnv.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-secret-do-not-leak")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+	eval := NewBindingEvaluator(`
+echo "{\"pass\": true, \"details\": {\"env_seen_key\": \"${ANTHROPIC_API_KEY:-MISSING}\", \"path\": \"${PATH:-MISSING}\"}}"
+`)
+	res, err := eval(context.Background(), Clause{Concept: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Details["env_seen_key"]
+	if got != "MISSING" {
+		t.Errorf("ANTHROPIC_API_KEY leaked to binding: %v", got)
+	}
+	if res.Details["path"] == "MISSING" {
+		t.Error("PATH should be in the default allowlist")
+	}
+}
+
+func TestBindingEvaluator_WithInheritEnv(t *testing.T) {
+	t.Setenv("CARGO_HOME", "/tmp/cargo-test")
+	eval := NewBindingEvaluator(
+		`echo "{\"pass\": true, \"details\": {\"cargo\": \"${CARGO_HOME:-MISSING}\"}}"`,
+		WithInheritEnv("CARGO_HOME"),
+	)
+	res, _ := eval(context.Background(), Clause{Concept: "test"})
+	if res.Details["cargo"] != "/tmp/cargo-test" {
+		t.Errorf("WithInheritEnv didn't pass CARGO_HOME: %v", res.Details)
+	}
+}
+
+func TestBindingEvaluator_StdoutCapKillsPromptly(t *testing.T) {
+	// validation-pass-3 F2: stdout cap overflow must kill the
+	// subprocess promptly, NOT wait for Timeout. Test: emit way
+	// more than the cap and verify elapsed time is small.
+	eval := NewBindingEvaluator(
+		`yes "x" | head -c 1000000`, // 1MB
+		WithMaxOutputBytes(1024),    // 1KB cap
+		WithTimeout(30*time.Second),
+	)
+	start := time.Now()
+	res, _ := eval(context.Background(), Clause{Concept: "test"})
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Errorf("cap-overflow took %v; should kill within ~grace", elapsed)
+	}
+	if res.Details["error"] != ReasonOversizedOutput {
+		t.Errorf("error = %v; want %s", res.Details["error"], ReasonOversizedOutput)
+	}
+}
+
+func TestBindingEvaluator_CancelledVsTimeoutDistinct(t *testing.T) {
+	// validation-pass-3 F40: caller cancellation and deadline
+	// expiry surface as different reasons.
+	eval := NewBindingEvaluator(`sleep 5`, WithTimeout(5*time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	res, _ := eval(ctx, Clause{Concept: "test"})
+	if res.Details["error"] != ReasonCancelled {
+		t.Errorf("error = %v; want %s (caller cancel)", res.Details["error"], ReasonCancelled)
+	}
+}
+
+func TestBindingEvaluator_DetailsDepthLimit(t *testing.T) {
+	// validation-pass-3 F35: deeply nested details payload refused.
+	// Build a JSON with 12 levels of nesting (> maxDetailsJSONDepth=8).
+	deep := `{"pass": true, "details": {"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a": 1}}}}}}}}}}}`
+	eval := NewBindingEvaluator(fmt.Sprintf(`echo '%s'`, deep))
+	res, _ := eval(context.Background(), Clause{Concept: "test"})
+	if res.Pass {
+		t.Errorf("deeply-nested details should fail; got Pass=true")
+	}
+	if res.Details["error"] != ReasonMalformedOutput {
+		t.Errorf("error = %v; want %s", res.Details["error"], ReasonMalformedOutput)
+	}
+}
+
+func TestBindingEvaluator_SecretsRedactedInForensics(t *testing.T) {
+	// validation-pass-3 F33: secrets in stderr redacted before
+	// persistence to attestation records.
+	eval := NewBindingEvaluator(`
+echo "Bearer sk-ant-abcdef1234567890abcdef" >&2
+echo "API_KEY=sk-leaked-secret-pattern-12345" >&2
+echo "not json"
+`)
+	res, _ := eval(context.Background(), Clause{Concept: "test"})
+	stderr, _ := res.Details["stderr"].(string)
+	if strings.Contains(stderr, "sk-ant-abcdef") {
+		t.Errorf("Bearer token not redacted: %q", stderr)
+	}
+	if strings.Contains(stderr, "sk-leaked-secret") {
+		t.Errorf("API_KEY value not redacted: %q", stderr)
+	}
+	if !strings.Contains(stderr, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] marker; got %q", stderr)
+	}
+}
+
+func TestKillProcessGroup_GraceClampedFromZero(t *testing.T) {
+	// validation-pass-3 F34: a direct-struct &BindingEvaluator{Grace:0}
+	// must not skip SIGTERM. ensureDefaults fills grace; if a future
+	// caller bypasses defaults entirely, killProcessGroup's clamp
+	// still applies.
+	b := &BindingEvaluator{Command: "true", Grace: 0}
+	b.ensureDefaults()
+	if b.Grace < minBindingGrace {
+		t.Errorf("Grace = %v; want >= %v after ensureDefaults", b.Grace, minBindingGrace)
+	}
+}
+
+func TestRedactSecrets_Patterns(t *testing.T) {
+	cases := map[string]string{
+		"Bearer abc-123-xyz":                "[REDACTED]",
+		"API_KEY=hush":                      "[REDACTED]",
+		"GHYLL_TOKEN=sneaky":                "[REDACTED]",
+		"sk-ant-1234567890abcdef1234567890": "[REDACTED]",
+	}
+	for in, marker := range cases {
+		out := redactSecrets(in)
+		if !strings.Contains(out, marker) {
+			t.Errorf("redactSecrets(%q) = %q; want [REDACTED]", in, out)
+		}
+	}
+	// Negative: doesn't redact innocuous strings.
+	if redactSecrets("normal text") != "normal text" {
+		t.Errorf("over-redacted innocuous text")
 	}
 }

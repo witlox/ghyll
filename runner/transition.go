@@ -71,14 +71,21 @@ type TransitionRefusal struct {
 // Error formats a human-readable refusal message. The structured
 // fields above are the API; the error string is for log lines and
 // fall-back display.
+//
+// Wire format (validation-pass-3 F18): both Kind and UpstreamStatus
+// serialize via their String() method (Kind is a string-typed alias;
+// UpstreamStatus's String() returns the wire form). The format
+// `%s: upstream %q has status %s (%d blocking)` is the documented
+// shape attestation-log consumers may rely on; if it changes, that
+// is a breaking change to the wire contract.
 func (r *TransitionRefusal) Error() string {
 	switch r.Kind {
 	case KindTransitionRefusedInvalidated:
 		return fmt.Sprintf("%s: upstream arrow %q invalidated by grid-version v%d; downstream %q refused",
-			r.Kind, r.UpstreamArrowID, r.InvalidatingGridVersion, r.DownstreamArrowID)
+			string(r.Kind), r.UpstreamArrowID, r.InvalidatingGridVersion, r.DownstreamArrowID)
 	default:
-		return fmt.Sprintf("%s: upstream arrow %q has status %q (%d blocking clauses); downstream %q refused",
-			r.Kind, r.UpstreamArrowID, r.UpstreamStatus, r.BlockingClauses, r.DownstreamArrowID)
+		return fmt.Sprintf("%s: upstream arrow %q has status %s (%d blocking clauses); downstream %q refused",
+			string(r.Kind), r.UpstreamArrowID, r.UpstreamStatus, r.BlockingClauses, r.DownstreamArrowID)
 	}
 }
 
@@ -93,7 +100,19 @@ func (r *TransitionRefusal) Is(target error) bool {
 // errors.Is. The concrete error is always *TransitionRefusal; this
 // sentinel lets callers match the category without importing the
 // kind constants.
+//
+// Note (validation-pass-3 F37): comparison is pointer-identity, NOT
+// message equality. `errors.New("transition-refused")` (a fresh
+// errorString) will NOT match via errors.Is — use this exported
+// sentinel.
 var ErrTransitionRefused = errors.New("transition-refused")
+
+// ErrTransitionInvalidInput is returned when CheckTransition is
+// called with malformed arguments (empty arrow IDs, negative
+// blocking counts, etc.). Distinct from ErrTransitionRefused so
+// callers can tell a programmer bug apart from a legitimate
+// refusal. Validation-pass-3 F19.
+var ErrTransitionInvalidInput = errors.New("transition-invalid-input")
 
 // CheckTransition reports whether a downstream role transition is
 // permitted given the upstream arrow's current state. Returns nil
@@ -113,12 +132,38 @@ func CheckTransition(
 	blockingClauses int,
 	invalidatingGridVersion int,
 ) error {
+	// Validation-pass-3 F19: refuse empty IDs and negative counts.
+	// These are programmer bugs (callers should never produce
+	// them), surfaced via a distinct error sentinel.
+	if upstreamArrowID == "" || downstreamArrowID == "" {
+		return fmt.Errorf("%w: arrow IDs must be non-empty (upstream=%q downstream=%q)",
+			ErrTransitionInvalidInput, upstreamArrowID, downstreamArrowID)
+	}
+	if blockingClauses < 0 {
+		return fmt.Errorf("%w: blockingClauses must be >= 0; got %d",
+			ErrTransitionInvalidInput, blockingClauses)
+	}
+	if invalidatingGridVersion < 0 {
+		return fmt.Errorf("%w: invalidatingGridVersion must be >= 0; got %d",
+			ErrTransitionInvalidInput, invalidatingGridVersion)
+	}
+
 	if upstreamStatus == ArrowStatusInvalidated {
+		// Validation-pass-3 F20: grid versions start at v1; v0 is
+		// structurally meaningless for an invalidated arrow.
+		if invalidatingGridVersion < 1 {
+			return fmt.Errorf("%w: invalidated status requires invalidatingGridVersion >= 1; got %d",
+				ErrTransitionInvalidInput, invalidatingGridVersion)
+		}
+		// F21: preserve blockingClauses even for invalidated —
+		// findings raised before invalidation are retained tagged
+		// with grid-version per gates.md §7.2.
 		return &TransitionRefusal{
 			Kind:                    KindTransitionRefusedInvalidated,
 			UpstreamArrowID:         upstreamArrowID,
 			DownstreamArrowID:       downstreamArrowID,
 			UpstreamStatus:          upstreamStatus,
+			BlockingClauses:         blockingClauses,
 			InvalidatingGridVersion: invalidatingGridVersion,
 		}
 	}
