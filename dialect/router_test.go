@@ -252,3 +252,69 @@ func TestScenario_Routing_DeepEqualsDefaultNoEscalate(t *testing.T) {
 		t.Errorf("action = %q, want %q (deep==default disables escalation)", d.Action, "none")
 	}
 }
+
+// TestScenario_Routing_GateFloorEscalates verifies that a v2 gate's
+// MinTier requirement forces escalation regardless of context-depth.
+func TestScenario_Routing_GateFloorEscalates(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2 // escalate at MOCKED (2) or higher
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		GateFloor:   3, // REALISTIC — exceeds the threshold
+		Config:      cfg,
+	})
+	if d.Action != "escalate" {
+		t.Errorf("action = %q, want %q", d.Action, "escalate")
+	}
+	if d.TargetModel != "glm5" {
+		t.Errorf("target = %q, want %q", d.TargetModel, "glm5")
+	}
+}
+
+// TestScenario_Routing_GateFloorBelowThresholdNoEscalate verifies
+// that GateFloor below the configured rank does NOT escalate by
+// itself.
+func TestScenario_Routing_GateFloorBelowThresholdNoEscalate(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		GateFloor:   1, // SHALLOW — below MOCKED threshold
+		Config:      cfg,
+	})
+	if d.Action != "none" {
+		t.Errorf("action = %q, want %q (gate-floor below threshold)", d.Action, "none")
+	}
+}
+
+// TestScenario_Routing_GateFloorBlocksDeEscalation verifies the gate
+// floor authoritatively keeps the dispatcher on DeepModel even when
+// context-depth signals would otherwise allow de-escalation.
+func TestScenario_Routing_GateFloorBlocksDeEscalation(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	d := Evaluate(RouterInputs{
+		ActiveModel:           "glm5", // currently on deep
+		GateFloor:             3,      // REALISTIC gate active
+		ContextCompactedBelow: 10000,  // post-compaction below threshold
+		Config:                cfg,
+	})
+	if d.Action == "de_escalate" {
+		t.Error("de-escalation must be blocked while gate-floor is active")
+	}
+}
+
+// TestScenario_Routing_GateFloorZeroDisabled verifies the legacy
+// path: when GateFloorEscalateAtRank=0, the gate-floor mechanism is
+// disabled entirely.
+func TestScenario_Routing_GateFloorZeroDisabled(t *testing.T) {
+	cfg := defaultRoutingConfig() // GateFloorEscalateAtRank=0
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		GateFloor:   3, // would otherwise force escalation
+		Config:      cfg,
+	})
+	if d.Action != "none" {
+		t.Errorf("action = %q, want %q (gate-floor mechanism disabled)", d.Action, "none")
+	}
+}

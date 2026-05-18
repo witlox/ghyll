@@ -161,3 +161,122 @@ func TestGLM_HandoffSummary(t *testing.T) {
 		t.Fatal("expected non-empty handoff summary")
 	}
 }
+
+// Test DeepSeek dialect functions
+
+func TestDeepSeek_SystemPrompt(t *testing.T) {
+	prompt := DeepSeekSystemPrompt("/home/dev/project")
+	if prompt == "" {
+		t.Fatal("expected non-empty system prompt")
+	}
+	if !strings.Contains(prompt, "/home/dev/project") {
+		t.Error("prompt should include workdir")
+	}
+}
+
+func TestDeepSeek_BuildMessages(t *testing.T) {
+	msgs := []types.Message{{Role: "user", Content: "hello"}}
+	built := DeepSeekBuildMessages(msgs, "You are a coding assistant.")
+	if len(built) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(built))
+	}
+	if built[0]["role"] != "system" {
+		t.Errorf("first message role = %q", built[0]["role"])
+	}
+}
+
+func TestDeepSeek_ParseToolCalls(t *testing.T) {
+	raw := json.RawMessage(`[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]`)
+	calls, err := DeepSeekParseToolCalls(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Errorf("expected 1 call, got %d", len(calls))
+	}
+}
+
+func TestDeepSeek_PlanModePrompt(t *testing.T) {
+	if DeepSeekPlanModePrompt() == "" {
+		t.Error("plan mode prompt should be non-empty")
+	}
+}
+
+func TestDeepSeek_CompactionPrompt(t *testing.T) {
+	if DeepSeekCompactionPrompt() == "" {
+		t.Error("compaction prompt should be non-empty")
+	}
+}
+
+func TestDeepSeek_TokenCount(t *testing.T) {
+	msgs := []types.Message{{Role: "user", Content: "the quick brown fox"}}
+	if DeepSeekTokenCount(msgs) <= 0 {
+		t.Error("token count should be positive")
+	}
+}
+
+func TestDeepSeek_HandoffSummary(t *testing.T) {
+	cp := memory.Checkpoint{Turn: 5, ActiveModel: "qwen", Summary: "previous work"}
+	out := DeepSeekHandoffSummary(cp, []types.Message{{Role: "user", Content: "continue"}})
+	if len(out) < 2 {
+		t.Errorf("handoff should include system + recent turns; got %d", len(out))
+	}
+	if out[0].Role != "system" {
+		t.Errorf("first role = %q; want system", out[0].Role)
+	}
+}
+
+// Test Qwen Coder dialect functions
+
+func TestQwen_SystemPrompt(t *testing.T) {
+	prompt := QwenSystemPrompt("/home/dev/project")
+	if prompt == "" {
+		t.Fatal("expected non-empty system prompt")
+	}
+}
+
+func TestQwen_BuildMessages(t *testing.T) {
+	msgs := []types.Message{{Role: "user", Content: "hello"}}
+	built := QwenBuildMessages(msgs, "You are a coding assistant.")
+	if len(built) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(built))
+	}
+}
+
+func TestQwen_ParseToolCalls(t *testing.T) {
+	raw := json.RawMessage(`[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]`)
+	calls, err := QwenParseToolCalls(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Errorf("expected 1 call, got %d", len(calls))
+	}
+}
+
+func TestQwen_PlanModePrompt(t *testing.T) {
+	if QwenPlanModePrompt() == "" {
+		t.Error("plan mode prompt should be non-empty")
+	}
+}
+
+func TestQwen_CompactionPrompt(t *testing.T) {
+	if QwenCompactionPrompt() == "" {
+		t.Error("compaction prompt should be non-empty")
+	}
+}
+
+func TestQwen_TokenCount(t *testing.T) {
+	msgs := []types.Message{{Role: "user", Content: "the quick brown fox"}}
+	if QwenTokenCount(msgs) <= 0 {
+		t.Error("token count should be positive")
+	}
+}
+
+func TestQwen_HandoffSummary(t *testing.T) {
+	cp := memory.Checkpoint{Turn: 5, ActiveModel: "glm5", Summary: "previous work"}
+	out := QwenHandoffSummary(cp, []types.Message{{Role: "user", Content: "continue"}})
+	if len(out) < 2 {
+		t.Errorf("handoff should include system + recent turns; got %d", len(out))
+	}
+}

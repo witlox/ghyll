@@ -23,7 +23,34 @@ dialect = "glm"
 max_context = 200000
 ```
 
-Available dialect families: `minimax` (MiniMax M2.5, M2.7, etc.), `glm` (GLM-5, GLM-5.1, etc.). See [ADR-007](../decisions/007-tier-based-routing.md).
+Available dialect families:
+
+- `minimax` (MiniMax M2.5, M2.7, ...)
+- `glm` (GLM-5, GLM-5.1, ...)
+- `deepseek` (DeepSeek-V3, DeepSeek-Coder, ...)
+- `qwen` (Qwen2.5-Coder, Qwen3-Coder, ...)
+
+See [ADR-007](../decisions/007-tier-based-routing.md).
+
+### Quantized variants
+
+A quantized model in the SAME family uses the SAME dialect. Quantization (Q4/Q5/Q8, GGUF/AWQ/GPTQ) changes the endpoint backing the model, not the wire protocol — SGLang, vLLM, and llama.cpp all expose the OpenAI tool-call format that the dialect already speaks. Configure each quantized variant as its own `[models.<name>]` block with the endpoint pointing at the quantized backend:
+
+```toml
+[models.qwen-coder-q4]
+endpoint = "http://localhost:11434/v1"   # llama.cpp server hosting Q4_K_M
+dialect = "qwen"
+max_context = 32000
+
+[models.qwen-coder-q8]
+endpoint = "http://localhost:11435/v1"   # vLLM hosting Q8
+dialect = "qwen"
+max_context = 65000
+```
+
+The dialect identifier is the same; the model name and endpoint disambiguate. The effective depth (and thus the appropriate routing tier) differs across quantizations — a Q4 of a 70B model is NOT the same as the full-precision model. Operators are responsible for setting `max_context` to match the backend's reported context window and for mapping each quantized variant to the right routing tier.
+
+If a quantization vendor ships a non-standard tool-call format (rare but documented for some early GGUF tool-format experiments), a new dialect file is needed instead. Stick with the family dialect unless the wire format actually differs.
 
 ## Routing
 
@@ -36,6 +63,19 @@ deep_model = "glm5"                # Deep tier model (escalation target)
 context_depth_threshold = 32000     # Escalate to deep tier above this
 tool_depth_threshold = 5            # Escalate after N sequential tool calls
 enable_auto_routing = true          # Set false to disable routing
+
+# v2 gate-floor bridge: when a v2 gate declares MinTier (depth-sensitive
+# clause requirement) at or above this rank, the dispatcher MUST land
+# on deep_model and de-escalation is blocked.
+#
+# Rank scale (runner.DepthRank):
+#   0 = NONE       1 = SHALLOW       2 = MOCKED       3 = REALISTIC
+#
+# Default = 2 (MOCKED): gates demanding MOCKED or REALISTIC depth
+# escalate to deep_model regardless of context-depth signals.
+# Set to 0 to disable the gate-floor mechanism entirely (legacy v1
+# behavior).
+gate_floor_escalate_at_rank = 2
 ```
 
 Override with `--model` flag: `ghyll run . --model glm5`
@@ -129,6 +169,7 @@ If a field is omitted, these defaults apply:
 | `routing.default_model` | `"m25"` |
 | `routing.context_depth_threshold` | `32000` |
 | `routing.tool_depth_threshold` | `5` |
+| `routing.gate_floor_escalate_at_rank` | `2` (MOCKED) |
 | `memory.branch` | `"ghyll/memory"` |
 | `memory.sync_interval_seconds` | `60` |
 | `memory.checkpoint_interval_turns` | `5` |

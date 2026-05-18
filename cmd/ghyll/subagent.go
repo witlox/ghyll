@@ -53,6 +53,14 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		systemPromptFn = dialect.GLMSystemPrompt
 		buildMsgFn = dialect.GLMBuildMessages
 		tokenCountFn = dialect.GLMTokenCount
+	case "deepseek":
+		systemPromptFn = dialect.DeepSeekSystemPrompt
+		buildMsgFn = dialect.DeepSeekBuildMessages
+		tokenCountFn = dialect.DeepSeekTokenCount
+	case "qwen":
+		systemPromptFn = dialect.QwenSystemPrompt
+		buildMsgFn = dialect.QwenBuildMessages
+		tokenCountFn = dialect.QwenTokenCount
 	default:
 		systemPromptFn = dialect.MinimaxSystemPrompt
 		buildMsgFn = dialect.MinimaxBuildMessages

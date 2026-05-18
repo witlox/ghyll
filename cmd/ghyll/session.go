@@ -200,6 +200,22 @@ func (s *Session) resolveDialect() {
 		s.compactionPrompt = dialect.GLMCompactionPrompt
 		s.tokenCount = dialect.GLMTokenCount
 		s.handoffSummary = dialect.GLMHandoffSummary
+	case "deepseek":
+		s.systemPrompt = dialect.DeepSeekSystemPrompt
+		s.planModePrompt = dialect.DeepSeekPlanModePrompt
+		s.buildMessages = dialect.DeepSeekBuildMessages
+		s.parseToolCalls = dialect.DeepSeekParseToolCalls
+		s.compactionPrompt = dialect.DeepSeekCompactionPrompt
+		s.tokenCount = dialect.DeepSeekTokenCount
+		s.handoffSummary = dialect.DeepSeekHandoffSummary
+	case "qwen":
+		s.systemPrompt = dialect.QwenSystemPrompt
+		s.planModePrompt = dialect.QwenPlanModePrompt
+		s.buildMessages = dialect.QwenBuildMessages
+		s.parseToolCalls = dialect.QwenParseToolCalls
+		s.compactionPrompt = dialect.QwenCompactionPrompt
+		s.tokenCount = dialect.QwenTokenCount
+		s.handoffSummary = dialect.QwenHandoffSummary
 	default: // minimax
 		s.systemPrompt = dialect.MinimaxSystemPrompt
 		s.planModePrompt = dialect.MinimaxPlanModePrompt
@@ -212,13 +228,18 @@ func (s *Session) resolveDialect() {
 }
 
 // normalizeDialect maps legacy dialect strings to family names.
-// "glm5" -> "glm", "minimax_m25" -> "minimax", etc.
+// Per dialect/doc.go each model variant of a family normalizes to
+// the family name so the dispatch table stays small.
 func normalizeDialect(d string) string {
 	switch d {
 	case "glm", "glm5", "glm51":
 		return "glm"
 	case "minimax", "minimax_m25", "minimax_m27":
 		return "minimax"
+	case "deepseek", "deepseek-v3", "deepseek-coder", "deepseek-coder-v3":
+		return "deepseek"
+	case "qwen", "qwen-coder", "qwen2.5-coder", "qwen3-coder":
+		return "qwen"
 	default:
 		return d
 	}
