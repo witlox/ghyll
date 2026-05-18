@@ -14,7 +14,7 @@ Feature: Tool execution
     Given the model requests tool call bash with command "sleep 60"
     And the bash timeout is 30 seconds
     When 30 seconds elapse
-    Then the process is killed
+    Then the tool subprocess is killed
     And the tool returns error "command timed out after 30s"
 
   Scenario: File read

@@ -105,6 +105,10 @@ type ScenarioState struct {
 	PendingClauseLanguage string
 	MissingBindingErr     error
 
+	// End-to-end init driver (init.feature 129, 138, 146).
+	DriverGrid     *bootstrap.Grid
+	DriverWriteErr error
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error

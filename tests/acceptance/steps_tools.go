@@ -175,9 +175,9 @@ func registerToolSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return nil
 	})
 
-	ctx.Step(`^the process is killed$`, func() error {
+	ctx.Step(`^the tool subprocess is killed$`, func() error {
 		if !toolResult.TimedOut {
-			return fmt.Errorf("expected process to be killed (timed out), but TimedOut=false")
+			return fmt.Errorf("expected tool subprocess to be killed (timed out), but TimedOut=false")
 		}
 		return nil
 	})

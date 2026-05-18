@@ -61,6 +61,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerProfileSteps(ctx, state)
 	registerRefusalSteps(ctx, state)
 	registerBindingSteps(ctx, state)
+	registerInitDriverSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
