@@ -1,5 +1,9 @@
 # Domain Model
 
+> **v1 — continuity infrastructure.** Describes the v1 ghyll codebase
+> that currently ships. v2 design (gate enforcement) lives in
+> [`direction/`](direction/) and has its own domain model.
+
 ## Core Concepts
 
 ### Session

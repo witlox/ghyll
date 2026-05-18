@@ -1,5 +1,8 @@
 # Ubiquitous Language
 
+> **v1 — continuity infrastructure.** v1 vocabulary. v2 design lives
+> in [`direction/`](direction/) with its own glossary.
+
 Every term used once, with one meaning.
 
 | Term | Definition | NOT |

@@ -1,5 +1,8 @@
 # Assumptions
 
+> **v1 — continuity infrastructure.** Assumptions of the v1 codebase
+> that currently ships. v2 design lives in [`direction/`](direction/).
+
 Things we believe but haven't proven. Each is falsifiable.
 
 ## Infrastructure

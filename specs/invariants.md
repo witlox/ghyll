@@ -1,5 +1,8 @@
 # Invariants
 
+> **v1 — continuity infrastructure.** Invariants of the v1 codebase
+> that currently ships. v2 design lives in [`direction/`](direction/).
+
 Things that must always be true. Violations are bugs.
 
 ## Memory Integrity

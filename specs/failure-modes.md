@@ -1,5 +1,9 @@
 # Failure Modes
 
+> **v1 — continuity infrastructure.** Failure modes of the v1
+> codebase that currently ships. v2 design lives in
+> [`direction/`](direction/).
+
 ## Critical
 
 ### FM-01: Memory poisoning via compromised checkpoint
