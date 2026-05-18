@@ -368,7 +368,18 @@ type Runner struct {
 	// engine should always set this via WithActualTier in
 	// production).
 	actualTier DepthRank
+
+	// runObservers fire on every completed EvaluationRun so the
+	// engine layer can journal them. Mirrors FindingsStore.Observe
+	// (phase-9 work). Observers see a deep-copy snapshot; they
+	// MUST be fast and non-blocking.
+	runObservers []EvaluationRunObserver
 }
+
+// EvaluationRunObserver fires per completed EvaluationRun. The
+// engine layer registers one observer at session start to journal
+// every run.
+type EvaluationRunObserver func(run *EvaluationRun)
 
 // NewRunner returns a Runner backed by the given registry. now and
 // idgen default to time.Now and a timestamp-derived id generator.
@@ -402,6 +413,20 @@ func (r *Runner) WithIDGen(g func() string) *Runner {
 // short-circuit — used by tests that don't care about routing.
 func (r *Runner) WithActualTier(tier DepthRank) *Runner {
 	r.actualTier = tier
+	return r
+}
+
+// OnEvaluationRun registers an observer fired after each Evaluate
+// call. Observers receive the EvaluationRun pointer (the same one
+// returned to the Evaluate caller); the snapshot semantics of
+// EvaluationRun (validation-pass-2 F58) mean observers MUST treat
+// it as read-only.
+//
+// Used by the engine layer to journal runs into the persistence
+// store. Returns r so the call can be chained with WithActualTier
+// etc.
+func (r *Runner) OnEvaluationRun(fn EvaluationRunObserver) *Runner {
+	r.runObservers = append(r.runObservers, fn)
 	return r
 }
 
@@ -476,7 +501,7 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	if r.actualTier > DepthRankNone &&
 		c.DepthType == DepthTypeSensitive &&
 		c.MinDepthTier > r.actualTier {
-		return &EvaluationRun{
+		run := &EvaluationRun{
 			ID:                      r.idgen(),
 			ClauseID:                clauseID,
 			PassID:                  passID,
@@ -499,7 +524,9 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 					"actual-tier":    int(r.actualTier),
 				},
 			},
-		}, nil
+		}
+		r.fireRunObservers(run)
+		return run, nil
 	}
 
 	startStatus := StatusPending
@@ -529,7 +556,7 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 		}
 	}
 
-	return &EvaluationRun{
+	run := &EvaluationRun{
 		ID:                      r.idgen(),
 		ClauseID:                clauseID,
 		PassID:                  passID,
@@ -545,7 +572,20 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 		EndStatus:               endStatus,
 		Result:                  result,
 		RunError:                runErrText,
-	}, runErr
+	}
+	r.fireRunObservers(run)
+	return run, runErr
+}
+
+// fireRunObservers calls every registered EvaluationRunObserver in
+// registration order. Observers MUST be fast and non-blocking
+// (mirrors FindingsObserver). Panics propagate — the runner does
+// not recover observers; an observer that panics is a programming
+// error, not operator-driven.
+func (r *Runner) fireRunObservers(run *EvaluationRun) {
+	for _, fn := range r.runObservers {
+		fn(run)
+	}
 }
 
 // snapshotDetails returns a deep copy of the Details map so that a

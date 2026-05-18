@@ -102,12 +102,36 @@ func (r AmendmentRequest) Validate() error {
 // amendment ID and the Enqueue dedups. Call Reset to clear seenIDs
 // at session-end.
 type AmendmentQueue struct {
-	mu      sync.Mutex
-	pending []AmendmentRequest
-	byID    map[string]struct{}
-	seenIDs map[string]struct{}
-	maxLen  int
+	mu        sync.Mutex
+	pending   []AmendmentRequest
+	byID      map[string]struct{}
+	seenIDs   map[string]struct{}
+	maxLen    int
+	observers []AmendmentObserver
 }
+
+// AmendmentEventKind names a queue mutation.
+type AmendmentEventKind string
+
+const (
+	AmendmentEventEnqueue AmendmentEventKind = "enqueue"
+	AmendmentEventDrain   AmendmentEventKind = "drain"
+	AmendmentEventReset   AmendmentEventKind = "reset"
+)
+
+// AmendmentEvent is delivered to AmendmentObservers on each
+// queue mutation. For Enqueue events, Request carries the
+// just-enqueued amendment. For Drain events, Drained lists every
+// amendment removed by that Drain call.
+type AmendmentEvent struct {
+	Kind    AmendmentEventKind
+	Request AmendmentRequest   // populated for enqueue
+	Drained []AmendmentRequest // populated for drain
+}
+
+// AmendmentObserver fires under the queue's lock. Same constraint
+// as FindingsObserver: must be fast and non-blocking.
+type AmendmentObserver func(event AmendmentEvent)
 
 // DefaultAmendmentQueueMaxLen is the per-queue cap when no override
 // is supplied. Tuned to surface backpressure without forcing the
@@ -117,6 +141,19 @@ const DefaultAmendmentQueueMaxLen = 1024
 // NewAmendmentQueue returns an empty queue with the default cap.
 func NewAmendmentQueue() *AmendmentQueue {
 	return NewAmendmentQueueWithMax(DefaultAmendmentQueueMaxLen)
+}
+
+// Observe registers an observer fired on every queue mutation.
+func (q *AmendmentQueue) Observe(fn AmendmentObserver) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.observers = append(q.observers, fn)
+}
+
+func (q *AmendmentQueue) emit(e AmendmentEvent) {
+	for _, ob := range q.observers {
+		ob(e)
+	}
 }
 
 // NewAmendmentQueueWithMax returns an empty queue with the given
@@ -155,7 +192,9 @@ func (q *AmendmentQueue) Enqueue(r AmendmentRequest) error {
 	}
 	q.byID[r.ID] = struct{}{}
 	q.seenIDs[r.ID] = struct{}{}
-	q.pending = append(q.pending, deepCopyAmendment(r))
+	stored := deepCopyAmendment(r)
+	q.pending = append(q.pending, stored)
+	q.emit(AmendmentEvent{Kind: AmendmentEventEnqueue, Request: stored})
 	return nil
 }
 
@@ -171,6 +210,15 @@ func (q *AmendmentQueue) Drain() []AmendmentRequest {
 	}
 	q.pending = nil
 	q.byID = make(map[string]struct{})
+	if len(out) > 0 {
+		// Deep-copy again for the event payload so observers can't
+		// mutate the caller's snapshot.
+		eventCopy := make([]AmendmentRequest, len(out))
+		for i, r := range out {
+			eventCopy[i] = deepCopyAmendment(r)
+		}
+		q.emit(AmendmentEvent{Kind: AmendmentEventDrain, Drained: eventCopy})
+	}
 	return out
 }
 
@@ -194,6 +242,19 @@ func (q *AmendmentQueue) Len() int {
 	return len(q.pending)
 }
 
+// LoadDrained marks id as previously-drained without enqueueing
+// the amendment. Used by replay-on-startup so re-emission of an
+// already-drained amendment is still refused after process restart.
+// Idempotent.
+func (q *AmendmentQueue) LoadDrained(id string) {
+	if id == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.seenIDs[id] = struct{}{}
+}
+
 // Reset clears both the pending list AND the seenIDs dedup set.
 // Typically called at session boundary; per-arrow loops should NOT
 // call Reset between iterations or F44's dedup is lost.
@@ -203,6 +264,7 @@ func (q *AmendmentQueue) Reset() {
 	q.pending = nil
 	q.byID = make(map[string]struct{})
 	q.seenIDs = make(map[string]struct{})
+	q.emit(AmendmentEvent{Kind: AmendmentEventReset})
 }
 
 // deepCopyAmendment returns an AmendmentRequest whose slice fields

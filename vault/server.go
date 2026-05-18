@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/memory"
 )
 
 // Server is the ghyll-vault HTTP server for team memory search.
 type Server struct {
-	store *memory.Store
-	token string
-	mux   *http.ServeMux
+	store  *memory.Store
+	engine *engine.Store // set via AttachEngine; nil until attached
+	token  string
+	mux    *http.ServeMux
 }
 
 // NewServer creates a vault server.
