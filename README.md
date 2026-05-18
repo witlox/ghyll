@@ -5,7 +5,24 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/witlox/ghyll)](https://goreportcard.com/report/github.com/witlox/ghyll)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Purpose-built coding agent CLI for self-hosted open-weight models. Hyper-optimized for GLM-5 and MiniMax M2.5 on Cray EX infrastructure.
+A coding agent that optimizes for **correctness over speed and breadth**,
+and pays for it in **friction**. Self-hosted, open-weight, sandbox-only.
+
+ghyll is correct for a narrow class of work — novel architecture,
+correctness-critical systems, long-horizon projects where a defect
+reaching deployment is expensive. ghyll is **wrong** for CRUD,
+migrations, glue code, and rapid prototyping, where throughput is the
+win and ghyll's gate ceremony is pure overhead. Stating the second half
+is the position.
+
+> **Status — read before relying on this.** ghyll v1 (the code in this
+> repo: dialects, memory, drift detection, streaming) ships as
+> continuity infrastructure. The correctness mechanism — typed gate
+> clauses, role transitions as first-class arrows, the integrator
+> feedback cycle — is **designed but not yet built**. See
+> [`specs/direction/`](specs/direction/) for the design and
+> [`specs/direction/direction.md` §7](specs/direction/direction.md) for
+> the hypothesis caveat.
 
 > ## :warning: SANDBOX REQUIRED
 >
@@ -73,7 +90,41 @@ cp config/example.toml ~/.ghyll/config.toml
 ghyll run .
 ```
 
-## Supported Models
+## Direction (v2 — designed, not built)
+
+The differentiator is **behavioral, not infrastructural**. ghyll's
+correctness mechanism is a gate system, not drift detection.
+
+- **Roles are fixed and first-class.** A diamond workflow (analyst →
+  architect → implementer → auditor → integrator) is embedded and
+  enforced as the default.
+- **Role transitions are arrows.** Every transition is a first-class
+  artifact with typed gate clauses. Transitions are legal only along
+  declared arrows; undeclared transitions suspend, not silently proceed.
+- **Clauses have two types.** Evaluation type (`machine` /
+  `attested`) — who decides. Depth type (`depth-robust` /
+  `depth-sensitive`) — what model depth is required to produce or
+  evaluate the clause honestly.
+- **`unevaluated` is a first-class status.** A `depth-sensitive` clause
+  produced by an under-depth model is `unevaluated` — not
+  `provisional`, not `fail`. It is the status that most resembles
+  "green but will break on deployment" and must never be hidden.
+- **Routing follows the gate, not the model.** A pass runs at the
+  lowest tier meeting the maximum depth requirement of the clauses on
+  the arrow. Self-assessed task complexity is not a routing input.
+- **The workflow is a cycle.** Integrator findings of the type
+  "missing/wrong cross-context specification" route back to the analyst
+  for a grid amendment. Completion is revocable.
+- **ghyll can refuse.** The definition phase detects projects where
+  ghyll's friction is pure cost and recommends a fast agent instead.
+
+Full design and the hypothesis caveat: [`specs/direction/`](specs/direction/).
+
+## v1 (this repo) — continuity infrastructure
+
+What ships today supports v2 as continuity, not as the correctness
+mechanism. Drift detection is useful for recovering lost context. It is
+not what catches shallow work.
 
 | Model | Active params | Context | Tier |
 |-------|--------------|---------|------|
@@ -81,18 +132,18 @@ ghyll run .
 | GLM-5 | 40B / 744B | 200K tokens | Deep |
 | Kimi K2 | 32B / 1T | 256K tokens | Planned |
 
-## Features
-
-- **Model-specific dialects** --- hand-tuned prompts, tool parsing, and compaction per model
-- **Context-depth routing** --- auto-escalation from fast to deep tier based on complexity
-- **Real-time streaming** --- tokens appear as they arrive, tool calls rendered inline
-- **Drift-aware memory** --- cosine similarity drift detection with checkpoint backfill
-- **Tamper-evident checkpoints** --- Merkle DAG with ed25519 signatures, git orphan branch sync
-- **Team memory** --- searchable checkpoints from all developers via vault server
+- Model-specific dialects — hand-tuned prompts, tool parsing, compaction per model
+- Real-time streaming — tokens appear as they arrive, tool calls rendered inline
+- Drift-aware memory — cosine similarity drift detection with checkpoint backfill (continuity, not correctness)
+- Tamper-evident checkpoints — Merkle DAG with ed25519 signatures, git orphan branch sync
+- Team memory — searchable checkpoints from all developers via vault server
 
 ## Documentation
 
 **[witlox.github.io/ghyll](https://witlox.github.io/ghyll)**
+
+Docs describe the v1 implementation. The v2 design lives in
+[`specs/direction/`](specs/direction/) until it is built.
 
 ## Development
 

@@ -1,15 +1,37 @@
 # Ghyll
 
-A purpose-built coding agent CLI for self-hosted open-weight models. Runs inside a sandbox (SRT, bubblewrap, etc.). Uses git-native memory with Merkle DAG integrity.
+A coding agent that optimizes for **correctness over speed and breadth**,
+and pays for it in **friction**. Self-hosted, open-weight, sandbox-only.
+
+ghyll is correct for a narrow class of work — novel architecture,
+correctness-critical systems, long-horizon projects where a defect
+reaching deployment is expensive. ghyll is wrong for CRUD, migrations,
+glue code, and rapid prototyping. Stating the second half is the
+position.
 
 ## Project State
 
-**Phase**: Brownfield with baseline. All packages implemented.
+**Phase**: v1 implemented (this repo). v2 designed but not built —
+correctness mechanism is a typed gate system, not drift detection.
 
-**Fidelity checkpoint** (last auditor sweep): 75 THOROUGH, 3 MODERATE, 5 NONE.
+- **v1** — dialects, drift-aware memory, streaming, sandbox-only
+  execution. Ships as continuity infrastructure for v2.
+- **v2** — gate-and-arrow enforcement, fixed role set, integrator
+  feedback cycle, `unevaluated` status. Design lives in
+  [`specs/direction/`](specs/direction/). Cold-validation pass 1
+  flagged load-bearing holes (machine-clause catalogue closed vs.
+  analyst clauses outside it; status-vocabulary divergence;
+  unquantified "weight"/"residue"). Treat the design as a hypothesis
+  (Direction §7). **Do not start building the enforcement spine
+  before the design passes a clean cold-read.**
 
-Use the diamond workflow (`.claude/CLAUDE.md`) for new features and bugfixes.
-Update this section after every fidelity sweep.
+**Fidelity checkpoint** (last auditor sweep, v1): 75 THOROUGH, 3
+MODERATE, 5 NONE.
+
+Use the diamond workflow (`.claude/CLAUDE.md`) for v1 bugfixes and any
+non-v2 work. The `.claude/roles/*.md` files are Claude Code's roles for
+building ghyll; they are NOT the runtime roles ghyll will embed (those
+live in `specs/direction/roles/`).
 
 ## Build
 
@@ -80,6 +102,13 @@ scripts/              scenario verification tooling
 - [ADR-005: Compaction separate API call](docs/decisions/005-compaction-separate-api-call.md) — context overflow prevention
 - [ADR-006: One session per repo](docs/decisions/006-one-session-per-repo.md) — lockfile concurrency
 - [ADR-007: Tier-based routing](docs/decisions/007-tier-based-routing.md) — decouple routing from model names
+
+v2 design intent (not yet ADRs, not yet code):
+
+- [Direction](specs/direction/direction.md) — pivot rationale, what changes, §7 hypothesis caveat
+- [Gates schema](specs/direction/gates.md) — evaluation types, depth types, arrows, routing, attestation
+- [Analyst role contract](specs/direction/roles/analyst.md) — the one role reconciled to the schema
+- [Build notes](specs/direction/build-notes.md) — what is designed vs. deliberately not yet built
 
 ## Running
 
