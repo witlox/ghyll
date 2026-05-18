@@ -64,6 +64,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerInitDriverSteps(ctx, state)
 	registerSessionRegistrySteps(ctx, state)
 	registerModifyNonMonotonicSteps(ctx, state)
+	registerOrphanSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

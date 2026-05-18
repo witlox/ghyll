@@ -122,6 +122,10 @@ type ScenarioState struct {
 	ModifyFixtureCat  *catalogue.Catalogue
 	ModifyFixtureErr  error
 
+	// Orphan-symbol extraction (init.feature 41).
+	ExtractedSymbols []bootstrap.ExportedSymbol
+	ExtractedOrphans []bootstrap.OrphanCandidate
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error
