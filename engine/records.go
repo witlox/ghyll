@@ -6,31 +6,104 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// Validation pattern (validation-pass-9 E2): every write boundary
+// validates the record so a caller bypassing the runner's
+// FindingsStore.Raise can't persist corruption. Mirrors the
+// runner's own validation policy (validation-pass-4 F9, F22, F23).
+
+// Writer-validation errors.
+var (
+	ErrEngineInvalidSeverity = errors.New("engine: severity out of 0..4")
+	ErrEngineInvalidType     = errors.New("engine: type does not match [a-z][a-z0-9-]*")
+	ErrEngineInvalidStatus   = errors.New("engine: status not in known enum")
+	ErrEngineEmptyID         = errors.New("engine: id required")
+	ErrEngineInvalidJSON     = errors.New("engine: invalid JSON blob")
+)
+
+// findingTypePattern mirrors runner/findings.go.
+var findingTypePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// knownFindingStatus is the canonical set of FindingStatus wire
+// values. Matches runner/findings.go's FindingStatus.String().
+var knownFindingStatus = map[string]struct{}{
+	"open":          {},
+	"running":       {},
+	"resolved":      {},
+	"accepted-risk": {},
+	"unevaluated":   {},
+}
+
+// safeID truncates and strips control bytes from an operator-
+// supplied identifier before it lands in an error message
+// (validation-pass-9 E5).
+func safeID(id string) string {
+	const max = 64
+	if len(id) > max {
+		id = id[:max] + "…"
+	}
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			b.WriteRune('?')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// validJSON returns true if s is empty or valid JSON.
+func validJSON(s string) bool {
+	if s == "" {
+		return true
+	}
+	return json.Valid([]byte(s))
+}
 
 // FindingRecord is the persistence shape of a runner.FindingRecord.
 // Mirrors the runner type but with explicit columnar fields so
 // queries can filter without unmarshaling.
+//
+// Uint64 fields ship as JSON strings (V6) so JavaScript clients
+// don't lose precision past 2^53.
 type FindingRecord struct {
-	ID              string
-	ArrowID         string
-	Type            string
-	Severity        int
-	Status          string
-	Description     string
-	RaisedAt        string
-	RaisedByRole    string
-	TransitionCount int
-	GridVersion     uint64
-	StoreVersion    uint64
-	UpdatedAt       string
+	ID              string `json:"id"`
+	ArrowID         string `json:"arrow_id"`
+	Type            string `json:"type"`
+	Severity        int    `json:"severity"`
+	Status          string `json:"status"`
+	Description     string `json:"description"`
+	RaisedAt        string `json:"raised_at"`
+	RaisedByRole    string `json:"raised_by_role"`
+	TransitionCount int    `json:"transition_count"`
+	GridVersion     uint64 `json:"grid_version,string"`
+	StoreVersion    uint64 `json:"store_version,string"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
-// UpsertFinding inserts or updates a finding. The runner's
-// FindingsStore.Raise produces a new row; Transition updates
-// status + transition_count.
+// UpsertFinding inserts or updates a finding. Validation-pass-9
+// E2: severity/status/type/ID validated at writer boundary so a
+// caller bypassing the runner can't persist corruption. E3:
+// newer-wins on conflict via `WHERE excluded.store_version >
+// findings.store_version`.
 func (s *Store) UpsertFinding(ctx context.Context, f FindingRecord) error {
+	if strings.TrimSpace(f.ID) == "" {
+		return ErrEngineEmptyID
+	}
+	if f.Severity < 0 || f.Severity > 4 {
+		return fmt.Errorf("%w: %s = %d", ErrEngineInvalidSeverity, safeID(f.ID), f.Severity)
+	}
+	if !findingTypePattern.MatchString(f.Type) {
+		return fmt.Errorf("%w: %s type=%q", ErrEngineInvalidType, safeID(f.ID), safeID(f.Type))
+	}
+	if _, ok := knownFindingStatus[f.Status]; !ok {
+		return fmt.Errorf("%w: %s status=%q", ErrEngineInvalidStatus, safeID(f.ID), safeID(f.Status))
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO findings (
 			id, arrow_id, type, severity, status,
@@ -49,13 +122,14 @@ func (s *Store) UpsertFinding(ctx context.Context, f FindingRecord) error {
 			grid_version      = excluded.grid_version,
 			store_version     = excluded.store_version,
 			updated_at        = excluded.updated_at
+		WHERE excluded.store_version >= findings.store_version
 	`,
 		f.ID, f.ArrowID, f.Type, f.Severity, f.Status,
 		f.Description, f.RaisedAt, f.RaisedByRole,
 		f.TransitionCount, int64(f.GridVersion), int64(f.StoreVersion), f.UpdatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("UpsertFinding %s: %w", f.ID, err)
+		return fmt.Errorf("UpsertFinding %s: %w", safeID(f.ID), err)
 	}
 	return nil
 }
@@ -72,13 +146,13 @@ func (s *Store) DeleteFinding(ctx context.Context, id string) error {
 
 // InsertTransition appends a transition audit-log entry.
 type TransitionRecord struct {
-	FindingID    string
-	FromStatus   string
-	ToStatus     string
-	Role         string
-	Reason       string
-	StoreVersion uint64
-	At           string
+	FindingID    string `json:"finding_id"`
+	FromStatus   string `json:"from_status"`
+	ToStatus     string `json:"to_status"`
+	Role         string `json:"role"`
+	Reason       string `json:"reason"`
+	StoreVersion uint64 `json:"store_version,string"`
+	At           string `json:"at"`
 }
 
 func (s *Store) InsertTransition(ctx context.Context, t TransitionRecord) error {
@@ -95,15 +169,22 @@ func (s *Store) InsertTransition(ctx context.Context, t TransitionRecord) error 
 
 // RequirementRecord is the persistence shape of a runner.Requirement.
 type RequirementRecord struct {
-	ArrowID      string
-	ReqID        string
-	MinDepth     int
-	Description  string
-	StoreVersion uint64
-	DeclaredAt   string
+	ArrowID      string `json:"arrow_id"`
+	ReqID        string `json:"req_id"`
+	MinDepth     int    `json:"min_depth"`
+	Description  string `json:"description"`
+	StoreVersion uint64 `json:"store_version,string"`
+	DeclaredAt   string `json:"declared_at"`
 }
 
 func (s *Store) UpsertRequirement(ctx context.Context, r RequirementRecord) error {
+	if strings.TrimSpace(r.ArrowID) == "" || strings.TrimSpace(r.ReqID) == "" {
+		return ErrEngineEmptyID
+	}
+	if r.MinDepth < 0 || r.MinDepth > 3 {
+		return fmt.Errorf("engine: requirement %s/%s min_depth=%d out of 0..3",
+			safeID(r.ArrowID), safeID(r.ReqID), r.MinDepth)
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO requirements (
 			arrow_id, req_id, min_depth, description, store_version, declared_at
@@ -113,25 +194,35 @@ func (s *Store) UpsertRequirement(ctx context.Context, r RequirementRecord) erro
 			description   = excluded.description,
 			store_version = excluded.store_version,
 			declared_at   = excluded.declared_at
+		WHERE excluded.store_version >= requirements.store_version
 	`, r.ArrowID, r.ReqID, r.MinDepth, r.Description, int64(r.StoreVersion), r.DeclaredAt)
 	if err != nil {
-		return fmt.Errorf("UpsertRequirement %s/%s: %w", r.ArrowID, r.ReqID, err)
+		return fmt.Errorf("UpsertRequirement %s/%s: %w", safeID(r.ArrowID), safeID(r.ReqID), err)
 	}
 	return nil
 }
 
 // ClassificationRecord is the persistence shape of a runner.Classification.
 type ClassificationRecord struct {
-	ArrowID        string
-	ReqID          string
-	Observed       int
-	Evidence       string
-	OverwriteCount int
-	StoreVersion   uint64
-	ClassifiedAt   string
+	ArrowID        string `json:"arrow_id"`
+	ReqID          string `json:"req_id"`
+	Observed       int    `json:"observed"`
+	Evidence       string `json:"evidence"`
+	OverwriteCount int    `json:"overwrite_count"`
+	StoreVersion   uint64 `json:"store_version,string"`
+	ClassifiedAt   string `json:"classified_at"`
 }
 
 func (s *Store) UpsertClassification(ctx context.Context, c ClassificationRecord) error {
+	if strings.TrimSpace(c.ArrowID) == "" || strings.TrimSpace(c.ReqID) == "" {
+		return ErrEngineEmptyID
+	}
+	if c.Observed < 0 || c.Observed > 3 {
+		return fmt.Errorf("engine: classification %s/%s observed=%d out of 0..3",
+			safeID(c.ArrowID), safeID(c.ReqID), c.Observed)
+	}
+	// Validation-pass-9 J14: increment overwrite_count on conflict
+	// so the column matches the per-overwrite audit table.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO classifications (
 			arrow_id, req_id, observed, evidence,
@@ -140,25 +231,26 @@ func (s *Store) UpsertClassification(ctx context.Context, c ClassificationRecord
 		ON CONFLICT(arrow_id, req_id) DO UPDATE SET
 			observed        = excluded.observed,
 			evidence        = excluded.evidence,
-			overwrite_count = excluded.overwrite_count,
+			overwrite_count = classifications.overwrite_count + 1,
 			store_version   = excluded.store_version,
 			classified_at   = excluded.classified_at
+		WHERE excluded.store_version >= classifications.store_version
 	`, c.ArrowID, c.ReqID, c.Observed, c.Evidence,
 		c.OverwriteCount, int64(c.StoreVersion), c.ClassifiedAt)
 	if err != nil {
-		return fmt.Errorf("UpsertClassification %s/%s: %w", c.ArrowID, c.ReqID, err)
+		return fmt.Errorf("UpsertClassification %s/%s: %w", safeID(c.ArrowID), safeID(c.ReqID), err)
 	}
 	return nil
 }
 
 // OverwriteRecord is one entry in classification_overwrites.
 type OverwriteRecord struct {
-	ArrowID        string
-	ReqID          string
-	BeforeObserved int
-	AfterObserved  int
-	StoreVersion   uint64
-	At             string
+	ArrowID        string `json:"arrow_id"`
+	ReqID          string `json:"req_id"`
+	BeforeObserved int    `json:"before_observed"`
+	AfterObserved  int    `json:"after_observed"`
+	StoreVersion   uint64 `json:"store_version,string"`
+	At             string `json:"at"`
 }
 
 func (s *Store) InsertOverwrite(ctx context.Context, o OverwriteRecord) error {
@@ -219,22 +311,32 @@ func (s *Store) DeleteArrow(ctx context.Context, arrowID string) error {
 // roundtrips losslessly; structured fields are mirrored for query
 // indexing.
 type GridArrowRecord struct {
-	ID               string
-	GridVersion      uint64
-	SourceRole       string
-	TargetRole       string
-	Stratum          string
-	Context          string
-	ClausesJSON      string
-	RequirementsJSON string
-	Kind             string // "append" or "on-the-spot"
-	DeclaredAt       string
+	ID               string `json:"id"`
+	GridVersion      uint64 `json:"grid_version,string"`
+	SourceRole       string `json:"source_role"`
+	TargetRole       string `json:"target_role"`
+	Stratum          string `json:"stratum"`
+	Context          string `json:"context"`
+	ClausesJSON      string `json:"clauses_json"`
+	RequirementsJSON string `json:"requirements_json"`
+	Kind             string `json:"kind"`
+	DeclaredAt       string `json:"declared_at"`
 }
 
 // InsertGridArrow records a new arrow at a specific grid version.
 // Pair (id, grid_version) is the primary key — re-appending the
-// same arrow at the same version is rejected.
+// same arrow at the same version is rejected. JSON blob validated
+// at write boundary (E4).
 func (s *Store) InsertGridArrow(ctx context.Context, a GridArrowRecord) error {
+	if strings.TrimSpace(a.ID) == "" {
+		return ErrEngineEmptyID
+	}
+	if !validJSON(a.ClausesJSON) {
+		return fmt.Errorf("%w: arrow %s clauses_json", ErrEngineInvalidJSON, safeID(a.ID))
+	}
+	if !validJSON(a.RequirementsJSON) {
+		return fmt.Errorf("%w: arrow %s requirements_json", ErrEngineInvalidJSON, safeID(a.ID))
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO grid_arrows (
 			id, grid_version, source_role, target_role,
@@ -256,21 +358,53 @@ func (s *Store) InsertGridArrow(ctx context.Context, a GridArrowRecord) error {
 
 // AmendmentRecord is the persistence shape of a
 // runner.AmendmentRequest.
+//
+// DrainedAt is sql.NullString for sqlite NULL handling, but
+// MarshalJSON renders it as either a plain RFC3339Nano string or
+// JSON null — clients see `"drained_at": "2026-…"` or
+// `"drained_at": null`, never the default Go `{"String":"","Valid":false}`
+// shape (validation-pass-9 V1).
 type AmendmentRecord struct {
-	ID             string
-	Reason         string
-	SourceArrow    string
-	TargetRole     string
-	ContextsJSON   string
-	Description    string
-	FindingIDsJSON string
-	CreatedAt      string
-	DrainedAt      sql.NullString
+	ID             string         `json:"id"`
+	Reason         string         `json:"reason"`
+	SourceArrow    string         `json:"source_arrow"`
+	TargetRole     string         `json:"target_role"`
+	ContextsJSON   string         `json:"contexts_json"`
+	Description    string         `json:"description"`
+	FindingIDsJSON string         `json:"finding_ids_json"`
+	CreatedAt      string         `json:"created_at"`
+	DrainedAt      sql.NullString `json:"drained_at"`
+}
+
+// MarshalJSON renders AmendmentRecord with drained_at as plain
+// string or null — see struct docstring.
+func (a AmendmentRecord) MarshalJSON() ([]byte, error) {
+	type alias AmendmentRecord
+	view := struct {
+		alias
+		DrainedAt any `json:"drained_at"`
+	}{alias: alias(a)}
+	if a.DrainedAt.Valid {
+		view.DrainedAt = a.DrainedAt.String
+	} else {
+		view.DrainedAt = nil
+	}
+	return json.Marshal(view)
 }
 
 // UpsertAmendment inserts or updates an amendment row. Drain sets
-// drained_at; pre-drain Enqueue sets it nil.
+// drained_at; pre-drain Enqueue sets it nil. JSON blobs validated
+// at write boundary (E4).
 func (s *Store) UpsertAmendment(ctx context.Context, a AmendmentRecord) error {
+	if strings.TrimSpace(a.ID) == "" {
+		return ErrEngineEmptyID
+	}
+	if !validJSON(a.ContextsJSON) {
+		return fmt.Errorf("%w: amendment %s contexts_json", ErrEngineInvalidJSON, safeID(a.ID))
+	}
+	if !validJSON(a.FindingIDsJSON) {
+		return fmt.Errorf("%w: amendment %s finding_ids_json", ErrEngineInvalidJSON, safeID(a.ID))
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO amendments (
 			id, reason, source_arrow, target_role,
@@ -290,27 +424,34 @@ func (s *Store) UpsertAmendment(ctx context.Context, a AmendmentRecord) error {
 
 // EvaluationRunRecord is the persistence shape of a runner.EvaluationRun.
 type EvaluationRunRecord struct {
-	ID                      string
-	ClauseID                string
-	PassID                  string
-	ArrowID                 string
-	GridVersion             uint64
-	DepthTypeAttestationRef string
-	ActualTier              int
-	MinDepthTier            int
-	EvaluatorConcept        string
-	EvaluatorGeneration     int64
-	StartedAt               string
-	CompletedAt             string
-	StartStatus             string
-	EndStatus               string
-	ResultJSON              string
-	RunError                string
+	ID                      string `json:"id"`
+	ClauseID                string `json:"clause_id"`
+	PassID                  string `json:"pass_id"`
+	ArrowID                 string `json:"arrow_id"`
+	GridVersion             uint64 `json:"grid_version,string"`
+	DepthTypeAttestationRef string `json:"depth_type_attestation_ref"`
+	ActualTier              int    `json:"actual_tier"`
+	MinDepthTier            int    `json:"min_depth_tier"`
+	EvaluatorConcept        string `json:"evaluator_concept"`
+	EvaluatorGeneration     int64  `json:"evaluator_generation"`
+	StartedAt               string `json:"started_at"`
+	CompletedAt             string `json:"completed_at"`
+	StartStatus             string `json:"start_status"`
+	EndStatus               string `json:"end_status"`
+	ResultJSON              string `json:"result_json"`
+	RunError                string `json:"run_error"`
 }
 
 // InsertEvaluationRun appends a run record. EvaluationRun is
-// snapshot-by-design (runner.go); persistence is one-shot.
+// snapshot-by-design (runner.go); persistence is one-shot. JSON
+// blob validated at write boundary (E4).
 func (s *Store) InsertEvaluationRun(ctx context.Context, r EvaluationRunRecord) error {
+	if strings.TrimSpace(r.ID) == "" {
+		return ErrEngineEmptyID
+	}
+	if !validJSON(r.ResultJSON) {
+		return fmt.Errorf("%w: run %s result_json", ErrEngineInvalidJSON, safeID(r.ID))
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO evaluation_runs (
 			id, clause_id, pass_id, arrow_id, grid_version,
@@ -353,17 +494,30 @@ func scanFinding(scanner interface {
 	return f, nil
 }
 
-// MustJSON marshals v to JSON or returns "{}" on error. Used by
-// the journaling layer where a marshal failure on an in-memory
-// struct is a programmer error — we don't want to abort the
-// mutation, but we do want to log + persist a safe fallback.
-func MustJSON(v any) string {
+// MustJSON marshals v to JSON or returns fallback on error. Per
+// validation-pass-9 J12: callers MUST choose `"[]"` for slice
+// types and `"{}"` for map/object types so the replay path's
+// unmarshal into the correct Go type doesn't fail.
+//
+// The marshal-error case is a programmer-supplied non-marshalable
+// type (channels, functions inside map[string]any). Logging is
+// the caller's responsibility — MustJSON can't reach a logger
+// without an injected dependency.
+func MustJSON(v any, fallback string) string {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return "{}"
+		return fallback
 	}
 	return string(b)
 }
+
+// JSONSlice marshals v as a JSON array, falling back to "[]" on
+// error. Convenience wrapper for the most common journal use.
+func JSONSlice(v any) string { return MustJSON(v, "[]") }
+
+// JSONObject marshals v as a JSON object, falling back to "{}" on
+// error. Convenience wrapper.
+func JSONObject(v any) string { return MustJSON(v, "{}") }
 
 // Compile-time check that errors are wrapped via standard package.
 var _ = errors.New

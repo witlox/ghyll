@@ -32,7 +32,7 @@ func setupJournal(t *testing.T) (*Store, *Journal, *runner.FindingsStore, *runne
 }
 
 func TestJournal_FindingsRaiseAndTransitionPersist(t *testing.T) {
-	store, _, fs, _, _, _ := setupJournal(t)
+	store, j, fs, _, _, _ := setupJournal(t)
 	ctx := context.Background()
 	if err := fs.Raise(runner.FindingRecord{
 		ID: "F1", ArrowID: "A1",
@@ -42,6 +42,7 @@ func TestJournal_FindingsRaiseAndTransitionPersist(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	j.Flush()
 	got, ok, err := store.GetFinding(ctx, "F1")
 	if err != nil || !ok {
 		t.Fatalf("get: %v ok=%v", err, ok)
@@ -54,12 +55,14 @@ func TestJournal_FindingsRaiseAndTransitionPersist(t *testing.T) {
 	if err := fs.Transition("F1", runner.FindingStatusResolved); err != nil {
 		t.Fatal(err)
 	}
+	j.Flush()
 	got, _, _ = store.GetFinding(ctx, "F1")
 	if got.Status != "resolved" {
 		t.Errorf("after transition: status = %q", got.Status)
 	}
 	// Audit table.
-	ts, _ := store.ListTransitions(ctx, "F1", 100)
+	j.Flush()
+	ts, _ := store.ListTransitions(ctx, "F1", 100, 0)
 	if len(ts) != 1 {
 		t.Fatalf("transitions: %d; want 1", len(ts))
 	}
@@ -69,7 +72,7 @@ func TestJournal_FindingsRaiseAndTransitionPersist(t *testing.T) {
 }
 
 func TestJournal_FindingsForgetPersists(t *testing.T) {
-	store, _, fs, _, _, _ := setupJournal(t)
+	store, j, fs, _, _, _ := setupJournal(t)
 	ctx := context.Background()
 	_ = fs.Raise(runner.FindingRecord{
 		ID: "F1", ArrowID: "A1", Type: runner.FindingTypeLocalBug,
@@ -78,6 +81,7 @@ func TestJournal_FindingsForgetPersists(t *testing.T) {
 	if err := fs.Forget("F1"); err != nil {
 		t.Fatal(err)
 	}
+	j.Flush()
 	_, ok, _ := store.GetFinding(ctx, "F1")
 	if ok {
 		t.Error("forgotten finding still in store")
@@ -85,7 +89,7 @@ func TestJournal_FindingsForgetPersists(t *testing.T) {
 }
 
 func TestJournal_ClassificationsPersist(t *testing.T) {
-	store, _, _, cs, _, _ := setupJournal(t)
+	store, j, _, cs, _, _ := setupJournal(t)
 	ctx := context.Background()
 	_ = cs.DeclareRequirement("A1", runner.Requirement{
 		ID: "R1", MinDepth: runner.DepthRankMocked, Description: "checkout",
@@ -93,8 +97,9 @@ func TestJournal_ClassificationsPersist(t *testing.T) {
 	_ = cs.RecordClassification("A1", runner.Classification{
 		RequirementID: "R1", Observed: runner.DepthRankRealistic, Evidence: "live pg",
 	})
+	j.Flush()
 	reqs, _ := store.ListRequirements(ctx, RequirementFilter{ArrowID: "A1"})
-	cls, _ := store.ListClassifications(ctx, RequirementFilter{ArrowID: "A1"})
+	cls, _ := store.ListClassifications(ctx, ClassificationFilter{ArrowID: "A1"})
 	if len(reqs) != 1 || reqs[0].MinDepth != int(runner.DepthRankMocked) {
 		t.Errorf("requirements: %+v", reqs)
 	}
@@ -104,7 +109,7 @@ func TestJournal_ClassificationsPersist(t *testing.T) {
 }
 
 func TestJournal_OverwriteTracksAudit(t *testing.T) {
-	store, _, _, cs, _, _ := setupJournal(t)
+	store, j, _, cs, _, _ := setupJournal(t)
 	ctx := context.Background()
 	_ = cs.DeclareRequirement("A1", runner.Requirement{
 		ID: "R1", MinDepth: runner.DepthRankShallow, Description: "x",
@@ -115,6 +120,7 @@ func TestJournal_OverwriteTracksAudit(t *testing.T) {
 	_ = cs.RecordClassification("A1", runner.Classification{
 		RequirementID: "R1", Observed: runner.DepthRankRealistic, Evidence: "second",
 	})
+	j.Flush()
 	rows, err := store.db.QueryContext(ctx,
 		`SELECT before_observed, after_observed FROM classification_overwrites WHERE arrow_id = ? AND req_id = ?`,
 		"A1", "R1")
@@ -137,7 +143,7 @@ func TestJournal_OverwriteTracksAudit(t *testing.T) {
 }
 
 func TestJournal_GridArrowAppendPersists(t *testing.T) {
-	store, _, _, _, g, _ := setupJournal(t)
+	store, j, _, _, g, _ := setupJournal(t)
 	ctx := context.Background()
 	def := runner.ArrowDefinition{
 		ID:         "A1",
@@ -148,6 +154,7 @@ func TestJournal_GridArrowAppendPersists(t *testing.T) {
 	if _, err := g.Append(def); err != nil {
 		t.Fatal(err)
 	}
+	j.Flush()
 	arrows, _ := store.ListArrows(ctx, ArrowFilter{})
 	if len(arrows) != 1 {
 		t.Fatalf("arrows persisted = %d; want 1", len(arrows))
@@ -158,7 +165,7 @@ func TestJournal_GridArrowAppendPersists(t *testing.T) {
 }
 
 func TestJournal_GridOnTheSpotKindDistinguished(t *testing.T) {
-	store, _, _, _, g, _ := setupJournal(t)
+	store, j, _, _, g, _ := setupJournal(t)
 	ctx := context.Background()
 	def := runner.ArrowDefinition{
 		ID: "A1", SourceRole: "analyst", TargetRole: "architect",
@@ -166,6 +173,7 @@ func TestJournal_GridOnTheSpotKindDistinguished(t *testing.T) {
 		Clauses: []runner.Clause{{Concept: "x"}},
 	}
 	_, _ = g.AppendOnTheSpot(def)
+	j.Flush()
 	arrows, _ := store.ListArrows(ctx, ArrowFilter{Kind: "on-the-spot"})
 	if len(arrows) != 1 {
 		t.Errorf("on-the-spot arrows = %d; want 1", len(arrows))
@@ -173,7 +181,7 @@ func TestJournal_GridOnTheSpotKindDistinguished(t *testing.T) {
 }
 
 func TestJournal_AmendmentEnqueueAndDrain(t *testing.T) {
-	store, _, _, _, _, aq := setupJournal(t)
+	store, j, _, _, _, aq := setupJournal(t)
 	ctx := context.Background()
 	req := runner.AmendmentRequest{
 		ID:          "am1",
@@ -187,12 +195,14 @@ func TestJournal_AmendmentEnqueueAndDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending := false
+	j.Flush()
 	got, _ := store.ListAmendments(ctx, AmendmentFilter{Drained: &pending})
 	if len(got) != 1 {
 		t.Fatalf("pending amendments: %d; want 1", len(got))
 	}
 	_ = aq.Drain()
 	drained := true
+	j.Flush()
 	got, _ = store.ListAmendments(ctx, AmendmentFilter{Drained: &drained})
 	if len(got) != 1 {
 		t.Errorf("drained amendments: %d; want 1", len(got))
@@ -215,6 +225,7 @@ func TestJournal_EvaluationRunPersists(t *testing.T) {
 	if run == nil {
 		t.Fatal("evaluate returned nil")
 	}
+	j.Flush()
 	runs, _ := store.ListEvaluationRuns(ctx, RunFilter{ArrowID: "A1"})
 	if len(runs) != 1 {
 		t.Errorf("runs persisted = %d; want 1", len(runs))

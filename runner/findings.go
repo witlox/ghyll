@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Findings model. Per gates.md §7.3: a finding lives on the arrow
@@ -116,12 +117,25 @@ const (
 )
 
 // FindingsEvent is the payload delivered to a FindingsObserver.
+//
+// Role + Reason populate from TransitionWithReason (validation-
+// pass-9 J4) so the persistence layer's audit log preserves the
+// "who + why" of every transition. Both empty for non-transition
+// events.
+//
+// At is the wall-clock timestamp of the mutation, captured by the
+// store at emit time. Distinct from FindingRecord.RaisedAt (which
+// is the original raise time and stays fixed for the lifetime of
+// the record).
 type FindingsEvent struct {
 	Kind    FindingsEventKind
-	ArrowID string        // present for all events
-	Before  FindingRecord // zero for Raise; zero for ForgetArrow's per-record fan-out
-	After   FindingRecord // zero for Forget
-	Version uint64        // store version AFTER the mutation
+	ArrowID string
+	Before  FindingRecord
+	After   FindingRecord
+	Version uint64
+	Role    string
+	Reason  string
+	At      string
 }
 
 // Observe registers an observer to be invoked on every mutation.
@@ -224,6 +238,7 @@ func (s *FindingsStore) Raise(r FindingRecord) error {
 		ArrowID: r.ArrowID,
 		After:   stored,
 		Version: s.version,
+		At:      time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
 }
@@ -286,6 +301,9 @@ func (s *FindingsStore) transitionImpl(id string, to FindingStatus, role, reason
 		Before:  before,
 		After:   *rec,
 		Version: s.version,
+		Role:    role,
+		Reason:  reason,
+		At:      time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
 }
@@ -402,6 +420,7 @@ func (s *FindingsStore) Forget(id string) error {
 		ArrowID: loc.arrowID,
 		Before:  before,
 		Version: s.version,
+		At:      time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
 }
@@ -422,12 +441,14 @@ func (s *FindingsStore) ForgetArrow(arrowID string) int {
 	s.version++
 	// Fan-out one ForgetArrow event per record so observers can journal
 	// each removal. Single bulk event would lose per-record identity.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, r := range src {
 		s.emit(FindingsEvent{
 			Kind:    FindingsEventForgetArrow,
 			ArrowID: arrowID,
 			Before:  r,
 			Version: s.version,
+			At:      now,
 		})
 	}
 	return len(src)

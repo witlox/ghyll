@@ -1,8 +1,10 @@
 package vault
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/memory"
@@ -10,10 +12,27 @@ import (
 
 // Server is the ghyll-vault HTTP server for team memory search.
 type Server struct {
-	store  *memory.Store
-	engine *engine.Store // set via AttachEngine; nil until attached
-	token  string
-	mux    *http.ServeMux
+	store          *memory.Store
+	engine         *engine.Store
+	engineAttached bool
+	logger         vaultLogger
+	token          string
+	mux            *http.ServeMux
+}
+
+// vaultLogger is the minimal logger surface the v2 endpoints use.
+// Indirected so cmd/ghyll-vault can inject a structured logger
+// without an import cycle.
+type vaultLogger interface {
+	Printf(format string, v ...any)
+}
+
+// WithLogger sets the logger used by the v2 endpoints to record
+// internal errors (V3) and encode failures (V14). Nil disables
+// logging (default).
+func (s *Server) WithLogger(l vaultLogger) *Server {
+	s.logger = l
+	return s
 }
 
 // NewServer creates a vault server.
@@ -33,11 +52,12 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// If a token is configured, always require it.
-		// Invariant 26: localhost needs no token — but only when no token is configured.
+		// V10: case-insensitive scheme + constant-time token compare.
 		if s.token != "" {
 			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+s.token {
+			scheme, rest, hasSpace := strings.Cut(auth, " ")
+			if !hasSpace || !strings.EqualFold(scheme, "Bearer") ||
+				subtle.ConstantTimeCompare([]byte(rest), []byte(s.token)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

@@ -13,18 +13,13 @@ import (
 // runner-layer stores (FindingsStore, ClassificationsStore, Grid,
 // AmendmentQueue) start empty. The Replay function reads every
 // persisted record from sqlite and applies it through the regular
-// runner-layer mutators (Raise, Declare, Append, Enqueue).
+// runner-layer mutators.
 //
 // CRITICAL ordering invariant: the caller MUST replay BEFORE
 // attaching the Journal. Otherwise the replayed mutations write
 // back to the same sqlite rows they came from — recursive journaling.
-// The engine package's New flow handles this ordering; tests that
-// build the stores manually MUST mirror it.
 
-// ReplayInto reads every v2 entity from store and replays it into
-// the runner-layer caches. The caches MUST be freshly constructed
-// (no journal observers attached). Returns the count of entities
-// replayed per category for diagnostics.
+// ReplayCounts reports how many entities replay loaded per category.
 type ReplayCounts struct {
 	Findings          int
 	Requirements      int
@@ -32,10 +27,14 @@ type ReplayCounts struct {
 	Arrows            int
 	AmendmentsActive  int
 	AmendmentsDrained int
+
+	// Errors collects per-row failures so a single corrupt row
+	// doesn't stop the whole replay (J9). Empty when clean.
+	Errors []string
 }
 
 // ErrReplayCachesNotEmpty is returned if the caller tries to replay
-// into pre-populated caches. Replay must run on fresh stores.
+// into pre-populated caches.
 var ErrReplayCachesNotEmpty = errors.New("replay: target caches not empty")
 
 // ReplayTargets bundles the runner-layer caches the replay populates.
@@ -46,16 +45,20 @@ type ReplayTargets struct {
 	Amendments      *runner.AmendmentQueue
 }
 
+// replayPageSize is the per-batch read size for paging through
+// large persisted tables (J1). Tunable; the bottleneck is the
+// runner-side Raise/Append cost, not sqlite read cost.
+const replayPageSize = 1000
+
 // Replay loads every persisted v2 entity from store into targets.
 //
-// Order matters: requirements before classifications (foreign-key-
-// style invariant in the runner layer); findings before transitions
-// (already implicit because findings carry their final status —
-// transitions are audit-only and not replayed back through the
-// in-memory Transition state machine).
-//
-// ArrowStatus is never cached per the architect's preflight verdict;
-// the runner re-derives it from the replayed inputs.
+// Per validation-pass-9:
+//   - J1: paging loop instead of single-shot 1M-limit query.
+//   - J9: per-row errors accumulate into ReplayCounts.Errors;
+//     replay continues past malformed rows so amendments and
+//     other categories aren't blocked by a corrupt finding.
+//   - J10: findings ordered by raised_at ASC so the in-memory
+//     slice order post-replay matches raise sequence.
 func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCounts, error) {
 	var c ReplayCounts
 	if store == nil {
@@ -65,9 +68,7 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 		return c, err
 	}
 
-	// 1. Grid arrows. Replay newest version of each arrow ID;
-	// older versions stay in the persistence table but aren't
-	// loaded back into the in-memory grid (they're history).
+	// 1. Grid arrows (latest version per ID).
 	arrows, err := store.allLatestArrows(ctx)
 	if err != nil {
 		return c, fmt.Errorf("replay arrows: %w", err)
@@ -75,64 +76,60 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 	for _, a := range arrows {
 		def, err := arrowFromRecord(a)
 		if err != nil {
-			return c, fmt.Errorf("replay arrow %s/v%d: %w", a.ID, a.GridVersion, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("arrow %s/v%d: %v", safeID(a.ID), a.GridVersion, err))
+			continue
 		}
+		var appendErr error
 		if a.Kind == "on-the-spot" {
-			if _, err := targets.Grid.AppendOnTheSpot(def); err != nil {
-				return c, fmt.Errorf("replay AppendOnTheSpot %s: %w", a.ID, err)
-			}
+			_, appendErr = targets.Grid.AppendOnTheSpot(def)
 		} else {
-			if _, err := targets.Grid.Append(def); err != nil {
-				return c, fmt.Errorf("replay Append %s: %w", a.ID, err)
-			}
+			_, appendErr = targets.Grid.Append(def)
+		}
+		if appendErr != nil {
+			c.Errors = append(c.Errors, fmt.Sprintf("arrow %s: %v", safeID(a.ID), appendErr))
+			continue
 		}
 		c.Arrows++
 	}
 
-	// 2. Requirements then Classifications. Requirements MUST land
-	// first; ClassificationsStore.RecordClassification rejects an
-	// undeclared requirement.
-	reqs, err := store.allRequirements(ctx)
-	if err != nil {
-		return c, fmt.Errorf("replay requirements: %w", err)
-	}
-	for _, r := range reqs {
+	// 2. Requirements before classifications.
+	if err := store.iterRequirements(ctx, func(r RequirementRecord) {
 		if err := targets.Classifications.DeclareRequirement(r.ArrowID, runner.Requirement{
 			ID:          r.ReqID,
 			MinDepth:    runner.DepthRank(r.MinDepth),
 			Description: r.Description,
 		}); err != nil {
-			return c, fmt.Errorf("replay DeclareRequirement %s/%s: %w", r.ArrowID, r.ReqID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("requirement %s/%s: %v",
+				safeID(r.ArrowID), safeID(r.ReqID), err))
+			return
 		}
 		c.Requirements++
+	}); err != nil {
+		return c, fmt.Errorf("replay requirements: %w", err)
 	}
 
-	cls, err := store.allClassifications(ctx)
-	if err != nil {
-		return c, fmt.Errorf("replay classifications: %w", err)
-	}
-	for _, cl := range cls {
+	if err := store.iterClassifications(ctx, func(cl ClassificationRecord) {
 		if err := targets.Classifications.RecordClassification(cl.ArrowID, runner.Classification{
 			RequirementID: cl.ReqID,
 			Observed:      runner.DepthRank(cl.Observed),
 			Evidence:      cl.Evidence,
 		}); err != nil {
-			return c, fmt.Errorf("replay RecordClassification %s/%s: %w", cl.ArrowID, cl.ReqID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("classification %s/%s: %v",
+				safeID(cl.ArrowID), safeID(cl.ReqID), err))
+			return
 		}
 		c.Classifications++
+	}); err != nil {
+		return c, fmt.Errorf("replay classifications: %w", err)
 	}
 
-	// 3. Findings. Carry the final Status verbatim; the runner's
-	// Raise validates the status enum but accepts any valid value
-	// (not just Open), so a Resolved finding replays directly.
-	findings, err := store.ListFindings(ctx, FindingFilter{MinSeverity: -1, Limit: 1000000})
-	if err != nil {
-		return c, fmt.Errorf("replay findings: %w", err)
-	}
-	for _, f := range findings {
+	// 3. Findings, ordered by raised_at so the in-memory slice
+	// order matches raise sequence (J10).
+	if err := store.iterFindingsByRaiseTime(ctx, func(f FindingRecord) {
 		status, err := runner.ParseFindingStatus(f.Status)
 		if err != nil {
-			return c, fmt.Errorf("replay finding %s status: %w", f.ID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("finding %s status: %v", safeID(f.ID), err))
+			return
 		}
 		rec := runner.FindingRecord{
 			ID:              f.ID,
@@ -146,44 +143,40 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 			TransitionCount: f.TransitionCount,
 		}
 		if err := targets.Findings.Raise(rec); err != nil {
-			return c, fmt.Errorf("replay Raise %s: %w", f.ID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("finding %s raise: %v", safeID(f.ID), err))
+			return
 		}
 		c.Findings++
+	}); err != nil {
+		return c, fmt.Errorf("replay findings: %w", err)
 	}
 
-	// 4. Amendments. Pending ones (drained_at NULL) re-enqueue;
-	// drained ones populate seenIDs only so re-emission stays
-	// idempotent across process restarts (validation-pass-4 F44).
-	pending := false
-	pendingRows, err := store.ListAmendments(ctx, AmendmentFilter{Drained: &pending, Limit: 1000000})
-	if err != nil {
-		return c, fmt.Errorf("replay pending amendments: %w", err)
-	}
-	for _, a := range pendingRows {
+	// 4. Amendments — single query, classify in-process so the
+	// pending/drained split is consistent (J13).
+	if err := store.iterAmendments(ctx, func(a AmendmentRecord) {
 		req, err := amendmentFromRecord(a)
 		if err != nil {
-			return c, fmt.Errorf("replay amendment %s: %w", a.ID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("amendment %s: %v", safeID(a.ID), err))
+			return
+		}
+		if a.DrainedAt.Valid {
+			targets.Amendments.LoadDrained(req.ID)
+			c.AmendmentsDrained++
+			return
 		}
 		if err := targets.Amendments.Enqueue(req); err != nil {
-			return c, fmt.Errorf("replay Enqueue %s: %w", a.ID, err)
+			c.Errors = append(c.Errors, fmt.Sprintf("enqueue %s: %v", safeID(a.ID), err))
+			return
 		}
 		c.AmendmentsActive++
-	}
-	drained := true
-	drainedRows, err := store.ListAmendments(ctx, AmendmentFilter{Drained: &drained, Limit: 1000000})
-	if err != nil {
-		return c, fmt.Errorf("replay drained amendments: %w", err)
-	}
-	for _, a := range drainedRows {
-		targets.Amendments.LoadDrained(a.ID)
-		c.AmendmentsDrained++
+	}); err != nil {
+		return c, fmt.Errorf("replay amendments: %w", err)
 	}
 
 	return c, nil
 }
 
-// ensureEmpty checks that the replay targets are freshly constructed
-// (no entities). Replay into a pre-populated store would duplicate.
+// ensureEmpty checks that the replay targets are freshly constructed.
 func ensureEmpty(t ReplayTargets) error {
 	if t.Findings == nil || t.Classifications == nil || t.Grid == nil || t.Amendments == nil {
 		return errors.New("replay: every ReplayTargets field required")
@@ -204,8 +197,7 @@ func ensureEmpty(t ReplayTargets) error {
 }
 
 // allLatestArrows returns the highest grid_version row for each
-// arrow ID. Older versions stay in the table for history; the
-// in-memory Grid only holds the latest state.
+// arrow ID.
 func (s *Store) allLatestArrows(ctx context.Context) ([]GridArrowRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.grid_version, a.source_role, a.target_role,
@@ -239,59 +231,149 @@ func (s *Store) allLatestArrows(ctx context.Context) ([]GridArrowRecord, error) 
 	return out, rows.Err()
 }
 
-// allRequirements returns every requirement row.
-func (s *Store) allRequirements(ctx context.Context) ([]RequirementRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT arrow_id, req_id, min_depth, description, store_version, declared_at
-		FROM requirements
-		ORDER BY arrow_id ASC, req_id ASC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []RequirementRecord
-	for rows.Next() {
-		var r RequirementRecord
-		var sv int64
-		if err := rows.Scan(&r.ArrowID, &r.ReqID, &r.MinDepth,
-			&r.Description, &sv, &r.DeclaredAt); err != nil {
-			return nil, err
+// iterRequirements pages through every requirement row and calls
+// fn per row. Bypasses normalizePaging's 1000 cap (J1).
+func (s *Store) iterRequirements(ctx context.Context, fn func(RequirementRecord)) error {
+	offset := 0
+	for {
+		// #nosec G202 -- closed in-package query string.
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT arrow_id, req_id, min_depth, description, store_version, declared_at
+			FROM requirements
+			ORDER BY arrow_id ASC, req_id ASC
+			LIMIT ? OFFSET ?
+		`, replayPageSize, offset)
+		if err != nil {
+			return err
 		}
-		r.StoreVersion = uint64(sv)
-		out = append(out, r)
+		count := 0
+		for rows.Next() {
+			var r RequirementRecord
+			var sv int64
+			if err := rows.Scan(&r.ArrowID, &r.ReqID, &r.MinDepth,
+				&r.Description, &sv, &r.DeclaredAt); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			r.StoreVersion = uint64(sv)
+			fn(r)
+			count++
+		}
+		_ = rows.Close()
+		if count < replayPageSize {
+			return nil
+		}
+		offset += replayPageSize
 	}
-	return out, rows.Err()
 }
 
-// allClassifications returns every classification row.
-func (s *Store) allClassifications(ctx context.Context) ([]ClassificationRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT arrow_id, req_id, observed, evidence,
-		       overwrite_count, store_version, classified_at
-		FROM classifications
-		ORDER BY arrow_id ASC, req_id ASC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []ClassificationRecord
-	for rows.Next() {
-		var c ClassificationRecord
-		var sv int64
-		if err := rows.Scan(&c.ArrowID, &c.ReqID, &c.Observed,
-			&c.Evidence, &c.OverwriteCount, &sv, &c.ClassifiedAt); err != nil {
-			return nil, err
+// iterClassifications pages through classifications.
+func (s *Store) iterClassifications(ctx context.Context, fn func(ClassificationRecord)) error {
+	offset := 0
+	for {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT arrow_id, req_id, observed, evidence,
+			       overwrite_count, store_version, classified_at
+			FROM classifications
+			ORDER BY arrow_id ASC, req_id ASC
+			LIMIT ? OFFSET ?
+		`, replayPageSize, offset)
+		if err != nil {
+			return err
 		}
-		c.StoreVersion = uint64(sv)
-		out = append(out, c)
+		count := 0
+		for rows.Next() {
+			var cl ClassificationRecord
+			var sv int64
+			if err := rows.Scan(&cl.ArrowID, &cl.ReqID, &cl.Observed,
+				&cl.Evidence, &cl.OverwriteCount, &sv, &cl.ClassifiedAt); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			cl.StoreVersion = uint64(sv)
+			fn(cl)
+			count++
+		}
+		_ = rows.Close()
+		if count < replayPageSize {
+			return nil
+		}
+		offset += replayPageSize
 	}
-	return out, rows.Err()
 }
 
-// arrowFromRecord re-hydrates a runner.ArrowDefinition from its
-// persisted shape. Clauses and Requirements are JSON-decoded.
+// iterFindingsByRaiseTime pages through findings ordered by
+// raised_at so the in-memory slice order post-replay matches raise
+// sequence (J10).
+func (s *Store) iterFindingsByRaiseTime(ctx context.Context, fn func(FindingRecord)) error {
+	offset := 0
+	for {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id, arrow_id, type, severity, status,
+			       description, raised_at, raised_by_role,
+			       transition_count, grid_version, store_version, updated_at
+			FROM findings
+			ORDER BY raised_at ASC, id ASC
+			LIMIT ? OFFSET ?
+		`, replayPageSize, offset)
+		if err != nil {
+			return err
+		}
+		count := 0
+		for rows.Next() {
+			f, err := scanFinding(rows)
+			if err != nil {
+				_ = rows.Close()
+				return err
+			}
+			fn(f)
+			count++
+		}
+		_ = rows.Close()
+		if count < replayPageSize {
+			return nil
+		}
+		offset += replayPageSize
+	}
+}
+
+// iterAmendments pages through amendments, returning each row
+// regardless of drained state. Caller classifies via DrainedAt.Valid.
+func (s *Store) iterAmendments(ctx context.Context, fn func(AmendmentRecord)) error {
+	offset := 0
+	for {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id, reason, source_arrow, target_role,
+			       contexts_json, description, finding_ids_json,
+			       created_at, drained_at
+			FROM amendments
+			ORDER BY created_at ASC, id ASC
+			LIMIT ? OFFSET ?
+		`, replayPageSize, offset)
+		if err != nil {
+			return err
+		}
+		count := 0
+		for rows.Next() {
+			var a AmendmentRecord
+			if err := rows.Scan(&a.ID, &a.Reason, &a.SourceArrow,
+				&a.TargetRole, &a.ContextsJSON, &a.Description,
+				&a.FindingIDsJSON, &a.CreatedAt, &a.DrainedAt); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			fn(a)
+			count++
+		}
+		_ = rows.Close()
+		if count < replayPageSize {
+			return nil
+		}
+		offset += replayPageSize
+	}
+}
+
+// arrowFromRecord re-hydrates a runner.ArrowDefinition.
 func arrowFromRecord(a GridArrowRecord) (runner.ArrowDefinition, error) {
 	var clauses []runner.Clause
 	if a.ClausesJSON != "" && a.ClausesJSON != "null" {
@@ -316,8 +398,7 @@ func arrowFromRecord(a GridArrowRecord) (runner.ArrowDefinition, error) {
 	}, nil
 }
 
-// amendmentFromRecord re-hydrates a runner.AmendmentRequest from its
-// persisted shape.
+// amendmentFromRecord re-hydrates a runner.AmendmentRequest.
 func amendmentFromRecord(a AmendmentRecord) (runner.AmendmentRequest, error) {
 	var contexts []string
 	if a.ContextsJSON != "" && a.ContextsJSON != "null" {

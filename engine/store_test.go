@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -83,7 +84,7 @@ func TestFindings_DeleteCascadesTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Transitions should be cascaded (ON DELETE CASCADE).
-	ts, err := s.ListTransitions(ctx, "F1", 100)
+	ts, err := s.ListTransitions(ctx, "F1", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestListFindings_FilterByArrow(t *testing.T) {
 	ctx := context.Background()
 	for i, arrow := range []string{"A1", "A1", "A2"} {
 		_ = s.UpsertFinding(ctx, FindingRecord{
-			ID: string(rune('a' + i)), ArrowID: arrow,
+			ID: fmt.Sprintf("F%03d", i), ArrowID: arrow,
 			Type: "local-bug", Severity: i + 1, Status: "open",
 		})
 	}
@@ -120,7 +121,7 @@ func TestListFindings_FilterByMinSeverity(t *testing.T) {
 	ctx := context.Background()
 	for i, sev := range []int{0, 1, 2, 3, 4} {
 		_ = s.UpsertFinding(ctx, FindingRecord{
-			ID: string(rune('a' + i)), ArrowID: "A",
+			ID: fmt.Sprintf("F%03d", i), ArrowID: "A",
 			Type: "x", Severity: sev, Status: "open",
 		})
 	}
@@ -153,7 +154,7 @@ func TestRequirementsAndClassifications_Roundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqs, _ := s.ListRequirements(ctx, RequirementFilter{ArrowID: "A1"})
-	cls, _ := s.ListClassifications(ctx, RequirementFilter{ArrowID: "A1"})
+	cls, _ := s.ListClassifications(ctx, ClassificationFilter{ArrowID: "A1"})
 	if len(reqs) != 1 || len(cls) != 1 {
 		t.Errorf("reqs=%d cls=%d; want 1,1", len(reqs), len(cls))
 	}
@@ -162,7 +163,7 @@ func TestRequirementsAndClassifications_Roundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqs, _ = s.ListRequirements(ctx, RequirementFilter{ArrowID: "A1"})
-	cls, _ = s.ListClassifications(ctx, RequirementFilter{ArrowID: "A1"})
+	cls, _ = s.ListClassifications(ctx, ClassificationFilter{ArrowID: "A1"})
 	if len(reqs) != 0 || len(cls) != 0 {
 		t.Errorf("DeleteArrow didn't clean up: reqs=%d cls=%d", len(reqs), len(cls))
 	}
@@ -171,7 +172,7 @@ func TestRequirementsAndClassifications_Roundtrip(t *testing.T) {
 func TestGridArrows_VersionedAppend(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	clauses := MustJSON([]map[string]any{{"concept": "lint-clean"}})
+	clauses := JSONSlice([]map[string]any{{"concept": "lint-clean"}})
 	for i, ver := range []uint64{1, 2, 3} {
 		if err := s.InsertGridArrow(ctx, GridArrowRecord{
 			ID: "A1", GridVersion: ver,
@@ -201,7 +202,7 @@ func TestGridArrows_VersionedAppend(t *testing.T) {
 func TestAmendments_PendingAndDrained(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	contexts := MustJSON([]string{"payment", "identity"})
+	contexts := JSONSlice([]string{"payment", "identity"})
 	if err := s.UpsertAmendment(ctx, AmendmentRecord{
 		ID: "am1", Reason: "missing-cross-context-spec",
 		SourceArrow: "A1", TargetRole: "analyst",
@@ -248,8 +249,9 @@ func TestListFindings_DefaultLimit(t *testing.T) {
 	ctx := context.Background()
 	// Insert 200; default limit caps at 100.
 	for i := 0; i < 200; i++ {
+		// E9: use fmt.Sprintf so IDs are unambiguously unique.
 		_ = s.UpsertFinding(ctx, FindingRecord{
-			ID:      "F" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)),
+			ID:      fmt.Sprintf("F%05d", i),
 			ArrowID: "A", Type: "x", Severity: 1, Status: "open",
 		})
 	}

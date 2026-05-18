@@ -111,15 +111,16 @@ func (s *Store) GetFinding(ctx context.Context, id string) (FindingRecord, bool,
 }
 
 // ListTransitions returns the audit log for a finding, oldest first.
-func (s *Store) ListTransitions(ctx context.Context, findingID string, limit int) ([]TransitionRecord, error) {
-	limit, _ = normalizePaging(limit, 0)
+// Offset paging per V15.
+func (s *Store) ListTransitions(ctx context.Context, findingID string, limit, offset int) ([]TransitionRecord, error) {
+	limit, offset = normalizePaging(limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT finding_id, from_status, to_status, role, reason, store_version, at
 		FROM finding_transitions
 		WHERE finding_id = ?
 		ORDER BY seq ASC
-		LIMIT ?
-	`, findingID, limit)
+		LIMIT ? OFFSET ?
+	`, findingID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("ListTransitions %s: %w", findingID, err)
 	}
@@ -182,8 +183,17 @@ func (s *Store) ListRequirements(ctx context.Context, f RequirementFilter) ([]Re
 	return out, rows.Err()
 }
 
+// ClassificationFilter narrows ListClassifications. Per V9 it is a
+// distinct type from RequirementFilter so future per-endpoint
+// extensions (e.g., MinObserved) don't accidentally apply to both.
+type ClassificationFilter struct {
+	ArrowID string
+	Limit   int
+	Offset  int
+}
+
 // ListClassifications returns classifications matching the filter.
-func (s *Store) ListClassifications(ctx context.Context, f RequirementFilter) ([]ClassificationRecord, error) {
+func (s *Store) ListClassifications(ctx context.Context, f ClassificationFilter) ([]ClassificationRecord, error) {
 	limit, offset := normalizePaging(f.Limit, f.Offset)
 	var (
 		where string
@@ -396,6 +406,3 @@ func (s *Store) ListEvaluationRuns(ctx context.Context, f RunFilter) ([]Evaluati
 	}
 	return out, rows.Err()
 }
-
-// Compile-time guard: joinPlaceholders is exported for unit testing.
-var _ = joinPlaceholders

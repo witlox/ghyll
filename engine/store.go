@@ -22,7 +22,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -41,12 +40,17 @@ type Store struct {
 // OpenStore opens or creates a sqlite store at path. Schema is
 // created on first open; subsequent opens are idempotent.
 //
-// Concurrency: the underlying *sql.DB is safe for concurrent use,
-// but the v2 entities have invariants (e.g., a finding's
-// transitions must reference an existing row) that the engine
-// enforces at the journaling layer.
+// Concurrency: validation-pass-9 E1 + E15. PRAGMAs are passed via
+// the DSN so every pooled connection has them applied (per-Exec
+// PRAGMAs only affect one connection, which under load silently
+// disables FK cascades). WAL mode + busy_timeout reduce reader
+// contention under concurrent writes.
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)",
+		path,
+	)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("engine: open: %w", err)
 	}
@@ -54,11 +58,14 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("engine: schema: %w", err)
 	}
-	// Foreign keys are off by default in sqlite; enable them so
-	// audit-log tables enforce their references.
-	if _, err := db.Exec("PRAGMA foreign_keys = ON;"); err != nil {
+	// Add composite index for the common ListFindings sort path
+	// (E8). Sqlite supports DESC in index column lists.
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_findings_sort
+		ON findings(arrow_id ASC, severity DESC, id ASC);
+	`); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("engine: enable foreign_keys: %w", err)
+		return nil, fmt.Errorf("engine: sort index: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -200,12 +207,3 @@ CREATE INDEX IF NOT EXISTS idx_runs_clause ON evaluation_runs(clause_id);
 CREATE INDEX IF NOT EXISTS idx_runs_pass   ON evaluation_runs(pass_id);
 CREATE INDEX IF NOT EXISTS idx_runs_arrow  ON evaluation_runs(arrow_id);
 `
-
-// joinPlaceholders returns "?,?,?,..." for n columns. Used by
-// dynamic INSERT statements.
-func joinPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat("?,", n-1) + "?"
-}

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/witlox/ghyll/runner"
@@ -15,53 +17,180 @@ import (
 // to persistent storage; it does NOT decide policy. Replay-on-
 // startup (engine/replay.go) reads the same tables back.
 //
-// Observer constraints (validation-pass-4/6 reminders): callbacks
-// fire under the runner store's WRITE lock. They must be fast and
-// non-blocking. The Journal therefore uses non-cancellable
-// background context plus a short-timeout DB call; long-running
-// writes would stall the runner.
-//
-// Errors are logged via the supplied Logger (or log.Default) and
-// do NOT propagate — a transient sqlite error must not corrupt the
-// runner's in-memory state. Replay reconciles at next startup.
+// Concurrency design (validation-pass-9 J5/J6/J7):
+//   - Observers fire under the runner store's WRITE lock. The
+//     observer body MUST NOT do synchronous sqlite writes — that
+//     would stall the runner under disk pressure. Instead, each
+//     observer body pushes a typed event onto a bounded channel
+//     and returns immediately.
+//   - A single consumer goroutine drains the channel and writes
+//     synchronously off the hot path. Single goroutine preserves
+//     total order; channel buffer absorbs bursts.
+//   - On channel-full the journal LOGS and drops the event (a
+//     metric counter increments) rather than block the runner.
+//     Replay reconciles at next startup.
+//   - Close signals the consumer goroutine to drain remaining
+//     events and exit. After Close, observers no longer enqueue
+//     (the atomic flag flips so the closure returns immediately).
+//   - clock is injectable (J11) so tests can pin timestamps.
 type Journal struct {
 	store   *Store
 	logger  *log.Logger
+	clock   func() time.Time
 	timeout time.Duration
 
-	// background ctx for non-blocking writes. Cancelling Close
-	// signals in-flight writes to abandon.
-	ctx    context.Context
-	cancel context.CancelFunc
+	events   chan journalEvent
+	consumer sync.WaitGroup
+	closed   atomic.Bool
+	dropped  atomic.Uint64
 }
 
+// journalEvent is the type-erased payload pushed onto the consumer
+// channel. Each handler fills the relevant fields; the consumer
+// dispatches by Kind.
+type journalEvent struct {
+	kind           string
+	finding        runner.FindingsEvent
+	classification runner.ClassificationsEvent
+	grid           runner.GridEvent
+	amendment      runner.AmendmentEvent
+	run            *runner.EvaluationRun
+	flushDone      chan struct{} // populated for jKindFlush events
+}
+
+const (
+	jKindFinding        = "finding"
+	jKindClassification = "classification"
+	jKindGrid           = "grid"
+	jKindAmendment      = "amendment"
+	jKindRun            = "run"
+	jKindFlush          = "flush"
+
+	defaultJournalBuffer  = 1024
+	defaultJournalTimeout = 5 * time.Second
+)
+
 // NewJournal constructs a Journal bound to store. If logger is nil,
-// log.Default() is used.
+// log.Default() is used. The consumer goroutine starts immediately.
 func NewJournal(store *Store, logger *log.Logger) *Journal {
+	return NewJournalWithClock(store, logger, time.Now, defaultJournalBuffer)
+}
+
+// NewJournalWithClock is the test-friendly constructor. Pass nil
+// clock for time.Now. Buffer of 0 uses the default.
+func NewJournalWithClock(store *Store, logger *log.Logger, clock func() time.Time, buffer int) *Journal {
 	if store == nil {
 		panic("engine.NewJournal: nil store")
 	}
 	if logger == nil {
 		logger = log.Default()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Journal{
+	if clock == nil {
+		clock = time.Now
+	}
+	if buffer <= 0 {
+		buffer = defaultJournalBuffer
+	}
+	j := &Journal{
 		store:   store,
 		logger:  logger,
-		timeout: 5 * time.Second,
-		ctx:     ctx,
-		cancel:  cancel,
+		clock:   clock,
+		timeout: defaultJournalTimeout,
+		events:  make(chan journalEvent, buffer),
+	}
+	j.consumer.Add(1)
+	go j.runConsumer()
+	return j
+}
+
+// Close stops the consumer goroutine. Observers fired after Close
+// drop their events with a log message (and a dropped counter
+// increment) rather than block. Close blocks until the consumer
+// has drained the channel.
+func (j *Journal) Close() {
+	if !j.closed.CompareAndSwap(false, true) {
+		return
+	}
+	close(j.events)
+	j.consumer.Wait()
+}
+
+// Dropped returns the count of events dropped due to full channel
+// or post-Close arrival. Useful for the engine's health metrics.
+func (j *Journal) Dropped() uint64 {
+	return j.dropped.Load()
+}
+
+// enqueue pushes an event onto the consumer channel. After Close
+// or on full channel, increments the dropped counter and logs.
+func (j *Journal) enqueue(e journalEvent) {
+	if j.closed.Load() {
+		j.dropped.Add(1)
+		return
+	}
+	select {
+	case j.events <- e:
+	default:
+		j.dropped.Add(1)
+		j.logger.Printf("engine.Journal: events channel full; dropping %s event", e.kind)
 	}
 }
 
-// Close signals in-flight observer writes to abandon their context.
-// The Store itself is owned externally; the journal does not close it.
-func (j *Journal) Close() {
-	j.cancel()
+// runConsumer drains the channel and writes to sqlite synchronously.
+// Single goroutine preserves total order.
+func (j *Journal) runConsumer() {
+	defer j.consumer.Done()
+	for e := range j.events {
+		j.handle(e)
+	}
 }
 
-// logErr writes an error with a labelled prefix. Centralized so
-// future-routing-to-metrics is one-line.
+// handle dispatches a single event to the appropriate write path.
+// Errors log and continue — a single sqlite glitch must not stop
+// the consumer.
+func (j *Journal) handle(e journalEvent) {
+	if e.kind == jKindFlush {
+		close(e.flushDone)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), j.timeout)
+	defer cancel()
+	switch e.kind {
+	case jKindFinding:
+		j.handleFinding(ctx, e.finding)
+	case jKindClassification:
+		j.handleClassification(ctx, e.classification)
+	case jKindGrid:
+		j.handleGrid(ctx, e.grid)
+	case jKindAmendment:
+		j.handleAmendment(ctx, e.amendment)
+	case jKindRun:
+		j.handleRun(ctx, e.run)
+	}
+}
+
+// Flush blocks until the consumer has processed every event that
+// was already on the channel when Flush was called. Used by tests
+// and by code paths that need to read sqlite immediately after a
+// mutation (e.g., session-end checkpoint).
+//
+// Returns immediately if the journal is closed.
+func (j *Journal) Flush() {
+	if j.closed.Load() {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case j.events <- journalEvent{kind: jKindFlush, flushDone: done}:
+	default:
+		// Channel full — fall back to blocking send so Flush still
+		// signals correctly.
+		j.events <- journalEvent{kind: jKindFlush, flushDone: done}
+	}
+	<-done
+}
+
+// logErr writes an error with a labelled prefix.
 func (j *Journal) logErr(label string, err error) {
 	if err == nil {
 		return
@@ -70,44 +199,47 @@ func (j *Journal) logErr(label string, err error) {
 }
 
 // AttachFindings registers a FindingsObserver that journals every
-// raise / transition / forget. Idempotent at the engine layer: an
-// already-Raised finding upsert in sqlite overwrites the row with
-// the same values.
+// raise / transition / forget. Per J5: the observer body is a
+// constant-time chan send and returns immediately.
 func (j *Journal) AttachFindings(store *runner.FindingsStore) {
 	store.Observe(func(e runner.FindingsEvent) {
-		ctx, cancel := context.WithTimeout(j.ctx, j.timeout)
-		defer cancel()
-		switch e.Kind {
-		case runner.FindingsEventRaise:
-			rec := findingToRecord(e.After, e.Version)
-			j.logErr("UpsertFinding(raise)", j.store.UpsertFinding(ctx, rec))
-
-		case runner.FindingsEventTransition:
-			rec := findingToRecord(e.After, e.Version)
-			j.logErr("UpsertFinding(transition)", j.store.UpsertFinding(ctx, rec))
-			j.logErr("InsertTransition", j.store.InsertTransition(ctx, TransitionRecord{
-				FindingID:    e.After.ID,
-				FromStatus:   e.Before.Status.String(),
-				ToStatus:     e.After.Status.String(),
-				Role:         e.After.RaisedByRole,
-				Reason:       "",
-				StoreVersion: e.Version,
-				At:           e.After.RaisedAt,
-			}))
-
-		case runner.FindingsEventForget, runner.FindingsEventForgetArrow:
-			id := e.Before.ID
-			if id == "" {
-				return
-			}
-			j.logErr("DeleteFinding", j.store.DeleteFinding(ctx, id))
-		}
+		j.enqueue(journalEvent{kind: jKindFinding, finding: e})
 	})
 }
 
+func (j *Journal) handleFinding(ctx context.Context, e runner.FindingsEvent) {
+	switch e.Kind {
+	case runner.FindingsEventRaise:
+		rec := findingToRecord(e.After, e.Version, j.clock)
+		j.logErr("UpsertFinding(raise)", j.store.UpsertFinding(ctx, rec))
+
+	case runner.FindingsEventTransition:
+		rec := findingToRecord(e.After, e.Version, j.clock)
+		j.logErr("UpsertFinding(transition)", j.store.UpsertFinding(ctx, rec))
+		// J3 + J4: use the transition's own timestamp / role /
+		// reason rather than the original raise's.
+		j.logErr("InsertTransition", j.store.InsertTransition(ctx, TransitionRecord{
+			FindingID:    e.After.ID,
+			FromStatus:   e.Before.Status.String(),
+			ToStatus:     e.After.Status.String(),
+			Role:         e.Role,
+			Reason:       e.Reason,
+			StoreVersion: e.Version,
+			At:           e.At,
+		}))
+
+	case runner.FindingsEventForget, runner.FindingsEventForgetArrow:
+		id := e.Before.ID
+		if id == "" {
+			return
+		}
+		j.logErr("DeleteFinding", j.store.DeleteFinding(ctx, id))
+	}
+}
+
 // findingToRecord projects runner.FindingRecord into the engine's
-// persistence shape.
-func findingToRecord(f runner.FindingRecord, storeVer uint64) FindingRecord {
+// persistence shape. clock injection (J11) lets tests pin timestamps.
+func findingToRecord(f runner.FindingRecord, storeVer uint64, clock func() time.Time) FindingRecord {
 	return FindingRecord{
 		ID:              f.ID,
 		ArrowID:         f.ArrowID,
@@ -119,182 +251,194 @@ func findingToRecord(f runner.FindingRecord, storeVer uint64) FindingRecord {
 		RaisedByRole:    f.RaisedByRole,
 		TransitionCount: f.TransitionCount,
 		StoreVersion:    storeVer,
-		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:       clock().UTC().Format(time.RFC3339Nano),
 	}
 }
 
-// AttachClassifications registers a ClassificationsObserver that
-// journals declarations, recordings, overwrites, and forgets.
+// AttachClassifications registers a ClassificationsObserver.
 func (j *Journal) AttachClassifications(store *runner.ClassificationsStore) {
 	store.Observe(func(e runner.ClassificationsEvent) {
-		ctx, cancel := context.WithTimeout(j.ctx, j.timeout)
-		defer cancel()
-		switch e.Kind {
-		case runner.ClassificationsEventDeclare:
-			j.logErr("UpsertRequirement", j.store.UpsertRequirement(ctx, RequirementRecord{
-				ArrowID:      e.ArrowID,
-				ReqID:        e.RequirementID,
-				MinDepth:     int(e.Requirement.MinDepth),
-				Description:  e.Requirement.Description,
-				StoreVersion: e.Version,
-				DeclaredAt:   time.Now().UTC().Format(time.RFC3339Nano),
-			}))
+		j.enqueue(journalEvent{kind: jKindClassification, classification: e})
+	})
+}
 
-		case runner.ClassificationsEventRecord:
-			j.logErr("UpsertClassification", j.store.UpsertClassification(ctx, ClassificationRecord{
+func (j *Journal) handleClassification(ctx context.Context, e runner.ClassificationsEvent) {
+	now := j.clock().UTC().Format(time.RFC3339Nano)
+	switch e.Kind {
+	case runner.ClassificationsEventDeclare:
+		j.logErr("UpsertRequirement", j.store.UpsertRequirement(ctx, RequirementRecord{
+			ArrowID:      e.ArrowID,
+			ReqID:        e.RequirementID,
+			MinDepth:     int(e.Requirement.MinDepth),
+			Description:  e.Requirement.Description,
+			StoreVersion: e.Version,
+			DeclaredAt:   now,
+		}))
+
+	case runner.ClassificationsEventRecord:
+		j.logErr("UpsertClassification", j.store.UpsertClassification(ctx, ClassificationRecord{
+			ArrowID:      e.ArrowID,
+			ReqID:        e.RequirementID,
+			Observed:     int(e.After.Observed),
+			Evidence:     e.After.Evidence,
+			StoreVersion: e.Version,
+			ClassifiedAt: now,
+		}))
+
+	case runner.ClassificationsEventOverwrite:
+		// J14: UpsertClassification's conflict-update path now
+		// increments overwrite_count automatically.
+		j.logErr("UpsertClassification(overwrite)",
+			j.store.UpsertClassification(ctx, ClassificationRecord{
 				ArrowID:      e.ArrowID,
 				ReqID:        e.RequirementID,
 				Observed:     int(e.After.Observed),
 				Evidence:     e.After.Evidence,
 				StoreVersion: e.Version,
-				ClassifiedAt: time.Now().UTC().Format(time.RFC3339Nano),
+				ClassifiedAt: now,
+			}))
+		j.logErr("InsertOverwrite",
+			j.store.InsertOverwrite(ctx, OverwriteRecord{
+				ArrowID:        e.ArrowID,
+				ReqID:          e.RequirementID,
+				BeforeObserved: int(e.Before.Observed),
+				AfterObserved:  int(e.After.Observed),
+				StoreVersion:   e.Version,
+				At:             now,
 			}))
 
-		case runner.ClassificationsEventOverwrite:
-			j.logErr("UpsertClassification(overwrite)",
-				j.store.UpsertClassification(ctx, ClassificationRecord{
-					ArrowID:        e.ArrowID,
-					ReqID:          e.RequirementID,
-					Observed:       int(e.After.Observed),
-					Evidence:       e.After.Evidence,
-					OverwriteCount: 0, // engine doesn't track in-row; see audit table
-					StoreVersion:   e.Version,
-					ClassifiedAt:   time.Now().UTC().Format(time.RFC3339Nano),
-				}))
-			j.logErr("InsertOverwrite",
-				j.store.InsertOverwrite(ctx, OverwriteRecord{
-					ArrowID:        e.ArrowID,
-					ReqID:          e.RequirementID,
-					BeforeObserved: int(e.Before.Observed),
-					AfterObserved:  int(e.After.Observed),
-					StoreVersion:   e.Version,
-					At:             time.Now().UTC().Format(time.RFC3339Nano),
-				}))
+	case runner.ClassificationsEventForget:
+		j.logErr("DeleteRequirement",
+			j.store.DeleteRequirement(ctx, e.ArrowID, e.RequirementID))
 
-		case runner.ClassificationsEventForget:
-			j.logErr("DeleteRequirement",
-				j.store.DeleteRequirement(ctx, e.ArrowID, e.RequirementID))
-
-		case runner.ClassificationsEventForgetArrow:
-			j.logErr("DeleteArrow", j.store.DeleteArrow(ctx, e.ArrowID))
-		}
-	})
+	case runner.ClassificationsEventForgetArrow:
+		j.logErr("DeleteArrow", j.store.DeleteArrow(ctx, e.ArrowID))
+	}
 }
 
-// AttachGrid registers a GridObserver that journals every append /
-// on-the-spot append. Definitions are JSON-serialized for storage;
-// queryable fields are mirrored as columns.
+// AttachGrid registers a GridObserver.
 func (j *Journal) AttachGrid(g *runner.Grid) {
 	g.Observe(func(e runner.GridEvent) {
-		ctx, cancel := context.WithTimeout(j.ctx, j.timeout)
-		defer cancel()
-		kind := "append"
-		if e.Kind == runner.GridEventOnTheSpotAppend {
-			kind = "on-the-spot"
-		}
-		rec := GridArrowRecord{
-			ID:               e.ArrowID,
-			GridVersion:      e.Version,
-			SourceRole:       e.Definition.SourceRole,
-			TargetRole:       e.Definition.TargetRole,
-			Stratum:          e.Definition.Stratum,
-			Context:          e.Definition.Context,
-			ClausesJSON:      MustJSON(e.Definition.Clauses),
-			RequirementsJSON: MustJSON(e.Definition.Requirements),
-			Kind:             kind,
-			DeclaredAt:       time.Now().UTC().Format(time.RFC3339Nano),
-		}
-		j.logErr("InsertGridArrow", j.store.InsertGridArrow(ctx, rec))
+		j.enqueue(journalEvent{kind: jKindGrid, grid: e})
 	})
 }
 
-// AttachAmendments registers an AmendmentObserver that journals
-// enqueues and (via UPDATE) drains. Reset events clear the
-// drained_at marker for all rows so a fresh session sees no stale
-// state — operator-explicit reset semantics.
+func (j *Journal) handleGrid(ctx context.Context, e runner.GridEvent) {
+	kind := "append"
+	if e.Kind == runner.GridEventOnTheSpotAppend {
+		kind = "on-the-spot"
+	}
+	rec := GridArrowRecord{
+		ID:               e.ArrowID,
+		GridVersion:      e.Version,
+		SourceRole:       e.Definition.SourceRole,
+		TargetRole:       e.Definition.TargetRole,
+		Stratum:          e.Definition.Stratum,
+		Context:          e.Definition.Context,
+		ClausesJSON:      JSONSlice(e.Definition.Clauses),
+		RequirementsJSON: JSONSlice(e.Definition.Requirements),
+		Kind:             kind,
+		DeclaredAt:       j.clock().UTC().Format(time.RFC3339Nano),
+	}
+	j.logErr("InsertGridArrow", j.store.InsertGridArrow(ctx, rec))
+}
+
+// AttachAmendments registers an AmendmentObserver.
 func (j *Journal) AttachAmendments(q *runner.AmendmentQueue) {
 	q.Observe(func(e runner.AmendmentEvent) {
-		ctx, cancel := context.WithTimeout(j.ctx, j.timeout)
-		defer cancel()
-		switch e.Kind {
-		case runner.AmendmentEventEnqueue:
-			j.logErr("UpsertAmendment(enqueue)",
-				j.store.UpsertAmendment(ctx, AmendmentRecord{
-					ID:             e.Request.ID,
-					Reason:         string(e.Request.Reason),
-					SourceArrow:    e.Request.SourceArrow,
-					TargetRole:     e.Request.TargetRole,
-					ContextsJSON:   MustJSON(e.Request.Contexts),
-					Description:    e.Request.Description,
-					FindingIDsJSON: MustJSON(e.Request.FindingIDs),
-					CreatedAt:      e.Request.CreatedAt,
-				}))
-
-		case runner.AmendmentEventDrain:
-			drainedAt := time.Now().UTC().Format(time.RFC3339Nano)
-			for _, r := range e.Drained {
-				j.logErr("UpsertAmendment(drain)",
-					j.store.UpsertAmendment(ctx, AmendmentRecord{
-						ID:             r.ID,
-						Reason:         string(r.Reason),
-						SourceArrow:    r.SourceArrow,
-						TargetRole:     r.TargetRole,
-						ContextsJSON:   MustJSON(r.Contexts),
-						Description:    r.Description,
-						FindingIDsJSON: MustJSON(r.FindingIDs),
-						CreatedAt:      r.CreatedAt,
-						DrainedAt:      newNullString(drainedAt),
-					}))
-			}
-
-		case runner.AmendmentEventReset:
-			// Operator-explicit reset: clear drained_at via direct
-			// UPDATE so subsequent queries don't see stale state.
-			// The amendments themselves stay in the table for audit.
-			j.logErr("ResetDrained", j.resetAmendmentDrained(ctx))
-		}
+		j.enqueue(journalEvent{kind: jKindAmendment, amendment: e})
 	})
 }
 
-// resetAmendmentDrained clears the drained_at column on all
-// amendments. Used by AmendmentEventReset.
-func (j *Journal) resetAmendmentDrained(ctx context.Context) error {
-	_, err := j.store.db.ExecContext(ctx, `UPDATE amendments SET drained_at = NULL`)
-	if err != nil {
-		return fmt.Errorf("reset drained: %w", err)
+func (j *Journal) handleAmendment(ctx context.Context, e runner.AmendmentEvent) {
+	switch e.Kind {
+	case runner.AmendmentEventEnqueue:
+		j.logErr("UpsertAmendment(enqueue)",
+			j.store.UpsertAmendment(ctx, AmendmentRecord{
+				ID:             e.Request.ID,
+				Reason:         string(e.Request.Reason),
+				SourceArrow:    e.Request.SourceArrow,
+				TargetRole:     e.Request.TargetRole,
+				ContextsJSON:   JSONSlice(e.Request.Contexts),
+				Description:    e.Request.Description,
+				FindingIDsJSON: JSONSlice(e.Request.FindingIDs),
+				CreatedAt:      e.Request.CreatedAt,
+			}))
+
+	case runner.AmendmentEventDrain:
+		// J7: wrap the drain in a transaction so concurrent
+		// ListAmendments(drained=true) readers see all rows or none.
+		drainedAt := j.clock().UTC().Format(time.RFC3339Nano)
+		j.logErr("DrainAmendments", j.drainAmendments(ctx, e.Drained, drainedAt))
+
+	case runner.AmendmentEventReset:
+		// J2: Reset is in-memory ONLY. Wiping drained_at would
+		// destroy F44 dedup across process restart. The journal
+		// log here is the only persistent signal of the operator's
+		// Reset intent.
+		j.logger.Printf("engine.Journal: AmendmentEventReset is in-memory only; persistence retained")
 	}
-	return nil
 }
 
-// AttachRunner registers an EvaluationRun observer on the runner so
-// every completed clause evaluation is journaled.
+// drainAmendments writes all drained rows in a single transaction
+// so readers see atomic drain semantics (J7).
+func (j *Journal) drainAmendments(ctx context.Context, drained []runner.AmendmentRequest, at string) error {
+	if len(drained) == 0 {
+		return nil
+	}
+	tx, err := j.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, r := range drained {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO amendments (
+				id, reason, source_arrow, target_role,
+				contexts_json, description, finding_ids_json,
+				created_at, drained_at
+			) VALUES (?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET drained_at = excluded.drained_at
+		`, r.ID, string(r.Reason), r.SourceArrow, r.TargetRole,
+			JSONSlice(r.Contexts), r.Description, JSONSlice(r.FindingIDs),
+			r.CreatedAt, at)
+		if err != nil {
+			return fmt.Errorf("upsert %s: %w", safeID(r.ID), err)
+		}
+	}
+	return tx.Commit()
+}
+
+// AttachRunner registers an EvaluationRun observer.
 func (j *Journal) AttachRunner(r *runner.Runner) {
 	r.OnEvaluationRun(func(run *runner.EvaluationRun) {
 		if run == nil {
 			return
 		}
-		ctx, cancel := context.WithTimeout(j.ctx, j.timeout)
-		defer cancel()
-		rec := EvaluationRunRecord{
-			ID:                      run.ID,
-			ClauseID:                run.ClauseID,
-			PassID:                  run.PassID,
-			ArrowID:                 run.ArrowID,
-			GridVersion:             run.GridVersion,
-			DepthTypeAttestationRef: run.DepthTypeAttestationRef,
-			ActualTier:              int(run.ActualTier),
-			MinDepthTier:            int(run.MinDepthTier),
-			EvaluatorConcept:        run.Evaluator.Concept,
-			EvaluatorGeneration:     run.Evaluator.Generation,
-			StartedAt:               run.StartedAt.UTC().Format(time.RFC3339Nano),
-			CompletedAt:             run.CompletedAt.UTC().Format(time.RFC3339Nano),
-			StartStatus:             run.StartStatus.String(),
-			EndStatus:               run.EndStatus.String(),
-			ResultJSON:              MustJSON(run.Result),
-			RunError:                run.RunError,
-		}
-		j.logErr("InsertEvaluationRun", j.store.InsertEvaluationRun(ctx, rec))
+		j.enqueue(journalEvent{kind: jKindRun, run: run})
 	})
+}
+
+func (j *Journal) handleRun(ctx context.Context, run *runner.EvaluationRun) {
+	rec := EvaluationRunRecord{
+		ID:                      run.ID,
+		ClauseID:                run.ClauseID,
+		PassID:                  run.PassID,
+		ArrowID:                 run.ArrowID,
+		GridVersion:             run.GridVersion,
+		DepthTypeAttestationRef: run.DepthTypeAttestationRef,
+		ActualTier:              int(run.ActualTier),
+		MinDepthTier:            int(run.MinDepthTier),
+		EvaluatorConcept:        run.Evaluator.Concept,
+		EvaluatorGeneration:     run.Evaluator.Generation,
+		StartedAt:               run.StartedAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt:             run.CompletedAt.UTC().Format(time.RFC3339Nano),
+		StartStatus:             run.StartStatus.String(),
+		EndStatus:               run.EndStatus.String(),
+		ResultJSON:              JSONObject(run.Result),
+		RunError:                run.RunError,
+	}
+	j.logErr("InsertEvaluationRun", j.store.InsertEvaluationRun(ctx, rec))
 }
 
 // newNullString wraps a non-empty string in sql.NullString.
@@ -304,3 +448,7 @@ func newNullString(s string) sql.NullString {
 	}
 	return sql.NullString{String: s, Valid: true}
 }
+
+// Unused but retained for potential future engine APIs that need
+// to mark a row drained via the typed nullable.
+var _ = newNullString
