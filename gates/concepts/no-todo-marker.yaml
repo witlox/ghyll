@@ -1,0 +1,37 @@
+# Concept: no-todo-marker
+# Universal base set (gates.md §5.2). Auto-inherited by every arrow.
+# Source design: specs/direction/components/concepts.md
+
+concept: no-todo-marker
+description: No TODO / TBD / ??? / FIXME / XXX strings in the named scope. Captures the work-not-done signal that prose can hide.
+language-bound: false
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to scan recursively.
+  markers:
+    type: list
+    items: string
+    required: false
+    default: [TODO, TBD, "???", FIXME, XXX]
+    description: Strings to flag as work-not-done markers.
+  case-sensitive:
+    type: boolean
+    required: false
+    default: false
+    description: Whether marker matching is case-sensitive.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      hits: { type: list, items: { file: string, line: int, marker: string, surrounding-text: string } }
+
+default-cost: 0
+
+edge-cases:
+  - Markers in test-fixture directories or inside string literals are legitimate; operator should narrow scope to exclude such areas.
+  - A line-comment describing a TODO marker (e.g., "documentation explaining TODO") would false-positive. Project-init may declare a comment-prefix exclusion.

@@ -1,0 +1,36 @@
+# Concept: predicate-form
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+# Scope clarification (D44): for prose-vs-predicate shape, NOT for enum-field validity checks (use cardinality-check for that).
+
+concept: predicate-form
+description: Each entry in a named collection is written as an assertable predicate, not prose narrative. Defends against invariant documents that read as wishes rather than statements that can be checked.
+language-bound: false
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to scan.
+  collection-locator:
+    type: string
+    required: true
+    description: How to find the collection (yaml-path / regex / markdown-section-name).
+  predicate-grammar:
+    type: string
+    required: false
+    default: "contains at least one comparison operator OR is in assert(...) form OR matches a project-declared grammar"
+    description: The rule by which an entry counts as a predicate.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      non-predicates: { type: list, items: { entry: string, location: string, hint: string } }
+
+default-cost: 1
+
+edge-cases:
+  - An entry that combines prose AND a predicate ("uptime is critical; we need `99.9%`") parses as predicate-bearing. Init may raise threshold to "entry is *primarily* predicate."
+  - Math expressions (`x > y`) qualify; English-sentence statements with comparison words ("uptime higher than 99.9%") do NOT, unless the grammar is declared loose at init.

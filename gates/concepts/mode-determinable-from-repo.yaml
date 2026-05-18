@@ -1,0 +1,36 @@
+# Concept: mode-determinable-from-repo
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: mode-determinable-from-repo
+description: A named mode discriminator is determinable from the current repo state without operator input. Used for greenfield/brownfield detection at init.
+language-bound: false
+
+arguments:
+  discriminator:
+    type: string
+    required: true
+    description: Identifier for the mode being checked (e.g., "greenfield-vs-brownfield").
+  rule:
+    type: command
+    required: true
+    description: Shell command or script returning the mode value on stdout. MUST be read-only and MUST NOT require operator input.
+  valid-modes:
+    type: list
+    items: string
+    required: true
+    description: Set of acceptable mode values; the rule's output MUST be one of these.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      mode: string
+
+default-cost: 1
+
+edge-cases:
+  - An empty or unknown result is failure, not a third mode. Init must declare a comprehensive rule covering all valid-modes.
+  - The rule MUST NOT require operator input; if it does, the mode is operator-attested, not machine-determined (use an attested clause instead).
+  - The rule MUST be read-only; mutating repo state during evaluation breaks idempotency.

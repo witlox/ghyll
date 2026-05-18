@@ -1,0 +1,44 @@
+# Concept: trace-link-present
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: trace-link-present
+description: A declared link between two artifacts exists. Used for spec→implementation traces, requirement→test traces, context→domain-model traces, etc.
+language-bound: false
+
+arguments:
+  from:
+    type: artifact-ref
+    required: true
+    description: Source side of the link.
+  to:
+    type: artifact-ref
+    required: true
+    description: Destination side of the link.
+  link-rule:
+    type: string
+    required: true
+    description: How to recognize the link (regex / xpath / clause-ID convention).
+  min-multiplicity:
+    type: int
+    required: false
+    default: 1
+    description: Minimum links from each `from` entry.
+  max-multiplicity:
+    type: int
+    required: false
+    description: Maximum links from each `from` entry. Unlimited if absent.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      violations: { type: list, items: { from-entry: string, count: int, expected-range: { min: int, max: int } } }
+
+default-cost: 1
+
+edge-cases:
+  - A from-entry with no link is the primary failure case; violations.from-entry is keyed by clause-ID for operator triage.
+  - Multiple links from one `from` to the same `to` count as ONE link (deduplicated); max-multiplicity measures distinct destinations.
+  - Path-based addressing makes link-rule brittle to file refactors; prefer clause-IDs (per D11 hybrid IDs) for high-stability links.

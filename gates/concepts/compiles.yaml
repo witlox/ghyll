@@ -1,0 +1,32 @@
+# Concept: compiles
+# Universal base set (gates.md §5.2). Auto-inherited by every arrow.
+# Source design: specs/direction/components/concepts.md
+
+concept: compiles
+description: The artifact (code / Gherkin / schema) compiles or parses without error.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to compile or parse.
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language binding (e.g., compiles.go).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      scanned-files: { type: list, items: path }
+      errors: { type: list, items: { file: string, line: int, msg: string } }
+
+default-cost: 0
+
+edge-cases:
+  - Empty scope resolves to pass=true vacuously. Init should warn during auto-propose.
+  - Compiler warnings do NOT fail; only errors do. Warning-level enforcement is lint-clean's job.
+  - Bindings must emit errors via the protocol the evaluator contract expects (typically structured stderr or JSON on stdout). Binding-side bugs are not concept-side bugs.

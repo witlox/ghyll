@@ -1,0 +1,36 @@
+# Concept: acyclic-dependency-graph
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: acyclic-dependency-graph
+description: The dependency graph of the named scope is acyclic.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Modules or packages to analyze.
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language dependency-extractor binding.
+  kind:
+    type: enum
+    values: [import-graph, call-graph, type-graph]
+    required: false
+    default: import-graph
+    description: Which graph kind to analyze.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      cycles: { type: list, items: { path: list, kind: string } }
+
+default-cost: 0
+
+edge-cases:
+  - Some languages (TypeScript with re-export-only files, Go internal packages) have legitimate near-cycles. The binding's extractor decides what counts as an edge.
+  - An import used only at type-time vs. run-time may be a cycle in one `kind` but not another. Init should pick the `kind` per arrow.

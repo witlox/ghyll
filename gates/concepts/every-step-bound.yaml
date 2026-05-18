@@ -1,0 +1,30 @@
+# Concept: every-step-bound
+# Universal base set (gates.md §5.2). Auto-inherited by every arrow.
+# Source design: specs/direction/components/concepts.md
+
+concept: every-step-bound
+description: Every step / case / branch / clause in the artifact is structurally bound — no dangling cases, no fall-through gaps.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to check.
+  language:
+    type: language-id
+    required: true
+    description: Selects the language-specific binding (e.g., Gherkin step-binding check, Go switch exhaustiveness, TypeScript exhaustive-never).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      unbound: { type: list, items: { file: string, line: int, kind: string, description: string } }
+
+default-cost: 0
+
+edge-cases:
+  - Exhaustiveness over an open enum (e.g., a string-typed dimension) is impossible by definition; the binding should accept a `default`-branch as sufficient closure.
+  - Deliberately incomplete behavior (e.g., "fallthrough handled by caller") should be declared as accepted-risk, not silently passed.

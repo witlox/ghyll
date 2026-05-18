@@ -1,0 +1,35 @@
+# Concept: lint-clean
+# Universal base set (gates.md §5.2). Auto-inherited by every arrow.
+# Source design: specs/direction/components/concepts.md
+
+concept: lint-clean
+description: The artifact passes the language's lint toolchain with no findings above the declared severity threshold.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to lint.
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language binding.
+  severity-threshold:
+    type: severity
+    required: false
+    default: medium
+    description: Findings strictly below this threshold are allowed.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      findings: { type: list, items: { file: string, line: int, severity: severity, msg: string, rule: string } }
+
+default-cost: 0
+
+edge-cases:
+  - Different lint tools use different severity vocabularies; the binding's job is to map tool-native severity → the canonical info/low/medium/high/critical enum.
+  - A lint binding that always returns 0 findings is suspicious; init should warn during auto-propose.

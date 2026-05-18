@@ -1,0 +1,37 @@
+# Concept: cardinality-check
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: cardinality-check
+description: A named query returns exactly the declared cardinality. Used for "exactly one bounded context" checks, "at most three open findings of severity `high`", "no value outside an enum", etc.
+language-bound: false
+
+arguments:
+  query:
+    type: string
+    required: true
+    description: The query expression (regex / yaml-path / SQL-like over project state). Must be read-only (no side effects).
+  query-target:
+    type: enum-or-path
+    required: true
+    description: Either a path-glob (files to query) OR the literal `project-state` (queries against in-memory state).
+  expected:
+    type: int-or-range
+    required: true
+    description: Expected cardinality. Single int (exact match) or `[min, max]` range (inclusive bounds).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      actual: int
+      expected: { exact-or-range: any }
+      results: { type: list, items: any }
+
+default-cost: 1
+
+edge-cases:
+  - A query returning 0 when expected=1 is the canonical failure mode. details.actual=0 and results=[].
+  - Queries with side effects are not allowed (evaluator must be idempotent). Init should validate that the query is read-only.
+  - When expected is a range like [0, 3], the result is acceptable in the closed interval.

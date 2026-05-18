@@ -1,0 +1,39 @@
+# Concept: kill-server-fails-integration
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: kill-server-fails-integration
+description: When a critical dependency is removed (server killed, network blocked), the integration test suite fails. Defends against test suites that mock the dependency and never exercise the real wire.
+language-bound: false
+
+arguments:
+  test-suite:
+    type: path-glob
+    required: true
+    description: Integration tests to run.
+  critical-deps:
+    type: list
+    items: dependency-id
+    required: true
+    description: Dependencies whose absence MUST cause tests to fail.
+  kill-strategy:
+    type: enum
+    values: [stop-process, block-network, null-config]
+    required: false
+    default: block-network
+    description: How to remove the dependency.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      suite-passes-with-deps: boolean
+      dep-results: { type: list, items: { dep: string, killed: boolean, suite-failed: boolean } }
+
+default-cost: 3
+
+edge-cases:
+  - The kill MUST be reversible — after the evaluator runs, deps must return. Project-declared kill-strategy MUST include an unkill step.
+  - Deps mocked via dependency injection cannot be killed externally; the binding must hook into the test runner's config, not the system.
+  - Test suites that pass-by-default when deps fail (e.g., skipping integration tests) are a binding bug — the binding must ensure tests run, not skip.

@@ -1,0 +1,42 @@
+# Concept: no-orphan-symbol
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md (generalized per D44 to walk specs OR code)
+
+concept: no-orphan-symbol
+description: Every entity in the scope (exported source-code symbol OR spec clause, depending on direction) traces to a declared counterpart; orphans are listed in the arrow's coverage-claim residue.
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Source files (or spec files) holding entities to trace.
+  spec-index:
+    type: artifact-ref
+    required: true
+    description: The counterpart artifact containing the index of trace targets (clause-IDs, symbol declarations, etc.).
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language binding (extractor + mapper).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      orphans: { type: list, items: { entity-id: string, location: string } }
+      missing-targets: { type: list, items: { referenced-id: string, found-in: string } }
+
+default-cost: 1
+
+# Per-language binding shape (declared at init, per D18):
+#   no-orphan-symbol.<lang>:
+#     extractor: <cmd producing exported-entity list, one per line>
+#     mapper:    <cmd or regex producing entity → [trace-target-id] map>
+
+edge-cases:
+  - A symbol exported but unused externally still requires a trace tie. Init should warn during auto-propose.
+  - Internal/test-only symbols are out of scope; the extractor must exclude them.
+  - A clause-ID referenced but not present in spec-index is an error, not an orphan (distinct details field).
+  - The concept is bidirectional (spec→code OR code→spec); direction is set by the per-arrow extractor configuration.

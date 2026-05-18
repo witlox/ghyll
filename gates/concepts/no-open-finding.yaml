@@ -1,0 +1,33 @@
+# Concept: no-open-finding
+# Auto-inserted on adversarial arrows during verification (gates.md §11.3).
+# Source design: specs/direction/components/concepts.md
+
+concept: no-open-finding
+description: All findings on the arrow are `resolved` or `accepted-risk`. No findings remain `open` above the severity threshold, and no findings have severity `unevaluated`.
+language-bound: false
+
+arguments:
+  arrow-id:
+    type: arrow-id
+    required: true
+    description: The arrow to check.
+  severity-threshold:
+    type: severity
+    required: false
+    default: medium
+    description: Findings strictly below this threshold do not need disposal.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      blocking-findings: { type: list, items: { id: string, severity: severity, status: finding-status } }
+
+default-cost: 1
+
+edge-cases:
+  - A finding at exactly severity-threshold IS blocking (threshold is inclusive).
+  - A finding tagged with an old grid-version (carried over from an aborted-by-invalidation pass per D22) is treated normally — its severity and status apply regardless of the version tag.
+  - `unevaluated`-severity findings block regardless of threshold (D42, gates.md §7.3).
+  - This concept is auto-inserted by the verification phase on every arrow that ran an adversarial phase (gates.md §11.3). Operators do NOT declare it manually; the harness adds it.

@@ -1,0 +1,38 @@
+# Concept: arrow-artifact-present
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: arrow-artifact-present
+description: The arrow's declared output artifact exists at its declared location and is non-empty.
+language-bound: false
+
+arguments:
+  artifact-path:
+    type: string
+    required: true
+    description: Where the artifact is expected on disk.
+  min-size-bytes:
+    type: int
+    required: false
+    default: 1
+    range: [1, ~]
+    description: Minimum file size.
+  schema-check:
+    type: command
+    required: false
+    description: If declared, runs and must exit 0 (validates artifact structure).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      exists: boolean
+      size-bytes: int
+      schema-valid: boolean
+
+default-cost: 0
+
+edge-cases:
+  - An empty file (0 bytes) does not pass even if min-size-bytes is 0 — min-size-bytes >= 1 is the floor.
+  - A file that exists but is malformed (e.g., invalid Gherkin for a .feature file) requires schema-check to catch; the bare concept only checks presence.

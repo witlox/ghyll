@@ -1,0 +1,49 @@
+# Concept: mutation-score
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: mutation-score
+description: Mutation testing reports a kill rate at or above the declared threshold over the named scope. Defends against shallow tests (tests that run code but assert little).
+language-bound: true
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Source files to mutate.
+  test-scope:
+    type: path-glob
+    required: true
+    description: Tests to run against mutations.
+  threshold:
+    type: number
+    required: true
+    range: [0.0, 1.0]
+    description: Minimum acceptable kill rate.
+  language:
+    type: language-id
+    required: true
+    description: Selects the per-language mutation tool binding.
+  timeout-per-mutation:
+    type: duration
+    required: false
+    default: 30s
+    description: Maximum wall-clock per mutation before kill.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      score: number          # kill rate, 0.0..1.0
+      killed: int
+      survived: int
+      timed-out: int
+      equivalent: int        # mutations that don't change behavior; not counted against survived
+
+default-cost: 3
+
+edge-cases:
+  - Mutation testing is slow. Init should set a realistic timeout-per-mutation based on test runtime.
+  - Equivalent mutations (e.g., `==` vs `===` in JS where both sides are typed) are reported separately and do NOT count against survived.
+  - A scope with no executable code (all interfaces / types) returns pass=true vacuously. Init should warn.

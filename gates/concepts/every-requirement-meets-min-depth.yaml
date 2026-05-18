@@ -1,0 +1,27 @@
+# Concept: every-requirement-meets-min-depth
+# Auto-inserted on adversarial arrows during verification (D26, gates.md §11.3).
+# Source design: specs/direction/components/concepts.md
+
+concept: every-requirement-meets-min-depth
+description: Every requirement on the arrow was classified at or above its declared minimum depth by the adversarial phase's depth-classification sub-activity. Defends against requirements with depth below their declared minimum.
+language-bound: false
+
+arguments:
+  arrow-id:
+    type: arrow-id
+    required: true
+    description: The arrow under verification.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      below-min: { type: list, items: { requirement-id: string, classified: depth-tier, minimum: depth-tier } }
+
+default-cost: 0
+
+edge-cases:
+  - If a requirement's classified depth is `unevaluated` (adversary below required tier), this concept's clause returns `unevaluated`, not `fail`. The arrow's status precedence then makes the arrow `unevaluated`.
+  - A requirement with no declared minimum is treated as min=0 (NONE) — vacuously satisfied. Init should warn during auto-propose if many requirements have no declared minimum.
+  - This concept is auto-inserted by the verification phase on every adversarial arrow (gates.md §11.3). Operators do NOT declare it manually.

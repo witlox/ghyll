@@ -1,0 +1,32 @@
+# Concept: single-active-role-instance
+# Per-arrow declared at init (most often inherited as part of role-file templates).
+# Source design: specs/direction/components/concepts.md
+# Scope (D28): (role, bounded-context), NOT (role, stratum, context).
+
+concept: single-active-role-instance
+description: No other active role traversal exists for the same (role, bounded-context) tuple. A role's work spans all strata for one context.
+language-bound: false
+
+arguments:
+  role:
+    type: role-id
+    required: true
+    description: The role-id (diamond role OR synthetic role-id `init` / `adversary` per gates.md §1.1).
+  context:
+    type: bounded-context-id
+    required: true
+    description: The bounded context.
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      conflicting-pass-ids: { type: list, items: pass-id }
+
+default-cost: 0
+
+edge-cases:
+  - A crashed pass that never recorded `aborted` could leave a stale lock. The coordination layer (per ADR-009) is expected to expire leases on liveness-check failure; this is harness implementation.
+  - Cross-context: a (role, contextA) pass and a (role, contextB) pass are NOT conflicting under this concept.
+  - The init role-id is project-scoped, not context-scoped — its single-active check uses a wildcard / sentinel context per init.md sub-phase A.

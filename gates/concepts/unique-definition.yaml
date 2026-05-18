@@ -1,0 +1,39 @@
+# Concept: unique-definition
+# Per-arrow declared at init.
+# Source design: specs/direction/components/concepts.md
+
+concept: unique-definition
+description: A named field's values are unique across the artifact. Used for clause-ID uniqueness, term uniqueness in ubiquitous-language, etc.
+language-bound: false
+
+arguments:
+  scope:
+    type: path-glob
+    required: true
+    description: Files to scan.
+  field:
+    type: string
+    required: true
+    description: The field/attribute whose values must be unique.
+  field-locator-rule:
+    type: string
+    required: true
+    description: How to find the field (regex / yaml-path / column-name).
+  case-sensitive:
+    type: boolean
+    required: false
+    default: true
+    description: Whether duplicate-detection is case-sensitive (default true; set false for human-vocabulary fields).
+
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+    details:
+      duplicates: { type: list, items: { value: string, locations: list } }
+
+default-cost: 0
+
+edge-cases:
+  - Empty `field` value is treated as missing-field, not as a value; multiple empty fields are not duplicates.
+  - The locator-rule should be deterministic; ambiguity in locator output is a binding bug.
