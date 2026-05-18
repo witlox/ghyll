@@ -9,38 +9,15 @@ import (
 )
 
 // MinimaxSystemPrompt returns the system prompt for the MiniMax family (M2.5, M2.7, etc.).
+// Validation-pass-8 D6: workdir sanitized via cleanWorkdir.
 func MinimaxSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are a coding assistant working in %s. You have access to tools for reading files, writing files, executing bash commands, and searching code. Use tools to accomplish tasks. Be concise and direct.`, workdir)
+	return fmt.Sprintf(`You are a coding assistant working in %s. You have access to tools for reading files, writing files, executing bash commands, and searching code. Use tools to accomplish tasks. Be concise and direct.`, cleanWorkdir(workdir))
 }
 
 // MinimaxBuildMessages formats messages for MiniMax family OpenAI-compatible API.
+// Validation-pass-8 D8: shared buildOpenAIMessages.
 func MinimaxBuildMessages(msgs []types.Message, systemPrompt string) []map[string]any {
-	result := make([]map[string]any, 0, len(msgs)+1)
-
-	// System message first
-	result = append(result, map[string]any{
-		"role":    "system",
-		"content": systemPrompt,
-	})
-
-	for _, msg := range msgs {
-		m := map[string]any{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-		if len(msg.ToolCalls) > 0 {
-			m["tool_calls"] = msg.ToolCalls
-		}
-		if msg.ToolCallID != "" {
-			m["tool_call_id"] = msg.ToolCallID
-		}
-		if msg.Name != "" {
-			m["name"] = msg.Name
-		}
-		result = append(result, m)
-	}
-
-	return result
+	return buildOpenAIMessages(msgs, systemPrompt)
 }
 
 // MinimaxParseToolCalls parses tool calls from MiniMax family response format.
@@ -72,31 +49,21 @@ func MinimaxCompactionPrompt() string {
 Format as a structured summary that another model instance can use to continue the work.`
 }
 
-// MinimaxTokenCount estimates token count for MiniMax family messages.
-// Uses a simple approximation: ~4 chars per token for English/code.
+// MinimaxTokenCount estimates token count for MiniMax messages.
+// Validation-pass-8 D2: rune-based; MiniMax tokenizer ~4 chars/token.
 func MinimaxTokenCount(msgs []types.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		// Content tokens
-		total += len(msg.Content) / 4
-		// Tool call tokens (rough estimate)
-		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Name)/4 + len(tc.Function.Arguments)/4 + 10
-		}
-		// Per-message overhead
-		total += 4
-	}
-	return total
+	return runeAwareTokenCount(msgs, 4)
 }
 
 // MinimaxHandoffSummary formats a checkpoint for MiniMax to continue from.
+// Validation-pass-8 D7: zero-checkpoint guard.
 func MinimaxHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
+	if isZeroCheckpoint(cp.Turn, cp.Summary) {
+		return recentTurns
+	}
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s",
 		cp.Turn, cp.ActiveModel, cp.Summary)
-
-	result := []types.Message{
-		{Role: "system", Content: summary},
-	}
+	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result
 }

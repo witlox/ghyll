@@ -13,37 +13,16 @@ import (
 // OpenAI tool-call protocol; this dialect mirrors that.
 
 // DeepSeekSystemPrompt returns the system prompt for the DeepSeek family.
+// Validation-pass-8 D6: workdir is sanitized via cleanWorkdir to
+// strip embedded newlines / ANSI escapes / control chars.
 func DeepSeekSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle code reasoning, multi-file debugging, and architectural tasks. You have access to tools for reading files, writing files, executing bash commands, and searching code. Be precise and verify before committing to a direction.`, workdir)
+	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle code reasoning, multi-file debugging, and architectural tasks. You have access to tools for reading files, writing files, executing bash commands, and searching code. Be precise and verify before committing to a direction.`, cleanWorkdir(workdir))
 }
 
 // DeepSeekBuildMessages formats messages for DeepSeek OpenAI-compatible API.
+// Validation-pass-8 D8: delegates to buildOpenAIMessages shared helper.
 func DeepSeekBuildMessages(msgs []types.Message, systemPrompt string) []map[string]any {
-	result := make([]map[string]any, 0, len(msgs)+1)
-
-	result = append(result, map[string]any{
-		"role":    "system",
-		"content": systemPrompt,
-	})
-
-	for _, msg := range msgs {
-		m := map[string]any{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-		if len(msg.ToolCalls) > 0 {
-			m["tool_calls"] = msg.ToolCalls
-		}
-		if msg.ToolCallID != "" {
-			m["tool_call_id"] = msg.ToolCallID
-		}
-		if msg.Name != "" {
-			m["name"] = msg.Name
-		}
-		result = append(result, m)
-	}
-
-	return result
+	return buildOpenAIMessages(msgs, systemPrompt)
 }
 
 // DeepSeekParseToolCalls parses tool calls from DeepSeek response format.
@@ -77,27 +56,24 @@ Structure the summary with clear sections.`
 }
 
 // DeepSeekTokenCount estimates token count for DeepSeek messages.
-// DeepSeek's BPE tokenizer averages ~3.5 chars per token on code.
+// Validation-pass-8 D2: rune-based counting so CJK / emoji content
+// isn't silently undercounted. ASCII tokenizes at ~3.5 chars/token
+// (runesPerToken=4 conservative); non-ASCII at 1 token/rune.
 func DeepSeekTokenCount(msgs []types.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		total += len(msg.Content) * 2 / 7 // ~3.5 chars/token
-		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Name)*2/7 + len(tc.Function.Arguments)*2/7 + 10
-		}
-		total += 4
-	}
-	return total
+	return runeAwareTokenCount(msgs, 4)
 }
 
 // DeepSeekHandoffSummary formats a checkpoint for DeepSeek to continue from.
+// Validation-pass-8 D7: if the checkpoint is the zero value, skip
+// the "Continuing from checkpoint..." framing — recent turns alone
+// are honest.
 func DeepSeekHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
+	if isZeroCheckpoint(cp.Turn, cp.Summary) {
+		return recentTurns
+	}
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s\n\nReview the context before proceeding; verify any inherited assumption against the actual code.",
 		cp.Turn, cp.ActiveModel, cp.Summary)
-
-	result := []types.Message{
-		{Role: "system", Content: summary},
-	}
+	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result
 }

@@ -56,18 +56,24 @@ type RoutingConfig struct {
 	ToolDepthThreshold    int    `toml:"tool_depth_threshold"`
 	EnableAutoRouting     bool   `toml:"enable_auto_routing"`
 
-	// GateFloorEscalateAtRank is the depth rank (0..3, matching
-	// runner.DepthRank: NONE/SHALLOW/MOCKED/REALISTIC) at which a
-	// v2 gate's MinTier floor forces escalation to DeepModel.
+	// GateFloorEscalateAtRank is the depth rank (1..3, matching
+	// runner.DepthRank: SHALLOW/MOCKED/REALISTIC) at which a v2
+	// gate's MinTier floor forces escalation to DeepModel.
 	//
 	// Default 2 (MOCKED): gates requiring MOCKED or REALISTIC depth
 	// run on the deep tier; SHALLOW or NONE can run on the default.
 	//
-	// The v2 router (runner/routing.go RouteArrow) produces a
-	// MinTier rank per arrow; the session loop populates
-	// RouterInputs.GateFloor with that value. The v1 router uses
-	// this knob to decide whether the gate-floor forces escalation.
+	// Valid range 1..3. To DISABLE the gate-floor mechanism set
+	// `gate_floor_disabled = true` (see below). Field omitted in
+	// TOML defaults to 2 via applyDefaults.
 	GateFloorEscalateAtRank int `toml:"gate_floor_escalate_at_rank"`
+
+	// GateFloorDisabled turns the gate-floor mechanism off entirely
+	// when true. Validation-pass-8 R4: an explicit boolean is
+	// unambiguous about operator intent, where a sentinel-zero on
+	// the rank field is not (TOML decodes both "field omitted" and
+	// "explicit zero" identically as `int = 0`).
+	GateFloorDisabled bool `toml:"gate_floor_disabled"`
 }
 
 type MemoryConfig struct {
@@ -155,10 +161,9 @@ func applyDefaults(cfg *Config) {
 		cfg.Routing.ToolDepthThreshold = 5
 	}
 	if cfg.Routing.GateFloorEscalateAtRank == 0 {
-		// Default = MOCKED (rank 2). Operators can lower to 1 to
-		// escalate on SHALLOW-or-deeper gates, or raise to 3 to
-		// only escalate on REALISTIC. Rank 0 (NONE) would disable
-		// the gate-floor mechanism entirely.
+		// Default = MOCKED (rank 2). Operators set
+		// gate_floor_disabled=true to turn the mechanism off; the
+		// rank field expresses the threshold not the on/off state.
 		cfg.Routing.GateFloorEscalateAtRank = 2
 	}
 	if cfg.Memory.Branch == "" {
@@ -227,10 +232,17 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Every model must have an endpoint and valid dialect
+	// Every model must have an endpoint and valid dialect.
+	// Per validation-pass-8 D1: include the new deepseek + qwen
+	// families (and documented variants). Quant-suffixed names like
+	// `qwen-coder-q4` are operator-config (model name + endpoint),
+	// NOT dialect identifiers — they should set `dialect = "qwen"`
+	// per docs/usage/configuration.md.
 	knownDialects := map[string]bool{
 		"minimax": true, "minimax_m25": true, "minimax_m27": true,
 		"glm": true, "glm5": true, "glm51": true,
+		"deepseek": true, "deepseek-v3": true, "deepseek-coder": true, "deepseek-coder-v3": true,
+		"qwen": true, "qwen-coder": true, "qwen2.5-coder": true, "qwen3-coder": true,
 		"": true, // empty defaults to minimax
 	}
 	for name, m := range cfg.Models {
@@ -242,9 +254,21 @@ func validate(cfg *Config) error {
 		}
 		if !knownDialects[m.Dialect] {
 			return &ConfigError{
-				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known: minimax, glm)", name, m.Dialect),
+				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known families: minimax, glm, deepseek, qwen)", name, m.Dialect),
 				Err:     ErrConfigValidation,
 			}
+		}
+	}
+
+	// Validation-pass-8 R2: gate-floor escalation rank must be 1..3.
+	// Out-of-range values silently disable the mechanism in the
+	// router without R2's fix, which is exactly the operator-
+	// misconfig pattern we want to catch.
+	if cfg.Routing.GateFloorEscalateAtRank < 1 || cfg.Routing.GateFloorEscalateAtRank > 3 {
+		return &ConfigError{
+			Message: fmt.Sprintf("gate_floor_escalate_at_rank = %d out of 1..3 (1=SHALLOW, 2=MOCKED, 3=REALISTIC; set gate_floor_disabled=true to disable)",
+				cfg.Routing.GateFloorEscalateAtRank),
+			Err: ErrConfigValidation,
 		}
 	}
 

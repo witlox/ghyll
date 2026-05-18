@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/witlox/ghyll/types"
 )
@@ -18,55 +19,64 @@ import (
 // model-change invariant lives at the session-loop layer; this file
 // gives that layer the primitives it needs.
 //
-// The trailers are machine-parseable via:
-//
-//   git log --format='%(trailers:key=Ghyll-Model)'
-//
-// Co-Authored-By: trailers (for hybrid human+agent commits) remain
-// available; callers can pass extra trailers via CommitOptions.
+// Hardenings (validation-pass-8):
+//   - S1: sanitizer also strips Unicode line separators (U+0085,
+//     U+2028, U+2029) — git's trailer parser is line-based AND
+//     downstream log consumers (JS, awk pipelines) often treat
+//     these as line breaks.
+//   - S2: Ghyll-Version and Ghyll-Model are project-controlled
+//     values; on any control char we REJECT rather than silently
+//     mutate. The audit trail must reflect reality.
+//   - S3: trailer key set expanded to allow `_` and `.`.
+//   - S4: validateExtraTrailer rejects unicode.IsControl + the
+//     line-separator triple.
+//   - S5: ExtraTrailers and Paths defensively copied at entry.
+//   - S6: TrimRightFunc(unicode.IsSpace) on the message body so the
+//     trailer-block delimiter (blank line) is well-formed.
+//   - S8/S10: HasPendingChanges replaced by a typed enum that
+//     distinguishes staged / unstaged / untracked / unknown.
+//   - S11: message + trailer length caps.
+//   - S12: GitCommit invokes `git commit -F -` via stdin so long
+//     messages don't hit POSIX ARG_MAX.
+//   - S13: trailer values normalize to "Key: value" (colon-space).
+
+// Length caps (S11). Operator-supplied free text bounded; truncation
+// is surfaced via a trailing marker so log readers can tell.
+const (
+	maxCommitMessageLen = 16 * 1024
+	maxTrailerValueLen  = 256
+	maxExtraTrailers    = 64
+	maxCommitPaths      = 1024
+)
 
 // CommitOptions is the input to GitCommit.
 type CommitOptions struct {
-	// Message is the primary commit message. Required.
-	Message string
-
-	// GhyllVersion is the running ghyll version (cmd/ghyll's
-	// `version` var). Required for the stamp.
-	GhyllVersion string
-
-	// GhyllModel is the model identifier in
-	// `family-variant[-quant]@endpoint` form. Required.
-	GhyllModel string
-
-	// ExtraTrailers are additional `Key: value` trailer lines
-	// appended after the Ghyll-* trailers (e.g., Co-Authored-By).
+	Message       string
+	GhyllVersion  string
+	GhyllModel    string
 	ExtraTrailers []string
-
-	// SignOff invokes `git commit -s` so the user's git identity is
-	// added as a Signed-off-by trailer. Default false.
-	SignOff bool
-
-	// AllowEmpty passes `--allow-empty` (rare; the session loop
-	// avoids empty marker commits per the F design).
-	AllowEmpty bool
-
-	// Paths, if non-nil, scopes the commit to these paths (the
-	// caller is responsible for staging them first; the runner does
-	// not run `git add` on the caller's behalf).
-	Paths []string
+	SignOff       bool
+	AllowEmpty    bool
+	Paths         []string
 }
 
 // Commit errors.
 var (
-	ErrCommitMessageEmpty = errors.New("commit-message-empty")
-	ErrCommitVersionEmpty = errors.New("commit-ghyll-version-empty")
-	ErrCommitModelEmpty   = errors.New("commit-ghyll-model-empty")
-	ErrCommitTrailerBad   = errors.New("commit-trailer-malformed")
+	ErrCommitMessageEmpty   = errors.New("commit-message-empty")
+	ErrCommitMessageTooLong = errors.New("commit-message-too-long")
+	ErrCommitVersionEmpty   = errors.New("commit-ghyll-version-empty")
+	ErrCommitVersionInvalid = errors.New("commit-ghyll-version-invalid")
+	ErrCommitModelEmpty     = errors.New("commit-ghyll-model-empty")
+	ErrCommitModelInvalid   = errors.New("commit-ghyll-model-invalid")
+	ErrCommitTrailerBad     = errors.New("commit-trailer-malformed")
+	ErrCommitTrailerCount   = errors.New("commit-trailer-count-exceeded")
+	ErrCommitPathCount      = errors.New("commit-path-count-exceeded")
 )
 
-// trailerPattern: any non-empty `Key: value` line. Strict-ish — the
-// key is letters/digits/dashes only (git trailer convention).
-var trailerKeyOK = func(s string) bool {
+// trailerKeyOK reports whether s is a valid trailer key. Per
+// validation-pass-8 S3: include `_` and `.` (RFC 5322 §3.6.8 allows
+// both; `_` is widely used in practice — Signed_off_by, Co_Authored_By).
+func trailerKeyOK(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -75,7 +85,7 @@ var trailerKeyOK = func(s string) bool {
 		case r >= 'A' && r <= 'Z':
 		case r >= 'a' && r <= 'z':
 		case r >= '0' && r <= '9':
-		case r == '-':
+		case r == '-' || r == '_' || r == '.':
 		default:
 			return false
 		}
@@ -83,104 +93,141 @@ var trailerKeyOK = func(s string) bool {
 	return true
 }
 
+// hasControlOrLineSep reports whether s contains any control char
+// or Unicode line separator. Used by the strict validators for
+// Ghyll-* values (S1, S2) and by validateExtraTrailer (S4).
+func hasControlOrLineSep(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+		if r == 0x85 || r == 0x2028 || r == 0x2029 {
+			return true
+		}
+	}
+	return false
+}
+
 // validateExtraTrailer returns nil if t looks like a `Key: value`
-// trailer line. Empty value is allowed (some trailers are flags).
+// trailer line. Per S4 + S13: requires `: ` (colon-space), key in
+// the trailerKeyOK set, no control chars or Unicode line separators
+// in the value.
 func validateExtraTrailer(t string) error {
 	colon := strings.IndexByte(t, ':')
 	if colon <= 0 {
 		return fmt.Errorf("%w: %q (expected `Key: value`)", ErrCommitTrailerBad, t)
 	}
-	if !trailerKeyOK(t[:colon]) {
+	key := t[:colon]
+	if !trailerKeyOK(key) {
 		return fmt.Errorf("%w: bad key in %q", ErrCommitTrailerBad, t)
 	}
-	if strings.ContainsAny(t, "\n\r") {
-		return fmt.Errorf("%w: embedded newline in %q", ErrCommitTrailerBad, t)
+	// S13: enforce the colon-space convention. `Key: value` parses
+	// reliably; `Key:value` is version-dependent in git.
+	rest := t[colon+1:]
+	if rest != "" && !strings.HasPrefix(rest, " ") {
+		return fmt.Errorf("%w: missing space after colon in %q", ErrCommitTrailerBad, t)
+	}
+	if hasControlOrLineSep(t) {
+		return fmt.Errorf("%w: control char or line separator in %q", ErrCommitTrailerBad, t)
 	}
 	return nil
 }
 
 // BuildCommitMessage assembles the final commit message with Ghyll-*
-// trailers and any operator-supplied extras. Exposed so callers can
-// inspect (or sign) the exact bytes git will see.
+// trailers and any operator-supplied extras. Per S1/S2: Ghyll-*
+// values are validated strict (rejected on bad input) rather than
+// silently mutated.
 func BuildCommitMessage(opts CommitOptions) (string, error) {
 	if strings.TrimSpace(opts.Message) == "" {
 		return "", ErrCommitMessageEmpty
 	}
+	if len(opts.Message) > maxCommitMessageLen {
+		return "", fmt.Errorf("%w: %d bytes exceeds %d", ErrCommitMessageTooLong, len(opts.Message), maxCommitMessageLen)
+	}
+	// S2: Ghyll-* values are project-controlled. Reject on any
+	// control char rather than silently strip — the audit trail
+	// must reflect reality.
 	if strings.TrimSpace(opts.GhyllVersion) == "" {
 		return "", ErrCommitVersionEmpty
+	}
+	if hasControlOrLineSep(opts.GhyllVersion) {
+		return "", fmt.Errorf("%w: control char in %q", ErrCommitVersionInvalid, opts.GhyllVersion)
+	}
+	if len(opts.GhyllVersion) > maxTrailerValueLen {
+		return "", fmt.Errorf("%w: exceeds %d bytes", ErrCommitVersionInvalid, maxTrailerValueLen)
 	}
 	if strings.TrimSpace(opts.GhyllModel) == "" {
 		return "", ErrCommitModelEmpty
 	}
-	for _, t := range opts.ExtraTrailers {
+	if hasControlOrLineSep(opts.GhyllModel) {
+		return "", fmt.Errorf("%w: control char in %q", ErrCommitModelInvalid, opts.GhyllModel)
+	}
+	if len(opts.GhyllModel) > maxTrailerValueLen {
+		return "", fmt.Errorf("%w: exceeds %d bytes", ErrCommitModelInvalid, maxTrailerValueLen)
+	}
+
+	// S5: defensive copy of ExtraTrailers so a racing caller can't
+	// mutate between validation and emit.
+	extras := append([]string(nil), opts.ExtraTrailers...)
+	if len(extras) > maxExtraTrailers {
+		return "", fmt.Errorf("%w: %d > %d", ErrCommitTrailerCount, len(extras), maxExtraTrailers)
+	}
+	for _, t := range extras {
 		if err := validateExtraTrailer(t); err != nil {
 			return "", err
 		}
 	}
 
-	// Normalize: ensure the message body ends with exactly one blank
-	// line before the trailer block. git's interpret-trailers is the
-	// authoritative parser; we feed it a clean message.
-	body := strings.TrimRight(opts.Message, "\n")
+	// S6: TrimRightFunc(unicode.IsSpace) so the trailer-block
+	// delimiter is a clean blank line.
+	body := strings.TrimRightFunc(opts.Message, unicode.IsSpace)
 
 	var b strings.Builder
 	b.WriteString(body)
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "Ghyll-Version: %s\n", sanitizeTrailerValue(opts.GhyllVersion))
-	fmt.Fprintf(&b, "Ghyll-Model: %s\n", sanitizeTrailerValue(opts.GhyllModel))
-	for _, t := range opts.ExtraTrailers {
+	fmt.Fprintf(&b, "Ghyll-Version: %s\n", strings.TrimSpace(opts.GhyllVersion))
+	fmt.Fprintf(&b, "Ghyll-Model: %s\n", strings.TrimSpace(opts.GhyllModel))
+	for _, t := range extras {
 		b.WriteString(t)
 		b.WriteString("\n")
 	}
 	return b.String(), nil
 }
 
-// sanitizeTrailerValue strips embedded newlines / control chars so a
-// hostile model identifier can't forge a multi-line trailer block.
-func sanitizeTrailerValue(s string) string {
-	s = strings.TrimSpace(s)
-	// Strip control chars (incl. CR/LF/tab).
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// GitCommit runs `git commit` with the stamped message. The caller
-// must have staged the changes (e.g., via tool.Git with `git add`).
-// Returns the standard ToolResult; the commit hash is available in
-// stdout via `git rev-parse HEAD` if the caller needs it.
+// GitCommit runs `git commit -F -` (S12) with the stamped message
+// piped via stdin so multi-KB messages don't hit POSIX ARG_MAX.
 func GitCommit(ctx context.Context, dir string, opts CommitOptions, timeout time.Duration) types.ToolResult {
 	start := time.Now()
 	msg, err := BuildCommitMessage(opts)
 	if err != nil {
-		return types.ToolResult{
-			Error:    err.Error(),
-			Duration: time.Since(start),
-		}
+		return types.ToolResult{Error: err.Error(), Duration: time.Since(start)}
 	}
 
-	args := []string{"commit", "-m", msg}
+	args := []string{"commit", "-F", "-"}
 	if opts.SignOff {
 		args = append(args, "-s")
 	}
 	if opts.AllowEmpty {
 		args = append(args, "--allow-empty")
 	}
-	if len(opts.Paths) > 0 {
+	// S5: defensive copy of Paths.
+	paths := append([]string(nil), opts.Paths...)
+	if len(paths) > maxCommitPaths {
+		return types.ToolResult{
+			Error:    fmt.Sprintf("%v: %d > %d", ErrCommitPathCount, len(paths), maxCommitPaths),
+			Duration: time.Since(start),
+		}
+	}
+	if len(paths) > 0 {
 		args = append(args, "--")
-		args = append(args, opts.Paths...)
+		args = append(args, paths...)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(msg)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -201,30 +248,101 @@ func GitCommit(ctx context.Context, dir string, opts CommitOptions, timeout time
 			Duration: duration,
 		}
 	}
-	return types.ToolResult{
-		Output:   stdout.String(),
-		Duration: duration,
-	}
+	return types.ToolResult{Output: stdout.String(), Duration: duration}
 }
 
-// HasPendingChanges returns true if the working tree has staged or
-// unstaged changes. Used by the session loop's commit-per-model-
-// change check: before applying a router escalate/de-escalate, if
-// there are pending changes the loop flushes them with the OLD
-// model's stamp.
+// PendingStatus is the typed result of probing the working tree
+// (validation-pass-8 S8/S10). Distinguishing the four states lets
+// the session-loop layer decide whether to flush, skip, or error.
+type PendingStatus int
+
+const (
+	PendingUnknown   PendingStatus = iota // probe failed; caller MUST handle
+	PendingClean                          // nothing to commit
+	PendingStaged                         // staged changes exist
+	PendingUnstaged                       // unstaged changes exist (working tree dirty)
+	PendingUntracked                      // only untracked files
+)
+
+// String returns the wire form for PendingStatus.
+func (p PendingStatus) String() string {
+	switch p {
+	case PendingClean:
+		return "clean"
+	case PendingStaged:
+		return "staged"
+	case PendingUnstaged:
+		return "unstaged"
+	case PendingUntracked:
+		return "untracked"
+	case PendingUnknown:
+		return "unknown"
+	}
+	return "invalid"
+}
+
+// CheckPending returns the granular working-tree state. Per S8/S10:
+// the session loop's commit-per-model-change invariant cares about
+// STAGED changes; PendingUntracked alone should NOT trigger a flush.
 //
-// Returns (false, err) on git plumbing errors so the caller can
-// distinguish "no pending" from "couldn't tell."
-func HasPendingChanges(ctx context.Context, dir string, timeout time.Duration) (bool, error) {
+// Returns PendingUnknown + error if git plumbing fails; callers
+// MUST handle the unknown state explicitly.
+func CheckPending(ctx context.Context, dir string, timeout time.Duration) (PendingStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1")
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("git status: %w (stderr: %s)", err, stderr.String())
+		return PendingUnknown, fmt.Errorf("git status: %w (stderr: %s)", err, stderr.String())
 	}
-	return strings.TrimSpace(stdout.String()) != "", nil
+	out := stdout.String()
+	if strings.TrimSpace(out) == "" {
+		return PendingClean, nil
+	}
+	hasStaged, hasUnstaged, hasUntracked := false, false, false
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		// Porcelain v1: first byte = index status, second byte = worktree status.
+		// "??" = untracked.
+		if line[0] == '?' && line[1] == '?' {
+			hasUntracked = true
+			continue
+		}
+		if line[0] != ' ' && line[0] != '?' {
+			hasStaged = true
+		}
+		if line[1] != ' ' && line[1] != '?' {
+			hasUnstaged = true
+		}
+	}
+	switch {
+	case hasStaged:
+		return PendingStaged, nil
+	case hasUnstaged:
+		return PendingUnstaged, nil
+	case hasUntracked:
+		return PendingUntracked, nil
+	}
+	return PendingClean, nil
+}
+
+// HasPendingChanges is the deprecated boolean wrapper retained for
+// callers that haven't moved to CheckPending yet. Validation-pass-8
+// S8: prefer CheckPending; this wrapper folds untracked + clean
+// into "no flush needed."
+//
+// Deprecated: use CheckPending; this returns true only for STAGED
+// or UNSTAGED changes (not untracked) to match the session-loop
+// semantics of "flush before model switch."
+func HasPendingChanges(ctx context.Context, dir string, timeout time.Duration) (bool, error) {
+	st, err := CheckPending(ctx, dir, timeout)
+	if err != nil {
+		return false, err
+	}
+	return st == PendingStaged || st == PendingUnstaged, nil
 }

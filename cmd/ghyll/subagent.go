@@ -48,7 +48,11 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		buildMsgFn     func([]types.Message, string) []map[string]any
 		tokenCountFn   func([]types.Message) int
 	)
-	switch normalizeDialect(modelCfg.Dialect) {
+	family, err := normalizeDialect(modelCfg.Dialect)
+	if err != nil {
+		return types.ToolResult{Error: fmt.Sprintf("sub-agent model %q: %v", modelName, err)}
+	}
+	switch family {
 	case "glm":
 		systemPromptFn = dialect.GLMSystemPrompt
 		buildMsgFn = dialect.GLMBuildMessages
@@ -61,10 +65,12 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		systemPromptFn = dialect.QwenSystemPrompt
 		buildMsgFn = dialect.QwenBuildMessages
 		tokenCountFn = dialect.QwenTokenCount
-	default:
+	case "minimax":
 		systemPromptFn = dialect.MinimaxSystemPrompt
 		buildMsgFn = dialect.MinimaxBuildMessages
 		tokenCountFn = dialect.MinimaxTokenCount
+	default:
+		return types.ToolResult{Error: fmt.Sprintf("sub-agent dialect family %q unsupported", family)}
 	}
 	// parseToolCalls is handled by the stream client internally via dialect parsing
 

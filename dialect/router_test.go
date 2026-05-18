@@ -318,3 +318,162 @@ func TestScenario_Routing_GateFloorZeroDisabled(t *testing.T) {
 		t.Errorf("action = %q, want %q (gate-floor mechanism disabled)", d.Action, "none")
 	}
 }
+
+// Validation-pass-8 R1: a depth-sensitive gate must NEVER be
+// silently laundered through DefaultModel when no DeepModel exists.
+func TestScenario_Routing_GateUnsatisfiable_NoDeepModel(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	cfg.DeepModel = "" // no escalation target
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		GateFloor:   3,
+		Config:      cfg,
+	})
+	if d.Action != ActionGateUnsatisfiable {
+		t.Errorf("action = %q; want %q (§7.1 must not silently launder)", d.Action, ActionGateUnsatisfiable)
+	}
+	if d.Reason != ReasonGateUnsatisfiable {
+		t.Errorf("reason = %q; want %q", d.Reason, ReasonGateUnsatisfiable)
+	}
+}
+
+// Validation-pass-8 R7: ModelLocked + active gate floor surfaces a
+// distinct conflict so the session can route to §7.1 attestation.
+func TestScenario_Routing_GateLockedConflict(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		ModelLocked: true,
+		GateFloor:   3,
+		Config:      cfg,
+	})
+	if d.Action != ActionGateLockedConflict {
+		t.Errorf("action = %q; want %q", d.Action, ActionGateLockedConflict)
+	}
+}
+
+// Validation-pass-8 R5: an ActiveModel that's neither DefaultModel
+// nor DeepModel still gets escalated when the gate-floor is active.
+func TestScenario_Routing_GateFloor_EscalatesFromThirdModel(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	d := Evaluate(RouterInputs{
+		ActiveModel: "some-other-model", // neither m25 nor glm5
+		GateFloor:   3,
+		Config:      cfg,
+	})
+	if d.Action != ActionEscalate {
+		t.Errorf("action = %q; want %q (gate-floor authoritative)", d.Action, ActionEscalate)
+	}
+	if d.TargetModel != cfg.DeepModel {
+		t.Errorf("target = %q; want %q", d.TargetModel, cfg.DeepModel)
+	}
+	if d.Reason != ReasonGateFloor {
+		t.Errorf("reason = %q; want %q", d.Reason, ReasonGateFloor)
+	}
+}
+
+// Validation-pass-8 R3: out-of-range GateFloor surfaces explicitly
+// as ActionInvalid rather than silently disabling the bridge.
+func TestScenario_Routing_GateFloorOutOfRangeIsInvalid(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	for _, bad := range []int{-1, 4, 99} {
+		d := Evaluate(RouterInputs{
+			ActiveModel: "m25",
+			GateFloor:   bad,
+			Config:      cfg,
+		})
+		if d.Action != ActionInvalid {
+			t.Errorf("GateFloor=%d: action = %q; want %q", bad, d.Action, ActionInvalid)
+		}
+	}
+}
+
+// Validation-pass-8 R6: every RoutingDecision carries a typed
+// Reason so the session loop can distinguish escalation causes.
+func TestScenario_Routing_DecisionsCarryReason(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+
+	cases := []struct {
+		name   string
+		inputs RouterInputs
+		want   RoutingReason
+	}{
+		{
+			name:   "steady state",
+			inputs: RouterInputs{ActiveModel: "m25", Config: cfg},
+			want:   ReasonSteadyState,
+		},
+		{
+			name:   "model locked",
+			inputs: RouterInputs{ActiveModel: "m25", ModelLocked: true, Config: cfg},
+			want:   ReasonModelLocked,
+		},
+		{
+			name:   "gate floor",
+			inputs: RouterInputs{ActiveModel: "m25", GateFloor: 3, Config: cfg},
+			want:   ReasonGateFloor,
+		},
+		{
+			name:   "deep override",
+			inputs: RouterInputs{ActiveModel: "m25", DeepOverride: true, Config: cfg},
+			want:   ReasonDeepOverride,
+		},
+		{
+			name:   "context depth",
+			inputs: RouterInputs{ActiveModel: "m25", ContextDepth: 50000, Config: cfg},
+			want:   ReasonContextDepth,
+		},
+		{
+			name:   "tool depth",
+			inputs: RouterInputs{ActiveModel: "m25", ToolDepth: 10, Config: cfg},
+			want:   ReasonToolDepth,
+		},
+	}
+	for _, c := range cases {
+		t.Run(string(c.want), func(t *testing.T) {
+			d := Evaluate(c.inputs)
+			if d.Reason != c.want {
+				t.Errorf("reason = %q; want %q (case %s)", d.Reason, c.want, c.name)
+			}
+		})
+	}
+}
+
+// Validation-pass-8 R4: GateFloorDisabled explicitly turns the
+// mechanism off regardless of the rank threshold.
+func TestScenario_Routing_GateFloorDisabled(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2 // threshold present
+	cfg.GateFloorDisabled = true    // but disabled
+	d := Evaluate(RouterInputs{
+		ActiveModel: "m25",
+		GateFloor:   3,
+		Config:      cfg,
+	})
+	if d.Action != ActionNone {
+		t.Errorf("action = %q; want %q (disabled)", d.Action, ActionNone)
+	}
+}
+
+// Validation-pass-8 R14: gate-floor precedence — when multiple
+// escalation conditions fire simultaneously, gate-floor wins.
+func TestScenario_Routing_GateFloorPrecedesOtherSignals(t *testing.T) {
+	cfg := defaultRoutingConfig()
+	cfg.GateFloorEscalateAtRank = 2
+	d := Evaluate(RouterInputs{
+		ActiveModel:  "m25",
+		GateFloor:    3,
+		DeepOverride: true,
+		ContextDepth: 50000,
+		ToolDepth:    10,
+		Config:       cfg,
+	})
+	if d.Reason != ReasonGateFloor {
+		t.Errorf("reason = %q; want %q (gate-floor must precede other signals)", d.Reason, ReasonGateFloor)
+	}
+}

@@ -496,7 +496,7 @@ func TestScenario_Session_BadToolArgs(t *testing.T) {
 // "minimax_m25" must not silently fall through to the default minimax branch
 // in resolveDialect.
 func TestScenario_Session_NormalizeDialect(t *testing.T) {
-	cases := []struct {
+	good := []struct {
 		input string
 		want  string
 	}{
@@ -506,12 +506,34 @@ func TestScenario_Session_NormalizeDialect(t *testing.T) {
 		{"minimax", "minimax"},
 		{"minimax_m25", "minimax"},
 		{"minimax_m27", "minimax"},
-		{"", ""},
-		{"unknown", "unknown"},
+		// Validation-pass-8 D4: prefix-based detection covers new
+		// family variants (including quantized names that operators
+		// might mistakenly put in the Dialect field).
+		{"deepseek", "deepseek"},
+		{"deepseek-v3", "deepseek"},
+		{"deepseek-coder", "deepseek"},
+		{"deepseek-coder-v3", "deepseek"},
+		{"deepseek-v3.1", "deepseek"}, // future variant
+		{"qwen", "qwen"},
+		{"qwen-coder", "qwen"},
+		{"qwen2.5-coder", "qwen"},
+		{"qwen3-coder", "qwen"},
+		{"qwen-coder-q4", "qwen"}, // quant-suffixed name (operator-doc'd)
 	}
-	for _, tc := range cases {
-		if got := normalizeDialect(tc.input); got != tc.want {
+	for _, tc := range good {
+		got, err := normalizeDialect(tc.input)
+		if err != nil {
+			t.Errorf("normalizeDialect(%q): unexpected error %v", tc.input, err)
+			continue
+		}
+		if got != tc.want {
 			t.Errorf("normalizeDialect(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+	// Empty + unknown must error (D3/D5).
+	for _, bad := range []string{"", "  ", "unknown", "deepseak"} {
+		if _, err := normalizeDialect(bad); err == nil {
+			t.Errorf("normalizeDialect(%q) should error", bad)
 		}
 	}
 }

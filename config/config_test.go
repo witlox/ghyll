@@ -330,3 +330,78 @@ deep_model = "glm5"
 		t.Errorf("expected validation error, got: %v", err)
 	}
 }
+
+// Validation-pass-8 R11: applyDefaults sets GateFloorEscalateAtRank=2
+// when the field is omitted (TOML decodes as zero).
+func TestScenario_Config_GateFloorEscalateAtRankDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[models.m25]
+endpoint = "http://localhost:8001/v1"
+dialect = "minimax"
+max_context = 1000000
+
+[routing]
+default_model = "m25"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Routing.GateFloorEscalateAtRank != 2 {
+		t.Errorf("default GateFloorEscalateAtRank = %d; want 2", cfg.Routing.GateFloorEscalateAtRank)
+	}
+}
+
+// Validation-pass-8 R2: out-of-range gate floor escalation rank
+// rejected at validation time.
+func TestScenario_Config_GateFloorEscalateAtRankOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[models.m25]
+endpoint = "http://localhost:8001/v1"
+dialect = "minimax"
+max_context = 1000000
+
+[routing]
+default_model = "m25"
+gate_floor_escalate_at_rank = 4
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("rank=4 should fail validation")
+	}
+}
+
+// Validation-pass-8 D1: new dialect families accepted by validator.
+func TestScenario_Config_AcceptsNewDialectFamilies(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[models.deepseek]
+endpoint = "http://localhost:8001/v1"
+dialect = "deepseek"
+max_context = 65000
+
+[models.qwen-coder-q4]
+endpoint = "http://localhost:8002/v1"
+dialect = "qwen"
+max_context = 32000
+
+[routing]
+default_model = "deepseek"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("deepseek+qwen config should validate; got %v", err)
+	}
+}

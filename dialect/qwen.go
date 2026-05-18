@@ -13,37 +13,15 @@ import (
 // tool-call protocol; this dialect mirrors that.
 
 // QwenSystemPrompt returns the system prompt for the Qwen Coder family.
+// Validation-pass-8 D6: workdir is sanitized via cleanWorkdir.
 func QwenSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are an expert coding assistant working in %s. You produce careful, idiomatic code with attention to the surrounding style. You have access to tools for reading files, writing files, executing bash commands, and searching code. Prefer to read the existing code before writing new code.`, workdir)
+	return fmt.Sprintf(`You are an expert coding assistant working in %s. You produce careful, idiomatic code with attention to the surrounding style. You have access to tools for reading files, writing files, executing bash commands, and searching code. Prefer to read the existing code before writing new code.`, cleanWorkdir(workdir))
 }
 
 // QwenBuildMessages formats messages for Qwen OpenAI-compatible API.
+// Validation-pass-8 D8: delegates to buildOpenAIMessages shared helper.
 func QwenBuildMessages(msgs []types.Message, systemPrompt string) []map[string]any {
-	result := make([]map[string]any, 0, len(msgs)+1)
-
-	result = append(result, map[string]any{
-		"role":    "system",
-		"content": systemPrompt,
-	})
-
-	for _, msg := range msgs {
-		m := map[string]any{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-		if len(msg.ToolCalls) > 0 {
-			m["tool_calls"] = msg.ToolCalls
-		}
-		if msg.ToolCallID != "" {
-			m["tool_call_id"] = msg.ToolCallID
-		}
-		if msg.Name != "" {
-			m["name"] = msg.Name
-		}
-		result = append(result, m)
-	}
-
-	return result
+	return buildOpenAIMessages(msgs, systemPrompt)
 }
 
 // QwenParseToolCalls parses tool calls from Qwen Coder response format.
@@ -75,27 +53,21 @@ Structure the summary with clear sections.`
 }
 
 // QwenTokenCount estimates token count for Qwen Coder messages.
-// Qwen's BPE tokenizer averages ~3.2 chars per token on code.
+// Validation-pass-8 D2: rune-based; Qwen BPE ~3.2 chars/token →
+// runesPerToken=3 conservative.
 func QwenTokenCount(msgs []types.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		total += len(msg.Content) * 5 / 16 // ~3.2 chars/token
-		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Name)*5/16 + len(tc.Function.Arguments)*5/16 + 10
-		}
-		total += 4
-	}
-	return total
+	return runeAwareTokenCount(msgs, 3)
 }
 
 // QwenHandoffSummary formats a checkpoint for Qwen to continue from.
+// Validation-pass-8 D7: zero-checkpoint guard.
 func QwenHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
+	if isZeroCheckpoint(cp.Turn, cp.Summary) {
+		return recentTurns
+	}
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s\n\nVerify the inherited code-style conventions before producing new code.",
 		cp.Turn, cp.ActiveModel, cp.Summary)
-
-	result := []types.Message{
-		{Role: "system", Content: summary},
-	}
+	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result
 }

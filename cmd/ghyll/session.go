@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,8 +114,13 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		return nil, fmt.Errorf("model %q not configured", s.activeModel)
 	}
 
-	// Resolve dialect functions
-	s.resolveDialect()
+	// Resolve dialect functions. Validation-pass-8 D3/D5: empty
+	// or unknown Dialect MUST surface as an error rather than
+	// silently defaulting to minimax — otherwise an operator with
+	// a typo gets MiniMax dispatching to a DeepSeek endpoint.
+	if err := s.resolveDialect(); err != nil {
+		return nil, err
+	}
 
 	// Create stream client
 	modelCfg := sc.Cfg.Models[s.activeModel]
@@ -189,9 +195,13 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) resolveDialect() {
+func (s *Session) resolveDialect() error {
 	d := s.cfg.Models[s.activeModel].Dialect
-	switch normalizeDialect(d) {
+	family, err := normalizeDialect(d)
+	if err != nil {
+		return fmt.Errorf("model %q: %w", s.activeModel, err)
+	}
+	switch family {
 	case "glm":
 		s.systemPrompt = dialect.GLMSystemPrompt
 		s.planModePrompt = dialect.GLMPlanModePrompt
@@ -216,7 +226,7 @@ func (s *Session) resolveDialect() {
 		s.compactionPrompt = dialect.QwenCompactionPrompt
 		s.tokenCount = dialect.QwenTokenCount
 		s.handoffSummary = dialect.QwenHandoffSummary
-	default: // minimax
+	case "minimax":
 		s.systemPrompt = dialect.MinimaxSystemPrompt
 		s.planModePrompt = dialect.MinimaxPlanModePrompt
 		s.buildMessages = dialect.MinimaxBuildMessages
@@ -224,24 +234,37 @@ func (s *Session) resolveDialect() {
 		s.compactionPrompt = dialect.MinimaxCompactionPrompt
 		s.tokenCount = dialect.MinimaxTokenCount
 		s.handoffSummary = dialect.MinimaxHandoffSummary
+	default:
+		return fmt.Errorf("dialect family %q unsupported (post-normalization)", family)
 	}
+	return nil
 }
 
-// normalizeDialect maps legacy dialect strings to family names.
-// Per dialect/doc.go each model variant of a family normalizes to
-// the family name so the dispatch table stays small.
-func normalizeDialect(d string) string {
-	switch d {
-	case "glm", "glm5", "glm51":
-		return "glm"
-	case "minimax", "minimax_m25", "minimax_m27":
-		return "minimax"
-	case "deepseek", "deepseek-v3", "deepseek-coder", "deepseek-coder-v3":
-		return "deepseek"
-	case "qwen", "qwen-coder", "qwen2.5-coder", "qwen3-coder":
-		return "qwen"
+// errUnknownDialect is the sentinel error returned by normalizeDialect
+// for unrecognized family names.
+var errUnknownDialect = errors.New("unknown dialect family")
+
+// normalizeDialect maps wire-form dialect strings to canonical family
+// names. Per validation-pass-8 D3/D4: empty or unknown returns an
+// error (no silent fall-through to minimax). Prefix-based detection
+// future-proofs new variants like "deepseek-v3.1" / "qwen3.5-coder".
+func normalizeDialect(d string) (string, error) {
+	if strings.TrimSpace(d) == "" {
+		return "", fmt.Errorf("%w: dialect field is empty", errUnknownDialect)
+	}
+	lower := strings.ToLower(strings.TrimSpace(d))
+	switch {
+	case strings.HasPrefix(lower, "glm"):
+		return "glm", nil
+	case strings.HasPrefix(lower, "minimax"):
+		return "minimax", nil
+	case strings.HasPrefix(lower, "deepseek"):
+		return "deepseek", nil
+	case strings.HasPrefix(lower, "qwen"):
+		return "qwen", nil
 	default:
-		return d
+		return "", fmt.Errorf("%w: %q (known families: glm, minimax, deepseek, qwen)",
+			errUnknownDialect, d)
 	}
 }
 
@@ -470,9 +493,14 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 		}
 	}
 
-	// Switch dialect
+	// Switch dialect. resolveDialect can only error on a dialect
+	// the config validator already accepted, so failure here is a
+	// programming error — surface it via s.output rather than
+	// silently continuing on the wrong dispatch table.
 	s.activeModel = decision.TargetModel
-	s.resolveDialect()
+	if err := s.resolveDialect(); err != nil {
+		s.output(fmt.Sprintf("⚠ dialect resolve after handoff: %v", err))
+	}
 
 	// Format handoff context using target dialect's HandoffSummary
 	handoffMsgs := s.handoffSummary(cp, recentTurns)
