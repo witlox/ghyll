@@ -156,19 +156,34 @@ func TestCheckModification_NewArgumentSkipsCheck(t *testing.T) {
 	}
 }
 
-func TestCheckModification_StringEqualityForUnsupportedType(t *testing.T) {
+func TestCheckModification_PathGlobNarrowingAccepted(t *testing.T) {
+	// Per init.feature 184 outline: narrowing a path-glob scope
+	// (fewer files allowed to fail) is a raise — accepted.
 	cat := loadCatalogue(t)
-	// scope is path-glob; for v1, equality is required.
 	original := map[string]any{
 		"scope":    "src/**",
 		"language": "go",
 	}
 	proposed := map[string]any{
-		"scope": "src/main.go", // different value; type=path-glob → unsupported monotonicity
+		"scope": "src/main.go", // literal; src/** matches it → narrowing
+	}
+	if err := CheckModification("compiles", original, proposed, cat); err != nil {
+		t.Errorf("path-glob narrowing should be accepted; got %v", err)
+	}
+}
+
+func TestCheckModification_PathGlobWideningRefused(t *testing.T) {
+	cat := loadCatalogue(t)
+	original := map[string]any{
+		"scope":    "src/main.go",
+		"language": "go",
+	}
+	proposed := map[string]any{
+		"scope": "src/**", // wider; refused
 	}
 	err := CheckModification("compiles", original, proposed, cat)
-	if !errors.Is(err, ErrModifyUnsupportedType) {
-		t.Errorf("path-glob change should return ErrModifyUnsupportedType; got %v", err)
+	if !errors.Is(err, ErrModifyWeakening) {
+		t.Errorf("path-glob widening should refuse with ErrModifyWeakening; got %v", err)
 	}
 }
 
@@ -287,5 +302,70 @@ func TestCheckModification_DifferentListArgsRefused(t *testing.T) {
 	err := CheckModification("no-todo-marker", original, proposed, cat)
 	if !errors.Is(err, ErrModifyUnsupportedType) {
 		t.Errorf("list change should return ErrModifyUnsupportedType; got %v", err)
+	}
+}
+
+func TestIsPathGlobNarrowing(t *testing.T) {
+	cases := []struct {
+		orig, proposed string
+		want           bool
+	}{
+		{"src/**", "src/main.go", true},  // literal under glob → narrowing
+		{"src/main.go", "src/**", false}, // glob over literal → widening
+		{"src/**", "src/**", true},       // equal
+		{"src/**", "src/sub/foo.go", true},
+		{"src/main.go", "src/main.go", true},
+		{"src/**", "lib/main.go", false}, // proposed not under original
+		{"src/*.go", "src/main.go", true},
+		{"src/*.go", "src/sub/main.go", false}, // single-* doesn't cross /
+	}
+	for _, c := range cases {
+		t.Run(c.orig+"->"+c.proposed, func(t *testing.T) {
+			got := isPathGlobNarrowing(c.orig, c.proposed)
+			if got != c.want {
+				t.Errorf("isPathGlobNarrowing(%q, %q) = %v; want %v", c.orig, c.proposed, got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsRegexWidening(t *testing.T) {
+	cases := []struct {
+		orig, proposed string
+		want           bool
+	}{
+		{"^TODO", "^TODO|^XXX", true},      // more alternations → widening
+		{"^TODO|^XXX", "^TODO", false},     // fewer alternations → narrowing
+		{"^TODO", "^TODO", true},           // equal
+		{"^TODO|^XXX", "^TODO|^XXX", true}, // equal
+		{"^A|^B|^C", "^A|^B|^C|^D", true},  // strict superset
+		{"^A|^B", "^A|^C", false},          // different alternations (B replaced by C)
+		{"^A", "^B", false},                // completely different
+	}
+	for _, c := range cases {
+		t.Run(c.orig+"->"+c.proposed, func(t *testing.T) {
+			got := isRegexWidening(c.orig, c.proposed)
+			if got != c.want {
+				t.Errorf("isRegexWidening(%q, %q) = %v; want %v", c.orig, c.proposed, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSplitTrim(t *testing.T) {
+	got := splitTrim(" a | b |c", "|")
+	want := []string{"a", "b", "c"}
+	if len(got) != 3 {
+		t.Fatalf("got len %d; want 3", len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+	// Empty pieces dropped.
+	got = splitTrim("|", "|")
+	if len(got) != 0 {
+		t.Errorf("|→%v; want []", got)
 	}
 }

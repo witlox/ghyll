@@ -190,3 +190,20 @@ func (c *Catalogue) List() []string {
 func (c *Catalogue) Count() int {
 	return len(c.concepts)
 }
+
+// NewForTest constructs an in-memory Catalogue from the provided
+// concepts. Intended for tests that need a fixture concept whose
+// schema doesn't live on disk (e.g., to exercise CheckModification's
+// type-dispatch across all argument types in a single concept).
+//
+// Production code MUST use Load — the closed-vocabulary guarantee
+// (ADR-005) depends on schemas being shipped with the harness. This
+// helper bypasses that for test isolation; it is not safe for
+// production use.
+func NewForTest(concepts ...Concept) *Catalogue {
+	cat := &Catalogue{concepts: make(map[string]Concept, len(concepts))}
+	for _, c := range concepts {
+		cat.concepts[c.Name] = c
+	}
+	return cat
+}

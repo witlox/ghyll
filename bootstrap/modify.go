@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"reflect"
+	"strings"
 
 	"github.com/witlox/ghyll/catalogue"
 )
@@ -136,7 +138,42 @@ func checkNotWeakening(conceptName, argName string, schema catalogue.ArgumentSch
 				conceptName, argName, origS, propS)
 		}
 		if propRank < origRank {
-			return fmt.Errorf("%w: %s.%s lowered from %q to %q",
+			return fmt.Errorf("%w: lower threshold (%s.%s lowered from %q to %q)",
+				ErrModifyWeakening, conceptName, argName, origS, propS)
+		}
+
+	case "path-glob":
+		// Path-glob narrowing rule: a tighter scope (fewer files
+		// allowed to fail) is a raise — accepted. Widening (more
+		// files allowed to fail) is a weakening — refused. See
+		// init.feature 184 outline: "src/**" → "src/main.go" accepts;
+		// the reverse refuses with "wider scope".
+		origS, ok1 := orig.(string)
+		propS, ok2 := proposed.(string)
+		if !ok1 || !ok2 {
+			return fmt.Errorf("CheckModification: %s.%s: path-glob values must be strings (%T vs %T)",
+				conceptName, argName, orig, proposed)
+		}
+		if !isPathGlobNarrowing(origS, propS) {
+			return fmt.Errorf("%w: wider scope (%s.%s went from %q to %q)",
+				ErrModifyWeakening, conceptName, argName, origS, propS)
+		}
+
+	case "regex":
+		// Regex widening rule: a regex that matches MORE strings is a
+		// stricter check (catches more findings) — accepted. A regex
+		// that matches FEWER strings is a weakening (fewer markers)
+		// — refused. See init.feature 184 outline: "^TODO" →
+		// "^TODO|^XXX" accepts; the reverse refuses with "fewer
+		// markers".
+		origS, ok1 := orig.(string)
+		propS, ok2 := proposed.(string)
+		if !ok1 || !ok2 {
+			return fmt.Errorf("CheckModification: %s.%s: regex values must be strings (%T vs %T)",
+				conceptName, argName, orig, proposed)
+		}
+		if !isRegexWidening(origS, propS) {
+			return fmt.Errorf("%w: fewer markers (%s.%s went from %q to %q)",
 				ErrModifyWeakening, conceptName, argName, origS, propS)
 		}
 
@@ -183,6 +220,140 @@ func toFloat(val any) (float64, bool) {
 		return v, true
 	}
 	return 0, false
+}
+
+// isPathGlobNarrowing reports whether `proposed` is a narrower (or
+// equal) path-glob than `orig`. Narrowing = the set of paths matched
+// by `proposed` is a subset of those matched by `orig`. For the
+// init.feature 184 outline:
+//
+//   - "src/**"     → "src/main.go" : narrowing (literal is matched by orig)
+//   - "src/main.go" → "src/**"      : widening   (refused)
+//
+// Implementation: equality is always narrowing. A literal proposed
+// (no wildcard characters) is narrowing if the original glob would
+// match it (using a recursive matcher that handles ** as a
+// multi-segment wildcard). Other combinations require equality —
+// glob-vs-glob subset detection is the operator's job to encode via
+// extend rather than guess at heuristically.
+func isPathGlobNarrowing(orig, proposed string) bool {
+	if orig == proposed {
+		return true
+	}
+	if isPathGlobLiteral(proposed) {
+		return pathGlobMatchRecursive(orig, proposed)
+	}
+	return false
+}
+
+// isPathGlobLiteral reports whether s contains no path-glob wildcard
+// characters. A literal can be tested as a concrete path against
+// another glob.
+func isPathGlobLiteral(s string) bool {
+	return !strings.ContainsAny(s, "*?[")
+}
+
+// pathGlobMatchRecursive reports whether pattern matches name with
+// `**` as a multi-segment wildcard (matches zero or more path
+// segments).
+//
+// path.Match alone doesn't handle `**`; we expand `**/` segments by
+// trying zero-or-more replacements. The number of `**` tokens in
+// realistic globs is small, so the recursion depth stays bounded.
+func pathGlobMatchRecursive(pattern, name string) bool {
+	// Fast path: no doublestar — defer to path.Match.
+	if !strings.Contains(pattern, "**") {
+		ok, err := path.Match(pattern, name)
+		return err == nil && ok
+	}
+	// Split on the first ** and try matching zero or more path
+	// segments in its place.
+	idx := strings.Index(pattern, "**")
+	prefix := pattern[:idx]
+	suffix := pattern[idx+2:]
+	// Strip a trailing slash on prefix and a leading slash on suffix
+	// so we can paste them back with an explicit "" or "<segments>/".
+	prefix = strings.TrimSuffix(prefix, "/")
+	suffix = strings.TrimPrefix(suffix, "/")
+	// Try each substitution: empty (zero segments) and each prefix of
+	// the segments in `name` not yet consumed by `prefix`.
+	// For simplicity, enumerate by splitting `name` by `/` and trying
+	// every split point.
+	segments := strings.Split(name, "/")
+	for i := 0; i <= len(segments); i++ {
+		for j := i; j <= len(segments); j++ {
+			var middle string
+			if j > i {
+				middle = strings.Join(segments[i:j], "/")
+			}
+			// Reconstruct the candidate that pattern would match with
+			// "**" expanded to middle.
+			parts := []string{}
+			if prefix != "" {
+				parts = append(parts, prefix)
+			}
+			if middle != "" {
+				parts = append(parts, middle)
+			}
+			if suffix != "" {
+				parts = append(parts, suffix)
+			}
+			candidate := strings.Join(parts, "/")
+			// path.Match on the candidate vs name (which may contain
+			// other wildcards from prefix/suffix).
+			ok, err := path.Match(candidate, name)
+			if err == nil && ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isRegexWidening reports whether `proposed` matches at least as many
+// strings as `orig`. Used as the accept-direction for the regex
+// modify rule: more strings caught = stricter check.
+//
+// We can't decide regex subset in general, but the cases ADR-011's
+// modify-non-monotonic outline exercises are alternation-based:
+//
+//   - "^TODO"        → "^TODO|^XXX" : widening (more alternations)
+//   - "^TODO|^XXX"   → "^TODO"       : narrowing (refused)
+//
+// Heuristic: split each side on `|`, compare alternation sets. The
+// proposed widens the original iff proposed's set ⊇ original's set.
+// Identical strings widen trivially.
+func isRegexWidening(orig, proposed string) bool {
+	if orig == proposed {
+		return true
+	}
+	origAlts := splitTrim(orig, "|")
+	propAlts := splitTrim(proposed, "|")
+	have := make(map[string]struct{}, len(propAlts))
+	for _, a := range propAlts {
+		have[a] = struct{}{}
+	}
+	for _, a := range origAlts {
+		if _, ok := have[a]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// splitTrim splits s by sep and trims whitespace from each piece.
+// Empty pieces (from leading/trailing separators) are dropped.
+func splitTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // equalAny reports whether two values are deeply equal for the

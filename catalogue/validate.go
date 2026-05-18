@@ -99,7 +99,8 @@ func checkType(conceptName, argName string, schema ArgumentSchema, val any) erro
 	switch schema.Type {
 	case "string", "path-glob", "artifact-ref", "language-id",
 		"role-id", "bounded-context-id", "pass-id", "arrow-id",
-		"dependency-id", "command", "duration", "enum-or-path":
+		"dependency-id", "command", "duration", "enum-or-path",
+		"regex":
 		if _, ok := val.(string); !ok {
 			return fmt.Errorf("validate: %s.%s: type %q requires string, got %T", conceptName, argName, schema.Type, val)
 		}

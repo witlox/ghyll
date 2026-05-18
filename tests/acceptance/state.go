@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/witlox/ghyll/bootstrap"
+	"github.com/witlox/ghyll/catalogue"
 	"github.com/witlox/ghyll/types"
 )
 
@@ -113,6 +114,13 @@ type ScenarioState struct {
 	SessionRegistry  *bootstrap.SessionRegistry
 	BobDeclareErr    error
 	UnknownClauseErr error
+
+	// Modify-non-monotonic outline (init.feature 184).
+	ModifyFixtureArg  string
+	ModifyFixtureOrig map[string]any
+	ModifyFixtureProp map[string]any
+	ModifyFixtureCat  *catalogue.Catalogue
+	ModifyFixtureErr  error
 
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
