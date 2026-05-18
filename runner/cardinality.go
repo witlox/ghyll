@@ -26,13 +26,19 @@ func newLineScanner(r io.Reader) *bufio.Scanner {
 // enum" — actual must be 0). The schema says queries can be regex,
 // yaml-path, or SQL-like; v1 supports regex.
 //
+// Semantic (validation-pass-4 F29): cardinality counts MATCHES, not
+// lines. A regex `\bTODO\b` on a line "TODO and TODO" yields 2 —
+// composable with regex. Both no-capture-group and capture-group
+// regexes use the same counting path.
+//
 // Arguments:
 //   query        : regex over file content. The query MUST be
 //                  read-only — the evaluator doesn't validate
 //                  this, but a side-effecting regex doesn't exist.
 //   query-target : path-glob (files to query) OR the literal
 //                  "project-state" (queries against in-memory
-//                  state — not yet wired; returns an error).
+//                  state — not yet wired in v1; returns
+//                  Unevaluated with reason).
 //   expected     : int (exact match) OR [min, max] (range).
 
 // EvaluateCardinalityCheck is the built-in for cardinality-check.
@@ -51,12 +57,24 @@ func EvaluateCardinalityCheck(ctx context.Context, c Clause) (*Result, error) {
 	}
 
 	if target == "project-state" {
-		return nil, errors.New("cardinality-check: project-state target not yet supported (v1 supports path-glob only)")
+		// F28: v1 doesn't support project-state; Unevaluated (not
+		// runner-level error) so the gate result preserves operator
+		// triage rather than a generic runner-fail.
+		return &Result{
+			Unevaluated: true,
+			Reason:      "query-target `project-state` not yet supported in v1 (use path-glob)",
+			Details:     map[string]any{"query-target": target},
+		}, nil
 	}
 
 	re, err := regexp.Compile(query)
 	if err != nil {
 		return nil, fmt.Errorf("cardinality-check: query is not a valid regex: %w", err)
+	}
+	// F16: refuse zero-width / empty-match regexes — every line
+	// would match and the count becomes meaningless.
+	if re.MatchString("") {
+		return nil, errors.New("cardinality-check: query matches the empty string (zero-width); refused")
 	}
 
 	root := c.ProjectDir
@@ -74,7 +92,7 @@ func EvaluateCardinalityCheck(ctx context.Context, c Clause) (*Result, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		matches, err := countRegexMatches(fpath, re)
+		matches, err := countRegexMatches(ctx, fpath, re)
 		if err != nil {
 			return nil, fmt.Errorf("cardinality-check: count %q: %w", fpath, err)
 		}
@@ -87,7 +105,7 @@ func EvaluateCardinalityCheck(ctx context.Context, c Clause) (*Result, error) {
 		}
 	}
 
-	ok, expectedDesc, err := matchesExpected(count, expectedRaw)
+	ok2, expectedDesc, err := matchesExpected(count, expectedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("cardinality-check: expected: %w", err)
 	}
@@ -97,10 +115,10 @@ func EvaluateCardinalityCheck(ctx context.Context, c Clause) (*Result, error) {
 		"expected": expectedDesc,
 		"hits":     hits,
 	}
-	if !ok {
+	if !ok2 {
 		details["error"] = fmt.Sprintf("cardinality %d does not match expected %s", count, expectedDesc)
 	}
-	return &Result{Pass: ok, Details: details}, nil
+	return &Result{Pass: ok2, Details: details}, nil
 }
 
 // matchesExpected reports whether `actual` satisfies the expected
@@ -116,74 +134,41 @@ func matchesExpected(actual int, expected any) (bool, string, error) {
 		if len(x) != 2 {
 			return false, "", fmt.Errorf("range must have exactly 2 elements; got %d", len(x))
 		}
-		min, err := coerceInt64(x[0])
+		lo, err := coerceInt64(x[0])
 		if err != nil {
 			return false, "", fmt.Errorf("range min: %w", err)
 		}
-		max, err := coerceInt64(x[1])
+		hi, err := coerceInt64(x[1])
 		if err != nil {
 			return false, "", fmt.Errorf("range max: %w", err)
 		}
-		if min > max {
-			return false, "", fmt.Errorf("range inverted: min %d > max %d", min, max)
+		if lo > hi {
+			return false, "", fmt.Errorf("range inverted: min %d > max %d", lo, hi)
 		}
-		desc := fmt.Sprintf("[%d, %d]", min, max)
+		desc := fmt.Sprintf("[%d, %d]", lo, hi)
 		a := int64(actual)
-		return a >= min && a <= max, desc, nil
+		return a >= lo && a <= hi, desc, nil
 	case []int:
 		if len(x) != 2 {
 			return false, "", fmt.Errorf("range must have exactly 2 elements")
 		}
-		min, max := int64(x[0]), int64(x[1])
-		desc := fmt.Sprintf("[%d, %d]", min, max)
+		lo, hi := int64(x[0]), int64(x[1])
+		if lo > hi {
+			return false, "", fmt.Errorf("range inverted: min %d > max %d", lo, hi)
+		}
+		desc := fmt.Sprintf("[%d, %d]", lo, hi)
 		a := int64(actual)
-		return a >= min && a <= max, desc, nil
+		return a >= lo && a <= hi, desc, nil
 	}
 	return false, "", fmt.Errorf("expected must be int or [min, max]; got %T", expected)
 }
 
-// countRegexMatches counts how many lines of the file match re.
-// Multiple matches per line count as one (each line is a distinct
-// "row" in the cardinality sense). Files larger than the size cap
-// are skipped (returns 0, no error).
-func countRegexMatches(path string, re *regexp.Regexp) (int, error) {
-	captures, err := extractRegexCapturesRaw(path, re)
-	if err != nil {
-		return 0, err
-	}
-	return captures, nil
-}
-
-// extractRegexCapturesRaw counts the number of matched lines (one
-// per line that has at least one match). Symlink-safe via
-// O_NOFOLLOW; file-size capped.
-func extractRegexCapturesRaw(path string, re *regexp.Regexp) (int, error) {
-	hits := 0
-	// Reuse tracelink's per-file scan pattern.
-	captures, err := extractRegexCaptures(path, regexp.MustCompile(re.String()))
-	if err != nil {
-		return 0, err
-	}
-	// extractRegexCaptures returns ONE capture group per match.
-	// For cardinality-check we want a count of matches.
-	hits = len(captures)
-	// If the regex has no capture group, fall back to FindAll-style
-	// counting. We've already required NumSubexp>=1 in tracelink; for
-	// cardinality, a no-capture regex is legitimate (we just count
-	// matches). Re-run with full match if NumSubexp==0.
-	if re.NumSubexp() == 0 {
-		hits, err = countLinesMatching(path, re)
-		if err != nil {
-			return 0, err
-		}
-	}
-	return hits, nil
-}
-
-// countLinesMatching counts lines in path where re finds at least
-// one match. Used by cardinality-check when the regex has no
-// capture group.
-func countLinesMatching(path string, re *regexp.Regexp) (int, error) {
+// countRegexMatches counts total regex matches in path. One semantic
+// path for both capture-group and no-capture-group regexes
+// (F29: previously the no-capture path scanned the file twice and
+// counted lines, conflating two semantics). Symlink-safe via
+// O_NOFOLLOW; file-size capped; ctx-aware per ctxCheckEvery (F30).
+func countRegexMatches(ctx context.Context, path string, re *regexp.Regexp) (int, error) {
 	f, err := openNoFollow(path)
 	if err != nil {
 		if isSymlinkOpenError(err) {
@@ -201,10 +186,16 @@ func countLinesMatching(path string, re *regexp.Regexp) (int, error) {
 	}
 	count := 0
 	scanner := newLineScanner(f)
+	lineNum := 0
 	for scanner.Scan() {
-		if re.MatchString(scanner.Text()) {
-			count++
+		lineNum++
+		if lineNum%ctxCheckEvery == 0 {
+			if err := ctx.Err(); err != nil {
+				return count, err
+			}
 		}
+		matches := re.FindAllStringIndex(scanner.Text(), -1)
+		count += len(matches)
 	}
 	return count, nil
 }

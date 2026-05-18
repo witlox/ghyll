@@ -134,8 +134,24 @@ func TestBuildLinkIndex(t *testing.T) {
 		"feature_b_test",
 	}
 	for _, k := range wantKeys {
-		if _, ok := idx[k]; !ok {
+		files, ok := idx[k]
+		if !ok || len(files) == 0 {
 			t.Errorf("index missing key %q", k)
 		}
+	}
+}
+
+func TestBuildLinkIndex_BasenameCollisions(t *testing.T) {
+	// F14: auth.go and auth.md both contribute basename "auth";
+	// the index records BOTH so the operator sees the collision in
+	// the per-from results rather than getting a silent false-pass.
+	files := []string{
+		"src/auth.go",
+		"docs/auth.md",
+	}
+	idx := buildLinkIndex(files)
+	authMatches, ok := idx["auth"]
+	if !ok || len(authMatches) != 2 {
+		t.Errorf("auth should resolve to 2 files; got %v", authMatches)
 	}
 }

@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,6 +23,13 @@ import (
 // Integrator G6 uses this (the integration report exists at its
 // declared location). Analyst G6 (coverage-claim) and architect
 // arrows use it too.
+//
+// IMPORTANT — `schema-check` is FULL SHELL (validation-pass-4 F12).
+// The string is interpolated into `sh -c` verbatim. The artifact
+// path is appended single-quoted, but the operator's command body
+// itself can contain `;`, `&&`, `>`, etc. Operators must treat
+// schema-check as a trust boundary; an LLM-suggested schema-check
+// command is as dangerous as any other shell-execution path.
 
 const (
 	// defaultArtifactMinSize is the default minimum file size.
@@ -29,6 +38,11 @@ const (
 	// schemaCheckDefaultTimeout caps the optional schema-check
 	// subprocess. Short — it's a validator, not a build step.
 	schemaCheckDefaultTimeout = 30 * time.Second
+
+	// schemaCheckMaxOutputBytes caps stdout/stderr of the schema-
+	// check subprocess. F11: bare bytes.Buffer was an unbounded
+	// RAM-DoS path; now we use captureBuf with kill-on-overflow.
+	schemaCheckMaxOutputBytes int64 = 4 * 1024 * 1024
 )
 
 // EvaluateArrowArtifactPresent is the built-in for arrow-artifact-present.
@@ -57,10 +71,19 @@ func EvaluateArrowArtifactPresent(ctx context.Context, c Clause) (*Result, error
 		schemaCheck = s
 	}
 
-	// Resolve artifact path relative to ProjectDir if not absolute.
-	resolved := artifactPath
-	if c.ProjectDir != "" && !strings.HasPrefix(artifactPath, "/") {
-		resolved = c.ProjectDir + "/" + artifactPath
+	// F3 + F4: resolve operator path through the containment helper.
+	// Refuses `..`, absolute paths, and intermediate symlinks in
+	// parent components.
+	resolved, err := ResolveProjectPath(c.ProjectDir, artifactPath)
+	if err != nil {
+		return &Result{
+			Pass: false,
+			Details: map[string]any{
+				"exists":        false,
+				"artifact-path": artifactPath,
+				"error":         err.Error(),
+			},
+		}, nil
 	}
 
 	info, err := os.Lstat(resolved)
@@ -77,8 +100,6 @@ func EvaluateArrowArtifactPresent(ctx context.Context, c Clause) (*Result, error
 		}
 		return nil, fmt.Errorf("arrow-artifact-present: lstat %q: %w", resolved, err)
 	}
-	// Refuse symlinks (defense in depth; an artifact pointing
-	// outside the project tree could leak content).
 	if info.Mode()&os.ModeSymlink != 0 {
 		return &Result{
 			Pass: false,
@@ -112,9 +133,6 @@ func EvaluateArrowArtifactPresent(ctx context.Context, c Clause) (*Result, error
 		}, nil
 	}
 
-	// Optional schema-check command. Runs with the same env
-	// allowlist as bindings (no parent secrets leak) and a short
-	// timeout.
 	if schemaCheck != "" {
 		out, err := runSchemaCheck(ctx, c.ProjectDir, schemaCheck, resolved)
 		if err != nil {
@@ -143,9 +161,16 @@ func EvaluateArrowArtifactPresent(ctx context.Context, c Clause) (*Result, error
 }
 
 // runSchemaCheck runs the optional schema-check command. The command
-// receives the artifact path as its single argument (appended) so
-// the operator can write generic validators like `jq -e .`.
-// Inherits the same env allowlist as BindingEvaluator (no secrets).
+// receives the artifact path as its single argument (appended,
+// single-quoted) so the operator can write generic validators like
+// `jq -e .`.
+//
+// The subprocess inherits the same env allowlist as BindingEvaluator
+// (no parent secrets) and uses captureBuf with kill-on-overflow
+// (F11), mirroring the binding evaluator's defense.
+//
+// SECURITY NOTE: command is full shell (F12). See file-header
+// comment.
 func runSchemaCheck(ctx context.Context, projectDir, command, artifactPath string) ([]byte, error) {
 	subCtx, cancel := context.WithTimeout(ctx, schemaCheckDefaultTimeout)
 	defer cancel()
@@ -153,12 +178,20 @@ func runSchemaCheck(ctx context.Context, projectDir, command, artifactPath strin
 	if projectDir != "" {
 		cmd.Dir = projectDir
 	}
-	// Same env-allowlist pattern as BindingEvaluator.
 	cmd.Env = filteredParentEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+
+	var killOnce sync.Once
+	doKill := func() {
+		killOnce.Do(func() {
+			killProcessGroup(cmd, DefaultBindingGrace)
+		})
+	}
+	stdoutCap := newCaptureBuf(schemaCheckMaxOutputBytes, doKill)
+	stderrCap := newCaptureBuf(schemaCheckMaxOutputBytes, doKill)
+	cmd.Stdout = stdoutCap
+	cmd.Stderr = stderrCap
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn: %w", err)
 	}
@@ -166,14 +199,19 @@ func runSchemaCheck(ctx context.Context, projectDir, command, artifactPath strin
 	go func() { waitCh <- cmd.Wait() }()
 	select {
 	case err := <-waitCh:
-		if err != nil {
-			return out.Bytes(), err
+		out := append(stdoutCap.bytes(), stderrCap.bytes()...)
+		if stdoutCap.overflowed() || stderrCap.overflowed() {
+			return out, fmt.Errorf("schema-check output exceeded %d bytes (killed)", schemaCheckMaxOutputBytes)
 		}
-		return out.Bytes(), nil
+		if err != nil {
+			return out, err
+		}
+		return out, nil
 	case <-subCtx.Done():
-		killProcessGroup(cmd, DefaultBindingGrace)
+		doKill()
 		<-waitCh
-		return out.Bytes(), fmt.Errorf("schema-check timed out after %s", schemaCheckDefaultTimeout)
+		out := append(stdoutCap.bytes(), stderrCap.bytes()...)
+		return out, fmt.Errorf("schema-check timed out after %s", schemaCheckDefaultTimeout)
 	}
 }
 
@@ -187,6 +225,12 @@ func shellQuote(s string) string {
 // the default allowlist (PATH, HOME, LANG, LC_*, etc.). Mirrors
 // BindingEvaluator.buildEnv's default behavior so schema-check
 // commands run with the same minimal env.
+//
+// Drift hazard (F31): BindingEvaluator.buildEnv supports per-binding
+// InheritEnv; this helper does not. Schema-check has no opt-in for
+// tool-specific extras like VIRTUAL_ENV. Documented limitation;
+// remediating fully requires routing schema-check through
+// BindingEvaluator which is a larger refactor.
 func filteredParentEnv() []string {
 	parent := os.Environ()
 	out := make([]string, 0, 16)
@@ -219,8 +263,8 @@ func filteredParentEnv() []string {
 }
 
 // coerceInt64 returns the argument as int64, accepting int, int64,
-// float64 (yaml numbers may decode as float). Returns an error for
-// other types or non-integer floats.
+// float64 (yaml numbers may decode as float). Rejects NaN/Inf with
+// a clearer message than "non-integer float" (F42).
 func coerceInt64(v any) (int64, error) {
 	switch x := v.(type) {
 	case int:
@@ -230,6 +274,9 @@ func coerceInt64(v any) (int64, error) {
 	case int64:
 		return x, nil
 	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, fmt.Errorf("expected finite integer, got non-finite float %v", x)
+		}
 		if x != float64(int64(x)) {
 			return 0, fmt.Errorf("expected integer, got non-integer float %v", x)
 		}
@@ -240,6 +287,5 @@ func coerceInt64(v any) (int64, error) {
 	return 0, fmt.Errorf("not an integer: %T", v)
 }
 
-// io.Writer/io.Reader compile-time sanity checks for ancillary
-// types used in this file.
+// io.Writer compile-time check.
 var _ io.Writer = (*bytes.Buffer)(nil)

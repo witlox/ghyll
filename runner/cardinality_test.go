@@ -84,15 +84,23 @@ func TestCardinalityCheck_RangeOutOfBounds(t *testing.T) {
 }
 
 func TestCardinalityCheck_ProjectStateNotSupported(t *testing.T) {
-	_, err := EvaluateCardinalityCheck(context.Background(), Clause{
+	// F28: project-state returns Unevaluated (not runner-level
+	// error) so the gate result preserves operator triage.
+	res, err := EvaluateCardinalityCheck(context.Background(), Clause{
 		Args: map[string]any{
 			"query":        "anything",
 			"query-target": "project-state",
 			"expected":     0,
 		},
 	})
-	if err == nil {
-		t.Error("project-state target should error (v1 supports path-glob only)")
+	if err != nil {
+		t.Fatalf("project-state should not return runner-level error; got %v", err)
+	}
+	if !res.Unevaluated {
+		t.Errorf("project-state should produce Unevaluated; got %+v", res)
+	}
+	if res.Reason == "" {
+		t.Error("Unevaluated must carry a Reason")
 	}
 }
 

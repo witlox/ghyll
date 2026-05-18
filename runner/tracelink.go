@@ -26,12 +26,23 @@ import (
 //
 // v1 implementation: the `from` and `to` arguments are path-globs
 // pointing at files. The `link-rule` is a Go regular expression with
-// one capture group; for each `from` file, the regex is applied
-// against its contents, and the captured strings are taken as link
-// targets. Each captured target must match the basename (or full
-// relative path) of some `to` file. min-multiplicity and
-// max-multiplicity bound the count of distinct captured targets per
-// `from` file.
+// at least one capture group; for each `from` file, the regex is
+// applied against its contents, and the first non-empty capture per
+// match is taken as the link target (F13). Each captured target must
+// match the basename (or full relative path) of some `to` file.
+// min-multiplicity and max-multiplicity bound the count of distinct
+// captured targets per `from` file.
+
+// maxCapturesPerFile bounds how many captures one `from` file may
+// contribute (validation-pass-4 F15). A pathological regex on a
+// large file can otherwise OOM the runner. Beyond this, additional
+// matches are silently truncated and the per-file result records
+// "captures-truncated".
+const maxCapturesPerFile = 10000
+
+// ctxCheckEvery is the line interval at which scanners check
+// ctx.Err() (F30). Matches notodo's cadence.
+const ctxCheckEvery = 1024
 
 // EvaluateTraceLinkPresent is the built-in for trace-link-present.
 func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
@@ -77,32 +88,41 @@ func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
 	if re.NumSubexp() < 1 {
 		return nil, errors.New("trace-link-present: link-rule must declare one capture group (the link target)")
 	}
+	// F16: refuse zero-width / empty-match regexes. A rule that
+	// matches the empty string yields false positives at every
+	// position.
+	if re.MatchString("") {
+		return nil, errors.New("trace-link-present: link-rule matches the empty string (zero-width); refused")
+	}
 
 	root := c.ProjectDir
 	if root == "" {
 		root = "."
 	}
 
-	// Index the `to` side: collect every file matching `toGlob` and
-	// build a set of normalized identifiers we can match captures
-	// against. v1 indexes by both relative path AND file basename
-	// (operators tend to use either form).
 	toFiles, err := scanFilesByGlob(ctx, root, toGlob)
 	if err != nil {
 		return nil, fmt.Errorf("trace-link-present: scan `to`: %w", err)
 	}
+	// F27: empty `to` glob → Unevaluated. Operator likely misspelled
+	// the glob; treating as Fail conflates config errors with real
+	// findings.
+	if len(toFiles) == 0 {
+		return &Result{
+			Unevaluated: true,
+			Reason:      fmt.Sprintf("no files match `to` glob %q; cannot evaluate trace targets", toGlob),
+			Details: map[string]any{
+				"from-glob": fromGlob,
+				"to-glob":   toGlob,
+			},
+		}, nil
+	}
 	toIndex := buildLinkIndex(toFiles)
 
-	// Walk the `from` side: for each file, extract captures, count
-	// distinct ones that resolve to a `to` entry. Record per-file
-	// results.
 	fromFiles, err := scanFilesByGlob(ctx, root, fromGlob)
 	if err != nil {
 		return nil, fmt.Errorf("trace-link-present: scan `from`: %w", err)
 	}
-	// Vacuous-pass guard: if no `from` files match, the result is
-	// undecidable, not "passes by default". Return Unevaluated so
-	// the operator triages the empty scope.
 	if len(fromFiles) == 0 {
 		return &Result{
 			Unevaluated: true,
@@ -115,10 +135,12 @@ func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
 	}
 
 	type fromResult struct {
-		File    string   `json:"file"`
-		Targets []string `json:"targets"`
-		Unmet   bool     `json:"unmet"`
-		Reason  string   `json:"reason"`
+		File       string              `json:"file"`
+		Targets    []string            `json:"targets"`
+		ResolvedTo map[string][]string `json:"resolved-to"`
+		Unmet      bool                `json:"unmet"`
+		Truncated  bool                `json:"truncated"`
+		Reason     string              `json:"reason"`
 	}
 	results := make([]fromResult, 0, len(fromFiles))
 	unmet := 0
@@ -127,24 +149,29 @@ func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		captures, err := extractRegexCaptures(fpath, re)
+		captures, truncated, err := extractRegexCaptures(ctx, fpath, re)
 		if err != nil {
 			return nil, fmt.Errorf("trace-link-present: extract %q: %w", fpath, err)
 		}
 		// Distinct captures only.
 		seen := make(map[string]struct{}, len(captures))
 		matched := make([]string, 0, len(captures))
+		resolvedTo := make(map[string][]string, len(captures))
 		for _, cap := range captures {
+			if cap == "" {
+				continue
+			}
 			if _, ok := seen[cap]; ok {
 				continue
 			}
 			seen[cap] = struct{}{}
-			if _, ok := toIndex[cap]; ok {
+			if files, ok := toIndex[cap]; ok {
 				matched = append(matched, cap)
+				resolvedTo[cap] = files
 			}
 		}
 		rel, _ := filepath.Rel(root, fpath)
-		r := fromResult{File: rel, Targets: matched}
+		r := fromResult{File: rel, Targets: matched, ResolvedTo: resolvedTo, Truncated: truncated}
 		count := int64(len(matched))
 		switch {
 		case count < minMult:
@@ -159,12 +186,15 @@ func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
 		results = append(results, r)
 	}
 
-	// Marshalable detail records.
 	rendered := make([]map[string]any, len(results))
 	for i, r := range results {
 		entry := map[string]any{
-			"file":    r.File,
-			"targets": r.Targets,
+			"file":        r.File,
+			"targets":     r.Targets,
+			"resolved-to": r.ResolvedTo,
+		}
+		if r.Truncated {
+			entry["captures-truncated"] = true
 		}
 		if r.Unmet {
 			entry["unmet"] = true
@@ -185,8 +215,7 @@ func EvaluateTraceLinkPresent(ctx context.Context, c Clause) (*Result, error) {
 }
 
 // scanFilesByGlob returns regular-file paths under root matching the
-// glob (using internal/pathglob's `**`-aware matcher). Skips
-// harness/build dirs at root depth. Respects ctx.Cancel.
+// glob. Skips harness/build dirs at root depth. Respects ctx.Cancel.
 func scanFilesByGlob(ctx context.Context, root, glob string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
@@ -212,8 +241,6 @@ func scanFilesByGlob(ctx context.Context, root, glob string) ([]string, error) {
 		if !pathglob.Match(glob, rel) {
 			return nil
 		}
-		// Refuse non-regular files at file-open time too (defense
-		// in depth — entry.Type only reflects lstat).
 		info, err := os.Lstat(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -233,64 +260,105 @@ func scanFilesByGlob(ctx context.Context, root, glob string) ([]string, error) {
 	return out, nil
 }
 
-// buildLinkIndex builds a set of identifier strings that capture-
-// extractions can be matched against. Each `to` file contributes
-// two entries: its relative path AND its basename without
-// extension. Operators write link rules referring to either form.
-func buildLinkIndex(files []string) map[string]struct{} {
-	idx := make(map[string]struct{}, 2*len(files))
+// buildLinkIndex maps every identifier a `to` file can be referenced
+// by (rel path, basename, basename-without-extension) to the list of
+// `to` files that resolve to that identifier (F14). Multi-language
+// projects where `auth.go` and `auth.md` both contribute basename
+// `auth` no longer silently collide — the operator sees which `to`
+// file(s) each capture resolved to in the per-from result.
+func buildLinkIndex(files []string) map[string][]string {
+	idx := make(map[string][]string, 2*len(files))
+	add := func(key, file string) {
+		if key == "" {
+			return
+		}
+		idx[key] = append(idx[key], file)
+	}
 	for _, f := range files {
-		idx[f] = struct{}{}
+		add(f, f)
 		base := filepath.Base(f)
-		idx[base] = struct{}{}
-		// Without extension.
+		add(base, f)
 		if ext := filepath.Ext(base); ext != "" {
-			idx[strings.TrimSuffix(base, ext)] = struct{}{}
+			trimmed := strings.TrimSuffix(base, ext)
+			add(trimmed, f)
 		}
 	}
 	return idx
 }
 
-// extractRegexCaptures returns capture-group-1 for every match of
-// re in the file at path. Refuses non-regular files and symlinks
-// (O_NOFOLLOW). Capped at maxTodoScanFileSize to keep memory
-// bounded.
-func extractRegexCaptures(path string, re *regexp.Regexp) ([]string, error) {
+// extractRegexCaptures returns the first non-empty capture (F13)
+// for every match of re in the file at path. Refuses non-regular
+// files and symlinks (O_NOFOLLOW). Per-file size cap. Per-file
+// capture cap (F15). Checks ctx.Err() every ctxCheckEvery lines
+// (F30).
+//
+// Returns (captures, truncated, error) where truncated reports
+// whether the capture cap was hit.
+func extractRegexCaptures(ctx context.Context, path string, re *regexp.Regexp) ([]string, bool, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if isSymlinkOpenError(err) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, nil
+		return nil, false, nil
 	}
 	if info.Size() > maxTodoScanFileSize {
-		return nil, nil
+		return nil, false, nil
 	}
 	var captures []string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineNum := 0
+	truncated := false
 	for scanner.Scan() {
+		lineNum++
+		if lineNum%ctxCheckEvery == 0 {
+			if err := ctx.Err(); err != nil {
+				return captures, truncated, err
+			}
+		}
 		matches := re.FindAllStringSubmatch(scanner.Text(), -1)
 		for _, m := range matches {
-			if len(m) > 1 {
-				captures = append(captures, m[1])
+			cap := firstNonEmptyCapture(m)
+			if cap == "" {
+				continue
 			}
+			captures = append(captures, cap)
+			if len(captures) >= maxCapturesPerFile {
+				truncated = true
+				break
+			}
+		}
+		if truncated {
+			break
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			// Partial scan — return what we have.
-			return captures, nil
+			return captures, truncated, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return captures, nil
+	return captures, truncated, nil
+}
+
+// firstNonEmptyCapture returns the first non-empty capture group
+// (m[1:]) for one match. Per F13: regex with alternation across
+// capture groups was returning only m[1], silently losing the
+// alternative branch's capture.
+func firstNonEmptyCapture(m []string) string {
+	for i := 1; i < len(m); i++ {
+		if m[i] != "" {
+			return m[i]
+		}
+	}
+	return ""
 }

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // no-open-finding built-in evaluator. Per
@@ -19,15 +20,18 @@ import (
 // records.
 
 // findingsHookKey is the context key the evaluator looks up the
-// findings store under. Using a context key (rather than a global)
-// keeps tests isolated and lets multiple runners coexist in the
-// same process with independent finding state.
+// findings store under.
 type findingsHookKey struct{}
 
 // WithFindingsStore attaches a FindingsStore to ctx so the
-// no-open-finding evaluator (and other findings-aware checks)
-// can read it. The Runner threads ctx through to evaluators.
+// no-open-finding evaluator can read it. Per validation-pass-4
+// F26, nested attachment is forbidden: if a store is already
+// attached on ctx, this panics with "findings-store-already-attached"
+// to prevent silent shadowing by test helpers.
 func WithFindingsStore(ctx context.Context, store *FindingsStore) context.Context {
+	if existing := ctx.Value(findingsHookKey{}); existing != nil {
+		panic("findings-store-already-attached: nested WithFindingsStore silently shadows; pass the existing store down instead")
+	}
 	return context.WithValue(ctx, findingsHookKey{}, store)
 }
 
@@ -52,13 +56,9 @@ func EvaluateNoOpenFinding(ctx context.Context, c Clause) (*Result, error) {
 	}
 	threshold := SeverityMedium // schema default
 	if v, ok := c.Args["severity-threshold"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("no-open-finding: severity-threshold must be string, got %T", v)
-		}
-		t, err := parseSeverityRank(s)
+		t, err := coerceSeverityArg(v)
 		if err != nil {
-			return nil, fmt.Errorf("no-open-finding: %w", err)
+			return nil, fmt.Errorf("no-open-finding: severity-threshold: %w", err)
 		}
 		threshold = t
 	}
@@ -75,15 +75,20 @@ func EvaluateNoOpenFinding(ctx context.Context, c Clause) (*Result, error) {
 		}, nil
 	}
 
-	findings := store.ForArrow(arrowID)
+	findings, version := store.ForArrowVersioned(arrowID)
 	blocking := []map[string]any{}
 	for _, f := range findings {
 		if isBlockingFinding(f, threshold) {
+			// F7: include description, raised-at, raised-by-role so
+			// operator can triage without a second store lookup.
 			blocking = append(blocking, map[string]any{
-				"id":       f.ID,
-				"type":     string(f.Type),
-				"severity": f.Severity,
-				"status":   f.Status.String(),
+				"id":             f.ID,
+				"type":           string(f.Type),
+				"severity":       f.Severity,
+				"status":         f.Status.String(),
+				"description":    f.Description,
+				"raised-at":      f.RaisedAt,
+				"raised-by-role": f.RaisedByRole,
 			})
 		}
 	}
@@ -94,6 +99,7 @@ func EvaluateNoOpenFinding(ctx context.Context, c Clause) (*Result, error) {
 		"finding-count":     len(findings),
 		"blocking-findings": blocking,
 		"threshold":         threshold,
+		"store-version":     version, // F5: caller can cross-check TOCTOU
 	}
 	if !pass {
 		details["error"] = fmt.Sprintf("%d finding(s) blocking", len(blocking))
@@ -107,20 +113,62 @@ func EvaluateNoOpenFinding(ctx context.Context, c Clause) (*Result, error) {
 //   - Status unevaluated → blocking regardless of severity (severity
 //     itself is unassigned per §7.3, validation-pass-3 F25).
 //   - Status resolved or accepted-risk → not blocking.
+//   - F8: any other (corrupt / future enum) status → blocking.
+//     Default-to-block matches DeriveArrowStatus's handling of
+//     unknown ClauseStatus — corruption must not silently pass.
 func isBlockingFinding(f FindingRecord, threshold int) bool {
 	switch f.Status {
 	case FindingStatusOpen, FindingStatusRunning:
-		return f.Severity >= threshold
+		// F9: clamp out-of-range severity to nearest valid rank as
+		// defense in depth. Raise rejects them, but a corrupt
+		// FindingRecord constructed outside Raise should not bypass
+		// the gate.
+		sev := f.Severity
+		if sev < SeverityInfo {
+			sev = SeverityInfo
+		}
+		if sev > SeverityCritical {
+			sev = SeverityCritical
+		}
+		return sev >= threshold
 	case FindingStatusUnevaluated:
 		return true
+	case FindingStatusResolved, FindingStatusAcceptedRisk:
+		return false
 	}
-	return false
+	// F8: corrupt / unknown status defaults to blocking.
+	return true
+}
+
+// coerceSeverityArg accepts the operator's severity-threshold in
+// either int (validate 0..4) or string (route through
+// parseSeverityRank). F21.
+func coerceSeverityArg(v any) (int, error) {
+	switch x := v.(type) {
+	case string:
+		return parseSeverityRank(x)
+	case int:
+		if x < SeverityInfo || x > SeverityCritical {
+			return 0, fmt.Errorf("severity rank %d out of 0..4", x)
+		}
+		return x, nil
+	case int64:
+		return coerceSeverityArg(int(x))
+	case float64:
+		if x != float64(int(x)) {
+			return 0, fmt.Errorf("severity rank %v is not an integer", x)
+		}
+		return coerceSeverityArg(int(x))
+	}
+	return 0, fmt.Errorf("severity-threshold must be string or int; got %T", v)
 }
 
 // parseSeverityRank maps the severity wire form ("info", "low",
-// "medium", "high", "critical") to its rank (0..4).
+// "medium", "high", "critical") to its rank (0..4). Whitespace
+// and case-insensitive (F10).
 func parseSeverityRank(s string) (int, error) {
-	switch s {
+	norm := strings.TrimSpace(strings.ToLower(s))
+	switch norm {
 	case "info":
 		return SeverityInfo, nil
 	case "low":

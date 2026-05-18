@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -10,8 +11,13 @@ import (
 
 // Findings model. Per gates.md §7.3: a finding lives on the arrow
 // (not on a clause); it has an id, a type, a severity, and a
-// status. The full lifecycle is open → running → resolved /
-// accepted-risk / unevaluated.
+// status. Lifecycle (post validation-pass-4 F6 reconciliation):
+//
+//	open           → running | resolved | accepted-risk
+//	running        → resolved | accepted-risk | unevaluated | open
+//	resolved       → open (reopen on regression)
+//	accepted-risk  → open (operator amendment; see TransitionWithReason)
+//	unevaluated    → running | open
 //
 // FindingType is the integrator-introduced enum
 // {local-bug, missing-cross-context-spec, ...} — extensible per
@@ -22,6 +28,11 @@ import (
 // enum at init (integrator role file or amendment) and a
 // cardinality-check clause asserts values stay inside the enum.
 type FindingType string
+
+// findingTypePattern bounds the wire form (F22): printable ASCII,
+// starts with a letter, dashes allowed. Reject whitespace, control
+// chars, trailing newlines, and Unicode look-alikes at Raise time.
+var findingTypePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // Common finding types observed across roles. Operators may add
 // more; these are the integrator-spec canonical members.
@@ -34,15 +45,20 @@ const (
 // FindingRecord is the persistent shape of a finding. Lightweight
 // compared to the runtime Finding struct (arrow.go) which only
 // carries derive-status inputs.
+//
+// TransitionCount tracks lifecycle churn (F25). Incremented by
+// Transition; readable via Get / ForArrow. Operators can use it to
+// detect ping-pong loops.
 type FindingRecord struct {
-	ID           string
-	ArrowID      string // which arrow raised it
-	Type         FindingType
-	Severity     int // 0=info..4=critical per arrow.go's constants
-	Status       FindingStatus
-	Description  string // operator-facing message
-	RaisedAt     string // RFC3339; zero string for unknown
-	RaisedByRole string // analyst, architect, integrator, etc.
+	ID              string
+	ArrowID         string // which arrow raised it
+	Type            FindingType
+	Severity        int // 0=info..4=critical per arrow.go's constants
+	Status          FindingStatus
+	Description     string // operator-facing message
+	RaisedAt        string // RFC3339; zero string for unknown
+	RaisedByRole    string // analyst, architect, integrator, etc.
+	TransitionCount int    // F25: monotonic per-record churn counter
 }
 
 // AsDeriveInput returns the slimmed Finding used by
@@ -59,36 +75,61 @@ func (r FindingRecord) AsDeriveInput() Finding {
 // Construct via NewFindingsStore. Thread-safe; the runner accesses
 // it from per-clause evaluation goroutines.
 //
+// Per validation-pass-4 F1: byID stores an index into byArrow, not
+// a pointer. Appending to byArrow[id] reallocates the backing
+// array; if byID held pointers they would silently dangle.
+// Indices are stable across slice growth.
+//
 // Persistence is the state-machine engine's job (a later component);
 // this struct is the runtime hot path. A separate ledger would
 // pull from FindingsStore at checkpoint boundaries.
 type FindingsStore struct {
 	mu      sync.RWMutex
 	byArrow map[string][]FindingRecord // arrowID → findings
-	byID    map[string]*FindingRecord  // findingID → ptr
+	byID    map[string]findingLocator  // findingID → (arrowID, idx)
+	version uint64                     // F5: snapshot version
+}
+
+// findingLocator points to a record's location inside byArrow.
+// Cheap to copy; immune to slice reallocation.
+type findingLocator struct {
+	arrowID string
+	idx     int
 }
 
 // NewFindingsStore returns an empty store.
 func NewFindingsStore() *FindingsStore {
 	return &FindingsStore{
 		byArrow: make(map[string][]FindingRecord),
-		byID:    make(map[string]*FindingRecord),
+		byID:    make(map[string]findingLocator),
 	}
 }
 
 // Findings store errors.
 var (
-	ErrFindingIDEmpty       = errors.New("finding-id-empty")
-	ErrFindingArrowIDEmpty  = errors.New("finding-arrow-id-empty")
-	ErrFindingTypeEmpty     = errors.New("finding-type-empty")
-	ErrFindingDuplicateID   = errors.New("finding-duplicate-id")
-	ErrFindingUnknownID     = errors.New("finding-unknown-id")
-	ErrFindingInvalidStatus = errors.New("finding-invalid-status")
+	ErrFindingIDEmpty         = errors.New("finding-id-empty")
+	ErrFindingArrowIDEmpty    = errors.New("finding-arrow-id-empty")
+	ErrFindingTypeEmpty       = errors.New("finding-type-empty")
+	ErrFindingTypeInvalid     = errors.New("finding-type-invalid")
+	ErrFindingDuplicateID     = errors.New("finding-duplicate-id")
+	ErrFindingUnknownID       = errors.New("finding-unknown-id")
+	ErrFindingInvalidStatus   = errors.New("finding-invalid-status")
+	ErrFindingInvalidSeverity = errors.New("finding-invalid-severity")
 )
 
-// Raise adds a new finding to the store. ID must be non-empty and
-// unique (Raise returns ErrFindingDuplicateID otherwise). Initial
-// status is open unless the record specifies otherwise.
+// maxFindingTransitions bounds per-record lifecycle churn (F25).
+// Beyond this, Transition returns ErrFindingTransitionChurn. The
+// operator can amend or Forget to clear the record.
+const maxFindingTransitions = 100
+
+// ErrFindingTransitionChurn signals a record has cycled through its
+// allowed transitions more than maxFindingTransitions times.
+var ErrFindingTransitionChurn = errors.New("finding-transition-churn")
+
+// Raise adds a new finding to the store. ID/ArrowID/Type must be
+// non-empty; Type must match findingTypePattern (F22); Severity
+// must be 0..4 (F9); Status must be a known enum value (F23).
+// Returns ErrFindingDuplicateID on ID re-use.
 func (s *FindingsStore) Raise(r FindingRecord) error {
 	if r.ID == "" {
 		return ErrFindingIDEmpty
@@ -99,42 +140,105 @@ func (s *FindingsStore) Raise(r FindingRecord) error {
 	if r.Type == "" {
 		return ErrFindingTypeEmpty
 	}
+	// F22: validate type shape.
+	if !findingTypePattern.MatchString(string(r.Type)) {
+		return fmt.Errorf("%w: %q", ErrFindingTypeInvalid, r.Type)
+	}
+	// F9: severity must be in [0, 4].
+	if r.Severity < SeverityInfo || r.Severity > SeverityCritical {
+		return fmt.Errorf("%w: %d (must be 0..4)", ErrFindingInvalidSeverity, r.Severity)
+	}
+	// F23: status must be a known enum value (or zero, which is
+	// FindingStatusOpen — the default).
+	if !isKnownFindingStatus(r.Status) {
+		return fmt.Errorf("%w: status=%d (unknown enum value)", ErrFindingInvalidStatus, r.Status)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, dup := s.byID[r.ID]; dup {
 		return fmt.Errorf("%w: %s", ErrFindingDuplicateID, r.ID)
 	}
-	// Default status to open if zero-valued (FindingStatusOpen == 0).
 	stored := r
 	s.byArrow[r.ArrowID] = append(s.byArrow[r.ArrowID], stored)
-	// Point byID at the slice's tail (must re-resolve on slice
-	// reallocations — store the index rather than the pointer).
 	idx := len(s.byArrow[r.ArrowID]) - 1
-	s.byID[r.ID] = &s.byArrow[r.ArrowID][idx]
+	// F1: store an index, not a pointer. Slice growth no longer
+	// dangles byID.
+	s.byID[r.ID] = findingLocator{arrowID: r.ArrowID, idx: idx}
+	s.version++
 	return nil
 }
 
-// Transition updates a finding's status. Per gates.md §7.3, valid
-// transitions are open → running, running → resolved /
-// accepted-risk / unevaluated, and resolved → open (reopen).
-// Other transitions return ErrFindingInvalidStatus.
+// Transition updates a finding's status per the validFindingTransition
+// set. Returns ErrFindingInvalidStatus on illegal transitions and
+// ErrFindingTransitionChurn after maxFindingTransitions cycles.
+//
+// accepted-risk → open is allowed here but typically goes through
+// TransitionWithReason (F6) so the caller's role is recorded.
 func (s *FindingsStore) Transition(id string, to FindingStatus) error {
+	return s.transitionImpl(id, to, "", "")
+}
+
+// TransitionWithReason is the audit-recording variant of Transition.
+// Per validation-pass-4 F6, transitions out of accepted-risk and
+// resolved should record an operator role + reason so attestation
+// can audit them.
+//
+// role and reason are appended to the record's Description as
+// "[<role>] <reason>" so a downstream sync still picks them up.
+// (A full audit-log table belongs to the state-machine engine.)
+func (s *FindingsStore) TransitionWithReason(id string, to FindingStatus, role, reason string) error {
+	return s.transitionImpl(id, to, role, reason)
+}
+
+func (s *FindingsStore) transitionImpl(id string, to FindingStatus, role, reason string) error {
+	if !isKnownFindingStatus(to) {
+		return fmt.Errorf("%w: target=%d", ErrFindingInvalidStatus, to)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, ok := s.byID[id]
+	loc, ok := s.byID[id]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrFindingUnknownID, id)
 	}
+	rec := &s.byArrow[loc.arrowID][loc.idx]
 	if !validFindingTransition(rec.Status, to) {
 		return fmt.Errorf("%w: %s → %s on %s",
 			ErrFindingInvalidStatus, rec.Status, to, id)
 	}
+	if rec.TransitionCount >= maxFindingTransitions {
+		return fmt.Errorf("%w: %s has churned %d times", ErrFindingTransitionChurn, id, rec.TransitionCount)
+	}
 	rec.Status = to
+	rec.TransitionCount++
+	if role != "" || reason != "" {
+		note := fmt.Sprintf("[transition %s → %s by %s: %s]", rec.Status, to, role, reason)
+		if rec.Description == "" {
+			rec.Description = note
+		} else {
+			rec.Description = rec.Description + " " + note
+		}
+	}
+	s.version++
 	return nil
 }
 
+// isKnownFindingStatus reports whether v is in the declared enum.
+func isKnownFindingStatus(v FindingStatus) bool {
+	switch v {
+	case FindingStatusOpen,
+		FindingStatusRunning,
+		FindingStatusResolved,
+		FindingStatusAcceptedRisk,
+		FindingStatusUnevaluated:
+		return true
+	}
+	return false
+}
+
 // validFindingTransition reports whether a status transition is
-// allowed per gates.md §7.3.
+// allowed per gates.md §7.3. See the package-level lifecycle comment
+// for the canonical set.
 func validFindingTransition(from, to FindingStatus) bool {
 	switch from {
 	case FindingStatusOpen:
@@ -147,43 +251,102 @@ func validFindingTransition(from, to FindingStatus) bool {
 			to == FindingStatusUnevaluated ||
 			to == FindingStatusOpen
 	case FindingStatusResolved:
-		// Reopen allowed if regression observed.
 		return to == FindingStatusOpen
 	case FindingStatusAcceptedRisk:
-		// Sticky — operator must explicitly amend the grid to
-		// re-open. We allow open transition for now; spec may
-		// tighten.
 		return to == FindingStatusOpen
 	case FindingStatusUnevaluated:
-		// Unevaluated transitions to running on retry.
 		return to == FindingStatusRunning || to == FindingStatusOpen
 	}
 	return false
 }
 
-// ForArrow returns a snapshot of findings on the named arrow. The
-// returned slice is a deep copy; mutating it doesn't affect the
-// store.
+// ForArrow returns a deep-copy snapshot of findings on the named
+// arrow, sorted by ID. The result is safe to retain past concurrent
+// Transition / Raise calls (records are values, not pointers).
 func (s *FindingsStore) ForArrow(arrowID string) []FindingRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	src := s.byArrow[arrowID]
 	out := make([]FindingRecord, len(src))
 	copy(out, src)
-	// Stable sort by ID for deterministic output.
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// ForArrowVersioned returns the same snapshot as ForArrow plus the
+// store version at snapshot time (F5). The caller can re-check
+// Version() before acting on the snapshot to detect TOCTOU.
+func (s *FindingsStore) ForArrowVersioned(arrowID string) ([]FindingRecord, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	src := s.byArrow[arrowID]
+	out := make([]FindingRecord, len(src))
+	copy(out, src)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, s.version
+}
+
+// Version returns the current store version. Incremented on every
+// Raise / Transition / Forget. Used together with ForArrowVersioned
+// to detect TOCTOU between snapshot and downstream consumer (F5).
+func (s *FindingsStore) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
 }
 
 // Get returns a copy of the finding by ID, or zero+false if absent.
 func (s *FindingsStore) Get(id string) (FindingRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rec, ok := s.byID[id]
+	loc, ok := s.byID[id]
 	if !ok {
 		return FindingRecord{}, false
 	}
-	return *rec, true
+	return s.byArrow[loc.arrowID][loc.idx], true
+}
+
+// Forget removes the finding by ID. Returns ErrFindingUnknownID if
+// the ID is absent. Per validation-pass-4 F24: the runtime cache
+// must be bound for long sessions; engine code calls this at
+// checkpoint boundaries.
+//
+// Note: Forget rebuilds byID's indices for the affected arrow's
+// remaining slice entries. O(n) in the arrow's finding count.
+func (s *FindingsStore) Forget(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	loc, ok := s.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrFindingUnknownID, id)
+	}
+	arr := s.byArrow[loc.arrowID]
+	arr = append(arr[:loc.idx], arr[loc.idx+1:]...)
+	s.byArrow[loc.arrowID] = arr
+	delete(s.byID, id)
+	// Rebuild indices for shifted entries.
+	for i := loc.idx; i < len(arr); i++ {
+		s.byID[arr[i].ID] = findingLocator{arrowID: loc.arrowID, idx: i}
+	}
+	s.version++
+	return nil
+}
+
+// ForgetArrow removes every finding on the named arrow. Returns the
+// number forgotten. No error if the arrow is absent (returns 0).
+func (s *FindingsStore) ForgetArrow(arrowID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, ok := s.byArrow[arrowID]
+	if !ok {
+		return 0
+	}
+	for _, r := range src {
+		delete(s.byID, r.ID)
+	}
+	delete(s.byArrow, arrowID)
+	s.version++
+	return len(src)
 }
 
 // String returns the wire form of a FindingStatus.
@@ -204,8 +367,11 @@ func (s FindingStatus) String() string {
 }
 
 // ParseFindingStatus maps a wire-form string back to the enum.
+// Whitespace, case, and `_`-for-`-` are all normalized (F41).
 func ParseFindingStatus(s string) (FindingStatus, error) {
-	switch strings.TrimSpace(strings.ToLower(s)) {
+	norm := strings.TrimSpace(strings.ToLower(s))
+	norm = strings.ReplaceAll(norm, "_", "-")
+	switch norm {
 	case "open":
 		return FindingStatusOpen, nil
 	case "running":

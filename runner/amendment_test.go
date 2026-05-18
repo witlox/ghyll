@@ -86,9 +86,16 @@ func TestAmendmentQueue_DrainEmptiesAndReturnsAll(t *testing.T) {
 	if q.Len() != 0 {
 		t.Error("queue should be empty after Drain")
 	}
-	// Re-enqueue with the same IDs works (Drain cleared the byID map).
+	// F44: re-enqueue of a drained ID is REFUSED (the queue
+	// remembers drained IDs in seenIDs so analyst arrows don't
+	// re-fire on the same logical work). Call Reset to clear
+	// seenIDs at session boundary.
+	if err := q.Enqueue(drained[0]); !errors.Is(err, ErrAmendmentDuplicateID) {
+		t.Errorf("re-enqueue after drain should refuse with ErrAmendmentDuplicateID; got %v", err)
+	}
+	q.Reset()
 	if err := q.Enqueue(drained[0]); err != nil {
-		t.Errorf("re-enqueue after drain: %v", err)
+		t.Errorf("re-enqueue after Reset: %v", err)
 	}
 }
 
@@ -128,7 +135,10 @@ func TestPendingAmendments_FindsOpenMissingCrossContext(t *testing.T) {
 		id++
 		return "amend-test-" + string(rune('0'+id))
 	}
-	got := PendingAmendments(store, "A1", []string{"payment", "identity"}, idGen)
+	got, err := PendingAmendments(store, "A1", []string{"payment", "identity"}, idGen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("got %d amendments; want 1", len(got))
 	}
@@ -150,15 +160,31 @@ func TestPendingAmendments_FindsOpenMissingCrossContext(t *testing.T) {
 }
 
 func TestPendingAmendments_NilStoreReturnsNil(t *testing.T) {
-	if got := PendingAmendments(nil, "A1", nil, nil); got != nil {
+	got, err := PendingAmendments(nil, "A1", nil, nil)
+	if err != nil {
+		t.Fatalf("nil store should not error; got %v", err)
+	}
+	if got != nil {
 		t.Errorf("nil store should return nil; got %v", got)
 	}
 }
 
 func TestPendingAmendments_EmptyArrowIDReturnsNil(t *testing.T) {
 	store := NewFindingsStore()
-	if got := PendingAmendments(store, "", nil, nil); got != nil {
+	got, err := PendingAmendments(store, "", nil, nil)
+	if err != nil {
+		t.Fatalf("empty arrow ID should not error; got %v", err)
+	}
+	if got != nil {
 		t.Errorf("empty arrow ID should return nil; got %v", got)
+	}
+}
+
+func TestPendingAmendments_ContextsTooFew(t *testing.T) {
+	store := NewFindingsStore()
+	_, err := PendingAmendments(store, "A1", []string{"only-one"}, nil)
+	if !errors.Is(err, ErrAmendmentContextsTooFew) {
+		t.Errorf("contexts of len 1 should error with ErrAmendmentContextsTooFew; got %v", err)
 	}
 }
 
