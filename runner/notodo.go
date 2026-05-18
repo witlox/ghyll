@@ -406,6 +406,7 @@ func RegisterBuiltins(r *Registry) {
 	registerOrReplace(r, "cardinality-check", EvaluateCardinalityCheck)
 	registerOrReplace(r, "no-open-finding", EvaluateNoOpenFinding)
 	registerOrReplace(r, "kill-server-fails-integration", EvaluateKillServerFailsIntegration)
+	registerOrReplace(r, "every-requirement-meets-min-depth", EvaluateEveryRequirementMeetsMinDepth)
 }
 
 // registerOrReplace tries Register; on ErrConceptAlreadyRegistered

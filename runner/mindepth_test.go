@@ -1,0 +1,141 @@
+package runner
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestEveryRequirementMeetsMinDepth_NoStoreUnevaluated(t *testing.T) {
+	res, err := EvaluateEveryRequirementMeetsMinDepth(context.Background(), Clause{
+		Args: map[string]any{"arrow-id": "A1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Unevaluated {
+		t.Errorf("expected Unevaluated when no store attached; got %+v", res)
+	}
+	if res.Reason == "" {
+		t.Error("Unevaluated must carry a Reason")
+	}
+}
+
+func TestEveryRequirementMeetsMinDepth_NoRequirementsPasses(t *testing.T) {
+	store := NewClassificationsStore()
+	ctx := WithClassificationsStore(context.Background(), store)
+	res, _ := EvaluateEveryRequirementMeetsMinDepth(ctx, Clause{
+		Args: map[string]any{"arrow-id": "A1"},
+	})
+	if !res.Pass {
+		t.Errorf("no requirements should trivially pass; got %+v", res)
+	}
+}
+
+func TestEveryRequirementMeetsMinDepth_AllMeetMin(t *testing.T) {
+	store := NewClassificationsStore()
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankShallow})
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R2", MinDepth: DepthRankMocked})
+	_ = store.RecordClassification("A1", Classification{RequirementID: "R1", Observed: DepthRankRealistic})
+	_ = store.RecordClassification("A1", Classification{RequirementID: "R2", Observed: DepthRankMocked})
+	ctx := WithClassificationsStore(context.Background(), store)
+	res, _ := EvaluateEveryRequirementMeetsMinDepth(ctx, Clause{
+		Args: map[string]any{"arrow-id": "A1"},
+	})
+	if !res.Pass {
+		t.Errorf("all-meet should pass; got %+v", res.Details)
+	}
+}
+
+func TestEveryRequirementMeetsMinDepth_BelowMinFails(t *testing.T) {
+	store := NewClassificationsStore()
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankRealistic})
+	_ = store.RecordClassification("A1", Classification{
+		RequirementID: "R1", Observed: DepthRankMocked, Evidence: "uses pg mock",
+	})
+	ctx := WithClassificationsStore(context.Background(), store)
+	res, _ := EvaluateEveryRequirementMeetsMinDepth(ctx, Clause{
+		Args: map[string]any{"arrow-id": "A1"},
+	})
+	if res.Pass {
+		t.Errorf("below-min should fail; got %+v", res.Details)
+	}
+	below, _ := res.Details["below-min"].([]map[string]any)
+	if len(below) != 1 {
+		t.Errorf("below-min len = %d; want 1", len(below))
+	}
+}
+
+func TestEveryRequirementMeetsMinDepth_UnclassifiedIsUnevaluated(t *testing.T) {
+	store := NewClassificationsStore()
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankShallow})
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R2", MinDepth: DepthRankShallow})
+	// Classify only R1.
+	_ = store.RecordClassification("A1", Classification{RequirementID: "R1", Observed: DepthRankShallow})
+	ctx := WithClassificationsStore(context.Background(), store)
+	res, _ := EvaluateEveryRequirementMeetsMinDepth(ctx, Clause{
+		Args: map[string]any{"arrow-id": "A1"},
+	})
+	if !res.Unevaluated {
+		t.Errorf("partial classification should produce Unevaluated; got %+v", res)
+	}
+	unc, _ := res.Details["unclassified"].([]string)
+	if len(unc) != 1 || unc[0] != "R2" {
+		t.Errorf("unclassified = %v; want [R2]", unc)
+	}
+}
+
+func TestEveryRequirementMeetsMinDepth_MissingArrowID(t *testing.T) {
+	_, err := EvaluateEveryRequirementMeetsMinDepth(context.Background(), Clause{
+		Args: map[string]any{},
+	})
+	if err == nil {
+		t.Error("missing arrow-id should error")
+	}
+}
+
+func TestClassificationsStore_RecordRequiresDeclare(t *testing.T) {
+	store := NewClassificationsStore()
+	err := store.RecordClassification("A1", Classification{
+		RequirementID: "R1", Observed: DepthRankShallow,
+	})
+	if !errors.Is(err, ErrRequirementUnknown) {
+		t.Errorf("undeclared req should error; got %v", err)
+	}
+}
+
+func TestClassificationsStore_DuplicateRequirementRefused(t *testing.T) {
+	store := NewClassificationsStore()
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankShallow})
+	err := store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankShallow})
+	if !errors.Is(err, ErrRequirementDuplicateID) {
+		t.Errorf("dup requirement should error; got %v", err)
+	}
+}
+
+func TestClassificationsStore_RecordOverwrites(t *testing.T) {
+	// Re-classification on remediation re-run overwrites the prior
+	// observation.
+	store := NewClassificationsStore()
+	_ = store.DeclareRequirement("A1", Requirement{ID: "R1", MinDepth: DepthRankShallow})
+	_ = store.RecordClassification("A1", Classification{RequirementID: "R1", Observed: DepthRankShallow})
+	if err := store.RecordClassification("A1", Classification{
+		RequirementID: "R1", Observed: DepthRankRealistic,
+	}); err != nil {
+		t.Errorf("re-record should overwrite, not error: %v", err)
+	}
+	cl := store.ClassificationsForArrow("A1")
+	if len(cl) != 1 || cl[0].Observed != DepthRankRealistic {
+		t.Errorf("re-record didn't overwrite: %+v", cl)
+	}
+}
+
+func TestWithClassificationsStore_NestedPanics(t *testing.T) {
+	ctx := WithClassificationsStore(context.Background(), NewClassificationsStore())
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("nested WithClassificationsStore should panic")
+		}
+	}()
+	_ = WithClassificationsStore(ctx, NewClassificationsStore())
+}
