@@ -392,10 +392,20 @@ func isSymlinkOpenError(err error) bool {
 	return errno == syscall.ELOOP || errno == syscall.EMLINK
 }
 
-// RegisterBuiltins adds the universal-base evaluators implemented
-// in the runner package.
+// RegisterBuiltins adds the in-process evaluators the runner
+// ships with. These are language-agnostic concepts that don't
+// require a subprocess binding (no-todo-marker, trace-link-present,
+// arrow-artifact-present, cardinality-check). Language-bound
+// concepts (compiles, lint-clean, tests-pass, mutation-score,
+// kill-server-fails-integration) get registered separately via
+// BindingEvaluator at init time from grid.LanguageBindings.
 func RegisterBuiltins(r *Registry) {
 	registerOrReplace(r, "no-todo-marker", EvaluateNoTodoMarker)
+	registerOrReplace(r, "trace-link-present", EvaluateTraceLinkPresent)
+	registerOrReplace(r, "arrow-artifact-present", EvaluateArrowArtifactPresent)
+	registerOrReplace(r, "cardinality-check", EvaluateCardinalityCheck)
+	registerOrReplace(r, "no-open-finding", EvaluateNoOpenFinding)
+	registerOrReplace(r, "kill-server-fails-integration", EvaluateKillServerFailsIntegration)
 }
 
 // registerOrReplace tries Register; on ErrConceptAlreadyRegistered
