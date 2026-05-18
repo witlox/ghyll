@@ -3,6 +3,7 @@ package catalogue
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -200,7 +201,38 @@ default-cost: 0
 	}
 }
 
-func TestLoad_DuplicateConceptName(t *testing.T) {
+// Note: the dup-detection branch in Load (catalogue.go) is defense-in-depth.
+// The preceding filename-must-match-concept-name check makes it impossible
+// to reach the dup-detection branch via the normal Load path (you cannot
+// have two files with the same name in one directory). The test that
+// previously skipped this case has been removed; the branch remains in
+// the code as a safety check should the filename rule ever change.
+// validation-pass-1 finding #26.
+
+func TestLoad_MissingEvaluator(t *testing.T) {
+	// validation-pass-1 finding #6: missing evaluator: section gets a
+	// dedicated diagnostic, not the "unsupported contract" message.
+	dir := t.TempDir()
+	content := []byte(`concept: x
+description: test
+language-bound: false
+arguments: {}
+default-cost: 0
+`)
+	if err := os.WriteFile(filepath.Join(dir, "x.yaml"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should fail when evaluator section is absent")
+	}
+	if !strings.Contains(err.Error(), "missing the evaluator: section") {
+		t.Errorf("error should mention missing evaluator; got: %v", err)
+	}
+}
+
+func TestLoad_UnknownFieldRejected(t *testing.T) {
+	// validation-pass-1 finding #7: strict YAML mode rejects unknown fields.
 	dir := t.TempDir()
 	content := []byte(`concept: x
 description: test
@@ -211,19 +243,89 @@ evaluator:
   produces:
     pass: boolean
 default-cost: 0
+unknown-field-here: surprise
 `)
-	// Two files declaring concept "x" with matching filenames is
-	// impossible (filesystem prevents duplicate names); use one valid
-	// pair and one file whose filename does match.
 	if err := os.WriteFile(filepath.Join(dir, "x.yaml"), content, 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Second file: filename matches but concept name collides — actually
-	// we already covered the filename mismatch case. To trigger the
-	// duplicate-name path, we'd need a YAML rewriter; not feasible with
-	// distinct filenames given our same-name check. Document via the
-	// filename-mismatch test instead and skip the explicit duplicate test.
-	t.Skip("duplicate concept name with distinct filenames is impossible by design (filename must match concept name)")
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should fail when schema has unknown fields (strict mode)")
+	}
+}
+
+func TestLoad_TrailingDocumentRejected(t *testing.T) {
+	// One concept file = one YAML document. Trailing docs are suspicious
+	// (e.g., a smuggled second schema). validation-pass-1 finding #7 family.
+	dir := t.TempDir()
+	content := []byte(`concept: x
+description: test
+language-bound: false
+arguments: {}
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+default-cost: 0
+---
+concept: y
+description: smuggled
+language-bound: false
+arguments: {}
+evaluator:
+  contract: machine
+  produces:
+    pass: boolean
+default-cost: 0
+`)
+	if err := os.WriteFile(filepath.Join(dir, "x.yaml"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should fail when YAML file has multiple documents")
+	}
+}
+
+func TestLoad_OversizedFile(t *testing.T) {
+	// validation-pass-1 finding #8: memory-bomb guard.
+	dir := t.TempDir()
+	// Build a file just over MaxSchemaFileSize.
+	bulk := strings.Repeat("a", MaxSchemaFileSize+1)
+	content := []byte(`concept: x
+description: ` + bulk + `
+`)
+	if err := os.WriteFile(filepath.Join(dir, "x.yaml"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should fail when file exceeds MaxSchemaFileSize")
+	}
+	if !strings.Contains(err.Error(), "exceeds max size") {
+		t.Errorf("error should mention size limit; got: %v", err)
+	}
+}
+
+func TestLoad_SymlinkRejected(t *testing.T) {
+	// validation-pass-1 finding #8: symlinks in the catalogue dir are
+	// refused — could redirect to /etc/passwd-like targets.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("not yaml"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "x.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks not supported on this filesystem: %v", err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should fail when catalogue dir contains a symlink")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention symlink; got: %v", err)
+	}
 }
 
 func TestLoad_NonMachineContract(t *testing.T) {

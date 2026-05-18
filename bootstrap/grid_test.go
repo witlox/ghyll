@@ -16,8 +16,8 @@ func TestGrid_RoundTrip(t *testing.T) {
 		{ID: "contextB"},
 	}
 	g.LanguageBindings = map[string]string{
-		"lint-clean.go":    "staticcheck && go vet",
-		"compiles.go":      "go build ./...",
+		"lint-clean.go":     "staticcheck && go vet",
+		"compiles.go":       "go build ./...",
 		"mutation-score.go": "go-mutesting",
 	}
 
@@ -97,13 +97,13 @@ func TestGrid_ReadCurrent_Malformed(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"empty":        "",
-		"whitespace":   "   \n  \n",
-		"no v prefix":  "1\n",
-		"bad number":   "vfoo\n",
-		"negative":     "v-1\n",
-		"zero":         "v0\n",
-		"multi-line":   "v1\nv2\n",
+		"empty":       "",
+		"whitespace":  "   \n  \n",
+		"no v prefix": "1\n",
+		"bad number":  "vfoo\n",
+		"negative":    "v-1\n",
+		"zero":        "v0\n",
+		"multi-line":  "v1\nv2\n",
 	}
 	for label, content := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -214,6 +214,62 @@ func TestGrid_Write_MultipleVersions(t *testing.T) {
 	}
 	if got.GridVersion != 1 {
 		t.Errorf("got.GridVersion = %d; want 1", got.GridVersion)
+	}
+}
+
+func TestGrid_Write_RefusesOverwrite(t *testing.T) {
+	// validation-pass-1 finding #5: grid files are immutable per
+	// ADR-010. Writing the same version twice must fail with
+	// ErrGridVersionExists, not silently overwrite.
+	dir := t.TempDir()
+	g := NewGrid("alice")
+	if err := g.Write(dir); err != nil {
+		t.Fatalf("first Write failed: %v", err)
+	}
+	// Second Write at the same version must refuse.
+	g2 := NewGrid("alice")
+	err := g2.Write(dir)
+	if !errors.Is(err, ErrGridVersionExists) {
+		t.Errorf("second Write at same version: got %v; want ErrGridVersionExists", err)
+	}
+}
+
+func TestGrid_Read_DetectsInconsistentState(t *testing.T) {
+	// validation-pass-1 finding #4: a grid.v(N+1).yaml present while
+	// grid.current still points to vN suggests a crash mid-Write.
+	// Read must surface this rather than silently load the stale vN.
+	dir := t.TempDir()
+	// Write v1 normally; grid.current = v1.
+	g := NewGrid("alice")
+	if err := g.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash mid-Write: manually create a grid.v2.yaml that
+	// the pointer doesn't know about.
+	v2Content := []byte("grid-version: 2\ncreated-at: 2026-01-01T00:00:00Z\ncreated-by-op-id: alice\nbounded-contexts: []\ndepth-ladder: []\nseverity-threshold: medium\ninsufficient-basis-rounds-max: 3\nremediation-rounds-max: 5\n")
+	if err := os.WriteFile(filepath.Join(dir, ".ghyll", "grid.v2.yaml"), v2Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Read(dir)
+	if !errors.Is(err, ErrGridInconsistent) {
+		t.Errorf("Read with v2.yaml present but pointer at v1: got %v; want ErrGridInconsistent", err)
+	}
+}
+
+func TestGrid_NextVersion(t *testing.T) {
+	// validation-pass-1 finding #24: a helper for amendment callers
+	// to avoid hand-rolled +1 errors.
+	g := NewGrid("alice")
+	if got := g.NextVersion(); got != 2 {
+		t.Errorf("NextVersion of v1 = %d; want 2", got)
+	}
+	g.GridVersion = 5
+	if got := g.NextVersion(); got != 6 {
+		t.Errorf("NextVersion of v5 = %d; want 6", got)
+	}
+	var nilGrid *Grid
+	if got := nilGrid.NextVersion(); got != 1 {
+		t.Errorf("NextVersion of nil = %d; want 1 (fresh project start)", got)
 	}
 }
 

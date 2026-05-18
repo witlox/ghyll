@@ -135,6 +135,8 @@ func TestValidate_MutationScoreThresholdWrongType(t *testing.T) {
 }
 
 func TestValidate_DefaultApplied(t *testing.T) {
+	// validation-pass-1 finding #15: assert normalized output content,
+	// not just key presence.
 	cat := loadShipped(t)
 	// no-todo-marker has optional `markers` with a declared default.
 	args := map[string]any{
@@ -144,8 +146,35 @@ func TestValidate_DefaultApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate(no-todo-marker, minimal args) = err %v; want nil", err)
 	}
-	if _, ok := out["markers"]; !ok {
-		t.Error("default for `markers` should be applied")
+	got, ok := out["markers"]
+	if !ok {
+		t.Fatal("default for `markers` should be applied")
+	}
+	// The default in the schema is [TODO, TBD, ???, FIXME, XXX].
+	// Verify content, not just presence.
+	wantMarkers := map[string]struct{}{
+		"TODO":  {},
+		"TBD":   {},
+		"???":   {},
+		"FIXME": {},
+		"XXX":   {},
+	}
+	list, ok := got.([]any)
+	if !ok {
+		t.Fatalf("default markers should be a list; got %T", got)
+	}
+	if len(list) != len(wantMarkers) {
+		t.Errorf("default markers length = %d; want %d", len(list), len(wantMarkers))
+	}
+	for _, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			t.Errorf("marker entry is not string: %T", v)
+			continue
+		}
+		if _, expected := wantMarkers[s]; !expected {
+			t.Errorf("unexpected default marker %q", s)
+		}
 	}
 }
 
@@ -188,25 +217,142 @@ func TestValidate_KillServerEnumArgument(t *testing.T) {
 }
 
 func TestValidate_CardinalityCheckIntOrRange(t *testing.T) {
+	// validation-pass-1 finding #15: assert normalized output content;
+	// finding #14: range with min > max is rejected.
 	cat := loadShipped(t)
-	// int-or-range type accepts both shapes.
 	base := map[string]any{
 		"query":        "$.contexts[*]",
 		"query-target": "project-state",
 	}
 
 	base["expected"] = 1
-	if _, err := cat.Validate("cardinality-check", base); err != nil {
+	out, err := cat.Validate("cardinality-check", base)
+	if err != nil {
 		t.Errorf("expected=1 (int) should validate; got %v", err)
+	}
+	if got := out["expected"]; got != 1 {
+		t.Errorf("normalized expected = %v; want 1", got)
 	}
 
 	base["expected"] = []any{0, 3}
-	if _, err := cat.Validate("cardinality-check", base); err != nil {
+	out, err = cat.Validate("cardinality-check", base)
+	if err != nil {
 		t.Errorf("expected=[0,3] (range) should validate; got %v", err)
 	}
+	if list, ok := out["expected"].([]any); !ok || len(list) != 2 || list[0] != 0 || list[1] != 3 {
+		t.Errorf("normalized expected = %v; want [0, 3]", out["expected"])
+	}
 
-	base["expected"] = "high" // neither int nor range
+	base["expected"] = "high"
 	if _, err := cat.Validate("cardinality-check", base); err == nil {
 		t.Error("expected=string should fail")
+	}
+
+	base["expected"] = []any{5, 2} // inverted range
+	_, err = cat.Validate("cardinality-check", base)
+	if err == nil {
+		t.Error("expected=[5,2] (inverted) should fail")
+	}
+	if !strings.Contains(err.Error(), "inverted") {
+		t.Errorf("error should mention inverted bounds; got: %v", err)
+	}
+}
+
+func TestValidate_AllNamedTypesRejectWrongInput(t *testing.T) {
+	// validation-pass-1 finding #16: table-driven type-mismatch across
+	// the full catalogue type vocabulary. Each named type should reject
+	// at least one obviously-wrong input.
+	cat := loadShipped(t)
+
+	cases := []struct {
+		concept string
+		args    map[string]any
+		want    string // substring of error
+	}{
+		{
+			// path-glob requires string
+			concept: "compiles",
+			args:    map[string]any{"scope": 123, "language": "go"},
+			want:    "requires string",
+		},
+		{
+			// language-id requires string
+			concept: "compiles",
+			args:    map[string]any{"scope": "src/**", "language": 42},
+			want:    "requires string",
+		},
+		{
+			// severity must be in canonical enum
+			concept: "lint-clean",
+			args:    map[string]any{"scope": "x", "language": "go", "severity-threshold": "blegh"},
+			want:    "not in canonical enum",
+		},
+		{
+			// number requires numeric
+			concept: "mutation-score",
+			args: map[string]any{
+				"scope":      "src",
+				"test-scope": "tests",
+				"threshold":  "0.7", // string, not number
+				"language":   "go",
+			},
+			want: "requires numeric",
+		},
+		{
+			// list requires array
+			concept: "kill-server-fails-integration",
+			args: map[string]any{
+				"test-suite":    "tests/**",
+				"critical-deps": "postgres", // should be a list
+			},
+			want: "requires array",
+		},
+		{
+			// enum value not in declared values
+			concept: "kill-server-fails-integration",
+			args: map[string]any{
+				"test-suite":    "tests/**",
+				"critical-deps": []any{"postgres"},
+				"kill-strategy": "nuke-it-from-orbit", // not in enum
+			},
+			want: "not in enum",
+		},
+	}
+
+	for _, tc := range cases {
+		_, err := cat.Validate(tc.concept, tc.args)
+		if err == nil {
+			t.Errorf("%s: expected error containing %q; got nil", tc.concept, tc.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error = %v; want substring %q", tc.concept, err, tc.want)
+		}
+	}
+}
+
+func TestValidate_UnknownTypeNameRejected(t *testing.T) {
+	// validation-pass-1 finding #17: a schema declaring a type not in
+	// the catalogue's closed vocabulary should be rejected, not silently
+	// permitted.
+	//
+	// The Concept type's Arguments map is unexported but we construct
+	// a Concept value directly to exercise the unknown-type branch.
+	cat := &Catalogue{concepts: map[string]Concept{
+		"test-concept": {
+			Name: "test-concept",
+			Arguments: map[string]ArgumentSchema{
+				"x": {Type: "totally-made-up-type", Required: true},
+			},
+			Evaluator:   EvaluatorContract{Contract: "machine"},
+			DefaultCost: 0,
+		},
+	}}
+	_, err := cat.Validate("test-concept", map[string]any{"x": "anything"})
+	if err == nil {
+		t.Fatal("Validate should reject a schema with an unknown type name")
+	}
+	if !strings.Contains(err.Error(), "unknown type") {
+		t.Errorf("error should mention unknown type; got: %v", err)
 	}
 }

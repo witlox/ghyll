@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"errors"
+	"math"
+	"strings"
 	"testing"
 
 	"github.com/witlox/ghyll/catalogue"
@@ -171,8 +173,119 @@ func TestCheckModification_StringEqualityForUnsupportedType(t *testing.T) {
 }
 
 func TestCheckModification_NilCatalogue(t *testing.T) {
+	// validation-pass-1 finding #29: assert error message content.
 	err := CheckModification("anything", nil, nil, nil)
 	if err == nil {
-		t.Error("nil catalogue should fail")
+		t.Fatal("nil catalogue should fail")
+	}
+	if !strings.Contains(err.Error(), "catalogue is nil") {
+		t.Errorf("error should mention nil catalogue; got: %v", err)
+	}
+}
+
+func TestCheckModification_SeverityRaiseToUnevaluatedIsWeakening(t *testing.T) {
+	// validation-pass-1 finding #1: severity unevaluated has rank 0,
+	// so medium → unevaluated is weakening (lowering rank).
+	cat := loadCatalogue(t)
+	original := map[string]any{
+		"scope":              "src/**",
+		"language":           "go",
+		"severity-threshold": "medium",
+	}
+	proposed := map[string]any{
+		"severity-threshold": "unevaluated",
+	}
+	err := CheckModification("lint-clean", original, proposed, cat)
+	if !errors.Is(err, ErrModifyWeakening) {
+		t.Errorf("severity medium→unevaluated should weaken; got %v", err)
+	}
+}
+
+func TestCheckModification_SeverityRaiseFromUnevaluatedAllowed(t *testing.T) {
+	// Conversely, unevaluated → medium raises rank 0 → 3, strictly stricter.
+	cat := loadCatalogue(t)
+	original := map[string]any{
+		"scope":              "src/**",
+		"language":           "go",
+		"severity-threshold": "unevaluated",
+	}
+	proposed := map[string]any{
+		"severity-threshold": "medium",
+	}
+	if err := CheckModification("lint-clean", original, proposed, cat); err != nil {
+		t.Errorf("severity unevaluated→medium should be allowed; got %v", err)
+	}
+}
+
+func TestCheckModification_NaNProposedRejected(t *testing.T) {
+	// validation-pass-1 finding #2: NaN bypasses raise-only silently
+	// (NaN compares false to everything). Must be rejected.
+	cat := loadCatalogue(t)
+	original := map[string]any{"threshold": 0.7}
+	proposed := map[string]any{"threshold": math.NaN()}
+	err := CheckModification("mutation-score", original, proposed, cat)
+	if !errors.Is(err, ErrModifyNonFinite) {
+		t.Errorf("NaN proposed should return ErrModifyNonFinite; got %v", err)
+	}
+}
+
+func TestCheckModification_PosInfProposedRejected(t *testing.T) {
+	cat := loadCatalogue(t)
+	original := map[string]any{"threshold": 0.7}
+	proposed := map[string]any{"threshold": math.Inf(+1)}
+	err := CheckModification("mutation-score", original, proposed, cat)
+	if !errors.Is(err, ErrModifyNonFinite) {
+		t.Errorf("+Inf proposed should return ErrModifyNonFinite; got %v", err)
+	}
+}
+
+func TestCheckModification_NegInfProposedRejected(t *testing.T) {
+	cat := loadCatalogue(t)
+	original := map[string]any{"threshold": 0.7}
+	proposed := map[string]any{"threshold": math.Inf(-1)}
+	err := CheckModification("mutation-score", original, proposed, cat)
+	if !errors.Is(err, ErrModifyNonFinite) {
+		t.Errorf("-Inf proposed should return ErrModifyNonFinite; got %v", err)
+	}
+}
+
+func TestCheckModification_NaNOriginalRejected(t *testing.T) {
+	cat := loadCatalogue(t)
+	original := map[string]any{"threshold": math.NaN()}
+	proposed := map[string]any{"threshold": 0.5}
+	err := CheckModification("mutation-score", original, proposed, cat)
+	if !errors.Is(err, ErrModifyNonFinite) {
+		t.Errorf("NaN original should return ErrModifyNonFinite; got %v", err)
+	}
+}
+
+func TestCheckModification_IdenticalListArgsAllowed(t *testing.T) {
+	// validation-pass-1 finding #18: identical list args should
+	// round-trip without falling into ErrModifyUnsupportedType.
+	cat := loadCatalogue(t)
+	original := map[string]any{
+		"scope":   "src/**",
+		"markers": []any{"TODO", "FIXME"},
+	}
+	proposed := map[string]any{
+		"markers": []any{"TODO", "FIXME"},
+	}
+	if err := CheckModification("no-todo-marker", original, proposed, cat); err != nil {
+		t.Errorf("identical list args should be allowed; got %v", err)
+	}
+}
+
+func TestCheckModification_DifferentListArgsRefused(t *testing.T) {
+	cat := loadCatalogue(t)
+	original := map[string]any{
+		"scope":   "src/**",
+		"markers": []any{"TODO", "FIXME"},
+	}
+	proposed := map[string]any{
+		"markers": []any{"TODO"}, // removed FIXME
+	}
+	err := CheckModification("no-todo-marker", original, proposed, cat)
+	if !errors.Is(err, ErrModifyUnsupportedType) {
+		t.Errorf("list change should return ErrModifyUnsupportedType; got %v", err)
 	}
 }

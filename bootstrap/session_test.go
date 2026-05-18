@@ -101,7 +101,9 @@ func TestStartSession_ControlCharacters(t *testing.T) {
 
 func TestStartSession_UnicodeRTLOverride(t *testing.T) {
 	// U+202E RIGHT-TO-LEFT OVERRIDE smuggled into an apparent email.
-	c := "alice‮evil"
+	// Escape sequence keeps the source file itself free of literal
+	// bidi-control characters (CVE-2021-42574, staticcheck ST1018).
+	c := "alice\u202eevil"
 	_, err := StartSession(c)
 	if !errors.Is(err, ErrOpIDInvalidCharacters) {
 		t.Errorf("StartSession with RTL override: error = %v; want ErrOpIDInvalidCharacters", err)
@@ -153,5 +155,110 @@ func TestValidateOpID_DoesNotCreateSession(t *testing.T) {
 	}
 	if err := ValidateOpID("alice"); err != nil {
 		t.Errorf("ValidateOpID(\"alice\") = %v; want nil", err)
+	}
+}
+
+func TestStartSession_LengthCheckIsOnTrimmedNotRaw(t *testing.T) {
+	// validation-pass-1 finding #10: length should be measured on the
+	// trimmed+normalized form, not the raw input. Leading/trailing
+	// whitespace must not consume the byte budget.
+	// Build "  " + (MaxOpIDLength) characters + "  " — total bytes
+	// > MaxOpIDLength, but the trimmed form fits.
+	raw := "  " + strings.Repeat("a", MaxOpIDLength) + "  "
+	s, err := StartSession(raw)
+	if err != nil {
+		t.Errorf("StartSession with trimmable-length string should succeed; got %v", err)
+	}
+	if s != nil && s.OpID() != strings.Repeat("a", MaxOpIDLength) {
+		t.Errorf("OpID should be the trimmed form; got %q", s.OpID())
+	}
+}
+
+func TestStartSession_NFCNormalization(t *testing.T) {
+	// validation-pass-1 finding #12: NFC-normalize so the same logical
+	// identity in different encoding forms yields the same op-id.
+	// "é" can be U+00E9 (composed) OR U+0065 U+0301 (decomposed).
+	composed := "alicé"    // alicé (one char é)
+	decomposed := "alicé" // alice + combining acute
+	s1, err := StartSession(composed)
+	if err != nil {
+		t.Fatalf("composed form should validate: %v", err)
+	}
+	s2, err := StartSession(decomposed)
+	if err != nil {
+		t.Fatalf("decomposed form should validate: %v", err)
+	}
+	if s1.OpID() != s2.OpID() {
+		t.Errorf("NFC should canonicalize: composed=%q decomposed=%q (normalized forms should match)",
+			s1.OpID(), s2.OpID())
+	}
+}
+
+func TestStartSession_BlocksTrojanSourceBidi(t *testing.T) {
+	// validation-pass-1 finding #11: block all CVE-2021-42574 bidi
+	// controls, not just RTL override. Use numeric runes — literal
+	// invisible characters in source files are confusing to readers.
+	cases := map[string]rune{
+		"LRM": 0x200E,
+		"RLM": 0x200F,
+		"LRE": 0x202A,
+		"RLE": 0x202B,
+		"PDF": 0x202C,
+		"LRO": 0x202D,
+		"LRI": 0x2066,
+		"RLI": 0x2067,
+		"FSI": 0x2068,
+		"PDI": 0x2069,
+	}
+	for name, r := range cases {
+		opID := "alice" + string(r) + "bob"
+		_, err := StartSession(opID)
+		if !errors.Is(err, ErrOpIDInvalidCharacters) {
+			t.Errorf("%s (U+%04X) should be rejected; got %v", name, r, err)
+		}
+	}
+}
+
+func TestStartSession_BlocksZeroWidthCharacters(t *testing.T) {
+	// Invisible / zero-width chars per validation-pass-1 finding #11.
+	// Using numeric runes — Go source forbids literal BOM and some
+	// linters flag the others, so name them by code point.
+	cases := map[string]rune{
+		"ZWSP": 0x200B,
+		"ZWNJ": 0x200C,
+		"ZWJ":  0x200D,
+		"WJ":   0x2060,
+		"BOM":  0xFEFF,
+	}
+	for name, r := range cases {
+		opID := "alice" + string(r) + "bob"
+		_, err := StartSession(opID)
+		if !errors.Is(err, ErrOpIDInvalidCharacters) {
+			t.Errorf("%s (U+%04X) should be rejected; got %v", name, r, err)
+		}
+	}
+}
+
+func TestStartSession_BlocksC1Controls(t *testing.T) {
+	// C1 control range U+0080..U+009F also blocked (in addition to C0 + DEL).
+	cases := []rune{0x7F, 0x80, 0x9F}
+	for _, r := range cases {
+		opID := "alice" + string(r) + "bob"
+		_, err := StartSession(opID)
+		if !errors.Is(err, ErrOpIDInvalidCharacters) {
+			t.Errorf("control U+%04X should be rejected; got %v", r, err)
+		}
+	}
+}
+
+func TestValidateAndNormalizeOpID_ReturnsNormalizedForm(t *testing.T) {
+	// Public helper for callers that want the normalized form without
+	// creating a session.
+	normalized, err := ValidateAndNormalizeOpID("  alice  ")
+	if err != nil {
+		t.Fatalf("ValidateAndNormalizeOpID returned err: %v", err)
+	}
+	if normalized != "alice" {
+		t.Errorf("normalized = %q; want %q", normalized, "alice")
 	}
 }

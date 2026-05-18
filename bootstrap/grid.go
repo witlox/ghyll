@@ -19,16 +19,16 @@ import (
 // grid.v<N+1>.yaml; old files persist on disk for audit. The
 // active version is named by the grid.current pointer file.
 type Grid struct {
-	GridVersion    int    `yaml:"grid-version"`
-	CreatedAt      string `yaml:"created-at"`
-	CreatedByOpID  string `yaml:"created-by-op-id"`
+	GridVersion   int    `yaml:"grid-version"`
+	CreatedAt     string `yaml:"created-at"`
+	CreatedByOpID string `yaml:"created-by-op-id"`
 
-	BoundedContexts             []BoundedContext  `yaml:"bounded-contexts"`
-	LanguageBindings            map[string]string `yaml:"language-bindings,omitempty"`
-	DepthLadder                 []DepthLadderTier `yaml:"depth-ladder"`
-	SeverityThreshold           string            `yaml:"severity-threshold"`
-	InsufficientBasisRoundsMax  int               `yaml:"insufficient-basis-rounds-max"`
-	RemediationRoundsMax        int               `yaml:"remediation-rounds-max"`
+	BoundedContexts            []BoundedContext  `yaml:"bounded-contexts"`
+	LanguageBindings           map[string]string `yaml:"language-bindings,omitempty"`
+	DepthLadder                []DepthLadderTier `yaml:"depth-ladder"`
+	SeverityThreshold          string            `yaml:"severity-threshold"`
+	InsufficientBasisRoundsMax int               `yaml:"insufficient-basis-rounds-max"`
+	RemediationRoundsMax       int               `yaml:"remediation-rounds-max"`
 
 	// Arrows and Residue use untyped shapes for v1; concrete types
 	// will replace these as the runner / amendment components land.
@@ -62,9 +62,20 @@ const (
 
 // Sentinel errors callers can check via errors.Is.
 var (
-	ErrGridCurrentAbsent           = errors.New("grid-current-absent")
-	ErrGridCurrentMalformed        = errors.New("grid-current-malformed")
-	ErrGridCurrentPointsToMissing  = errors.New("grid-current-points-to-missing-version")
+	ErrGridCurrentAbsent          = errors.New("grid-current-absent")
+	ErrGridCurrentMalformed       = errors.New("grid-current-malformed")
+	ErrGridCurrentPointsToMissing = errors.New("grid-current-points-to-missing-version")
+
+	// ErrGridVersionExists — destination grid.v<N>.yaml already on disk.
+	// Per ADR-010, grid files are immutable after write; the writer
+	// refuses to overwrite. validation-pass-1 finding #5.
+	ErrGridVersionExists = errors.New("grid-version-already-exists")
+
+	// ErrGridInconsistent — grid.current and on-disk grid files
+	// disagree (e.g., a grid.v(N+1).yaml exists while grid.current
+	// still names vN). Suggests a crash between the grid-file rename
+	// and the pointer update. validation-pass-1 finding #4 / FM-12.
+	ErrGridInconsistent = errors.New("grid-inconsistent")
 )
 
 // DefaultDepthLadder returns the harness-shipped default depth ladder
@@ -127,28 +138,35 @@ func (g *Grid) Write(dir string) error {
 		return fmt.Errorf("Write: mkdir %q: %w", ghyllDir, err)
 	}
 
-	gridName := fmt.Sprintf("%sv%d%s", "grid.", g.GridVersion, GridFileSuffix)
+	gridName := fmt.Sprintf("%s%d%s", GridFilePrefix, g.GridVersion, GridFileSuffix)
 	gridPath := filepath.Join(ghyllDir, gridName)
 	gridTmp := gridPath + ".tmp"
+
+	// Refuse if destination already exists: grid files are immutable
+	// per ADR-010 (validation-pass-1 finding #5).
+	if _, err := os.Lstat(gridPath); err == nil {
+		return fmt.Errorf("%w: %s", ErrGridVersionExists, gridPath)
+	}
 
 	data, err := yaml.Marshal(g)
 	if err != nil {
 		return fmt.Errorf("Write: marshal grid: %w", err)
 	}
 
-	// 1. Write content to temp file.
-	f, err := os.OpenFile(gridTmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// 1. Write content to temp file with O_EXCL: fail if a stale tmp
+	//    already exists (validation-pass-1 finding #5 / #22).
+	f, err := os.OpenFile(gridTmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return fmt.Errorf("Write: open %q: %w", gridTmp, err)
+		return fmt.Errorf("Write: open %q (O_EXCL): %w", gridTmp, err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(gridTmp)
 		return fmt.Errorf("Write: write %q: %w", gridTmp, err)
 	}
 	// 2. fsync the temp file (content durable).
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(gridTmp)
 		return fmt.Errorf("Write: fsync %q: %w", gridTmp, err)
 	}
@@ -191,12 +209,12 @@ func writePointer(ghyllDir string, version int) error {
 		return fmt.Errorf("Write: open pointer tmp %q: %w", currentTmp, err)
 	}
 	if _, err := f.Write([]byte(content)); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(currentTmp)
 		return fmt.Errorf("Write: write pointer tmp: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(currentTmp)
 		return fmt.Errorf("Write: fsync pointer tmp: %w", err)
 	}
@@ -217,13 +235,33 @@ func writePointer(ghyllDir string, version int) error {
 // fsyncDir opens the directory and calls Sync on it. On some platforms
 // (Windows) this is a no-op; on POSIX it ensures the directory's
 // directory-entry changes are durable.
+//
+// Close errors are surfaced rather than dropped (validation-pass-1
+// finding #13): a Close error on some filesystems (NFS particularly)
+// indicates the data fsync masked is not actually durable.
 func fsyncDir(path string) error {
 	d, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+// NextVersion returns the version integer for a grid that would
+// succeed this one. Helper for callers (amendment component, future
+// re-init flows) that bump versions on writes, so the increment is
+// not hand-rolled at each call site (validation-pass-1 finding #24).
+// A nil receiver returns 1 (fresh-project start).
+func (g *Grid) NextVersion() int {
+	if g == nil {
+		return 1
+	}
+	return g.GridVersion + 1
 }
 
 // ReadCurrent reads .ghyll/grid.current and returns the version
@@ -266,19 +304,58 @@ func ReadCurrent(dir string) (int, error) {
 // Returns ErrGridCurrentMalformed if grid.current is corrupted.
 // Returns ErrGridCurrentPointsToMissing if grid.current names a
 // version whose grid.v<N>.yaml file does not exist.
+// Returns ErrGridInconsistent if the on-disk grid files reveal a
+// half-completed Write (e.g., grid.v(N+1).yaml exists but
+// grid.current still says vN). validation-pass-1 finding #4.
 func Read(dir string) (*Grid, error) {
 	version, err := ReadCurrent(dir)
 	if err != nil {
 		return nil, err
 	}
+	if err := detectInconsistency(dir, version); err != nil {
+		return nil, err
+	}
 	return ReadVersion(dir, version)
+}
+
+// detectInconsistency scans .ghyll/ for grid.v<N>.yaml files whose
+// version exceeds the version named in grid.current. Such files
+// suggest a crash between the grid-file rename and the pointer update.
+// Returns ErrGridInconsistent if any grid file with version > current
+// is found; nil on consistent state.
+func detectInconsistency(dir string, current int) error {
+	ghyllDir := filepath.Join(dir, ".ghyll")
+	entries, err := os.ReadDir(ghyllDir)
+	if err != nil {
+		// Let the underlying reader produce a more specific error.
+		return nil
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, GridFilePrefix) || !strings.HasSuffix(name, GridFileSuffix) {
+			continue
+		}
+		verStr := strings.TrimSuffix(strings.TrimPrefix(name, GridFilePrefix), GridFileSuffix)
+		n, err := strconv.Atoi(verStr)
+		if err != nil || n < 1 {
+			continue
+		}
+		if n > current {
+			return fmt.Errorf("%w: grid.v%d.yaml exists but grid.current points to v%d (possible crash mid-Write; recover by either removing grid.v%d.yaml or moving grid.current to v%d)",
+				ErrGridInconsistent, n, current, n, n)
+		}
+	}
+	return nil
 }
 
 // ReadVersion loads a specific grid version, independent of
 // grid.current. Useful for inspecting historical versions or for the
 // state-machine engine's boot recovery.
 func ReadVersion(dir string, version int) (*Grid, error) {
-	gridName := fmt.Sprintf("%sv%d%s", "grid.", version, GridFileSuffix)
+	gridName := fmt.Sprintf("%s%d%s", GridFilePrefix, version, GridFileSuffix)
 	gridPath := filepath.Join(dir, ".ghyll", gridName)
 	data, err := os.ReadFile(gridPath)
 	if err != nil {

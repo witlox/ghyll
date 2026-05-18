@@ -9,13 +9,18 @@ pre-commit:
       glob: "*.go"
       run: golangci-lint run --timeout=5m
     test:
-      run: make test
+      run: make test-unit
     vet:
       glob: "*.go"
       run: go vet ./...
 
+# pre-push runs the slow tier (acceptance + race + coverage) so
+# pre-commit stays under a few seconds. Matches .claude/CLAUDE.md
+# tier table: pre-commit = Tier 1; pre-PR = Tier 2.
 pre-push:
-  parallel: true
+  parallel: false
   commands:
+    test:
+      run: make test
     build:
       run: go build ./...

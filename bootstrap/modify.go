@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 
 	"github.com/witlox/ghyll/catalogue"
 )
@@ -20,14 +22,24 @@ var ErrModifyWeakening = errors.New("cannot-weaken-default")
 // is the correct verdict, or skip-with-residue).
 var ErrModifyUnsupportedType = errors.New("modify-type-not-supported")
 
+// ErrModifyNonFinite is returned when proposed numeric value is NaN
+// or ±Inf. The raise-only check is undefined on non-finite floats
+// (NaN compares false to everything), so such values are rejected
+// outright. Maps to validation-pass-1 finding #2.
+var ErrModifyNonFinite = errors.New("modify-non-finite-numeric")
+
 // severityRank maps the closed severity enum (gates.md §7.3) to an
-// integer where higher = stricter.
+// integer where higher = stricter. `unevaluated` ranks at 0 (the
+// floor): any concretely-assigned severity is stricter than an
+// unevaluated one. This aligns with catalogue.canonicalSeverity which
+// includes `unevaluated` (validation-pass-1 finding #1).
 var severityRank = map[string]int{
-	"info":     1,
-	"low":      2,
-	"medium":   3,
-	"high":     4,
-	"critical": 5,
+	"unevaluated": 0,
+	"info":        1,
+	"low":         2,
+	"medium":      3,
+	"high":        4,
+	"critical":    5,
 }
 
 // CheckModification verifies that proposed args do not weaken the
@@ -57,6 +69,16 @@ func CheckModification(conceptName string, original, proposed map[string]any, ca
 		return fmt.Errorf("CheckModification: unknown concept %q", conceptName)
 	}
 
+	// Semantics: `proposed` is a *diff* of changed arguments — keys
+	// absent from proposed mean "no change". This matches init.feature
+	// scenarios where the operator specifies only the modified arg
+	// (e.g., `modify with {threshold: 0.85}` against an original
+	// `mutation-score(threshold=0.7, scope=..., language=...)`).
+	//
+	// There is no syntax to *remove* an arg via modify; operators
+	// who want to drop an arg use "skip" (with residue) instead.
+	// (validation-pass-1 finding #19 mis-read the diff semantics
+	// as full-replacement.)
 	for k, propVal := range proposed {
 		argSchema, declared := concept.Arguments[k]
 		if !declared {
@@ -85,6 +107,15 @@ func checkNotWeakening(conceptName, argName string, schema catalogue.ArgumentSch
 		if !ok1 || !ok2 {
 			return fmt.Errorf("CheckModification: %s.%s: cannot compare non-numeric values (%T vs %T)",
 				conceptName, argName, orig, proposed)
+		}
+		// Reject NaN / ±Inf on either side: comparisons are undefined
+		// for NaN (always false), so a NaN proposed value would bypass
+		// the raise-only check silently. ±Inf is rejected for symmetry
+		// (no concept's range admits Inf as a meaningful threshold).
+		// validation-pass-1 finding #2.
+		if math.IsNaN(origF) || math.IsNaN(propF) || math.IsInf(origF, 0) || math.IsInf(propF, 0) {
+			return fmt.Errorf("%w: %s.%s has non-finite value (orig=%v, proposed=%v)",
+				ErrModifyNonFinite, conceptName, argName, orig, proposed)
 		}
 		if propF < origF {
 			return fmt.Errorf("%w: %s.%s lowered from %v to %v",
@@ -154,26 +185,22 @@ func toFloat(val any) (float64, bool) {
 	return 0, false
 }
 
-// equalAny is a basic equality check for the unsupported-type fallback.
-// It uses Go's == when types are directly comparable, and bytewise
-// string comparison for strings. For deeper comparison (maps, slices),
-// it returns false (forcing "modify-type-not-supported").
+// equalAny reports whether two values are deeply equal for the
+// unsupported-type fallback. Uses reflect.DeepEqual for maps / slices
+// (so identical list-args round-trip without triggering
+// ErrModifyUnsupportedType per validation-pass-1 finding #18).
+// Numeric values compare via float coercion so int vs float64 of the
+// same magnitude are considered equal.
 func equalAny(a, b any) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	switch av := a.(type) {
-	case string:
-		bv, ok := b.(string)
-		return ok && av == bv
-	case bool:
-		bv, ok := b.(bool)
-		return ok && av == bv
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
-		float32, float64:
-		af, aok := toFloat(a)
-		bf, bok := toFloat(b)
-		return aok && bok && af == bf
+	// Numeric fast-path: coerce both to float64 and compare.
+	if af, aok := toFloat(a); aok {
+		if bf, bok := toFloat(b); bok {
+			return af == bf
+		}
 	}
-	return false
+	// Deep equality for everything else (strings, bools, maps, slices).
+	return reflect.DeepEqual(a, b)
 }

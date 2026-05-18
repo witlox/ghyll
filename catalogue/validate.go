@@ -28,6 +28,12 @@ var canonicalFindingStatus = map[string]struct{}{
 	"unevaluated":   {},
 }
 
+// DepthLadderTierCount is the fixed number of tiers in the depth
+// ladder per ADR-011 ("the number of tiers is fixed at 4; only the
+// labels change"). This package uses it to bound depth-tier values.
+// bootstrap.DefaultDepthLadder returns this many tiers.
+const DepthLadderTierCount = 4
+
 // Validate checks that args match the named concept's schema. On
 // success it returns a normalized arg map (defaults applied for absent
 // optional arguments). On failure it returns the first error
@@ -45,6 +51,13 @@ var canonicalFindingStatus = map[string]struct{}{
 //
 // Validate does NOT evaluate the argument (e.g., glob expansion, file
 // existence, command resolution). Those are evaluator responsibilities.
+//
+// Note on defaults: a schema's `Default` is applied only when the
+// caller's args omit the key entirely (Default != nil). If the YAML
+// schema explicitly declares `default: null`, the value parses to nil
+// and the default is NOT applied — the caller is effectively
+// responsible for providing the value if the arg is optional with no
+// concrete default. Validation-pass-1 finding #30.
 func (c *Catalogue) Validate(name string, args map[string]any) (map[string]any, error) {
 	concept, ok := c.Get(name)
 	if !ok {
@@ -137,12 +150,19 @@ func checkType(conceptName, argName string, schema ArgumentSchema, val any) erro
 		}
 
 	case "depth-tier":
+		// Depth tiers are integers in [0, DepthLadderTierCount-1].
+		// The fixed count is part of the schema (ADR-011: "the
+		// number of tiers is fixed at 4; only the labels change").
+		// Magic number kept here rather than imported to avoid a
+		// catalogue → bootstrap dependency. bootstrap.DefaultDepthLadder
+		// must agree with this range; if either changes, the other
+		// must too.
 		if !isInt(val) {
-			return fmt.Errorf("validate: %s.%s: type depth-tier requires int 0..3, got %T", conceptName, argName, val)
+			return fmt.Errorf("validate: %s.%s: type depth-tier requires int %d..%d, got %T", conceptName, argName, 0, DepthLadderTierCount-1, val)
 		}
 		n := toInt(val)
-		if n < 0 || n > 3 {
-			return fmt.Errorf("validate: %s.%s: depth-tier must be in [0,3], got %d", conceptName, argName, n)
+		if n < 0 || n >= DepthLadderTierCount {
+			return fmt.Errorf("validate: %s.%s: depth-tier must be in [0,%d], got %d", conceptName, argName, DepthLadderTierCount-1, n)
 		}
 
 	case "enum":
@@ -165,19 +185,27 @@ func checkType(conceptName, argName string, schema ArgumentSchema, val any) erro
 		}
 
 	case "int-or-range":
-		// Either an int (exact) or a 2-element list of ints (range).
+		// Either an int (exact) or a 2-element list of ints (range)
+		// with min <= max (validation-pass-1 finding #14).
 		if isInt(val) {
 			return nil
 		}
-		if list, ok := val.([]any); ok && len(list) == 2 && isInt(list[0]) && isInt(list[1]) {
-			return nil
+		list, ok := val.([]any)
+		if !ok || len(list) != 2 || !isInt(list[0]) || !isInt(list[1]) {
+			return fmt.Errorf("validate: %s.%s: int-or-range requires int or [min, max], got %T", conceptName, argName, val)
 		}
-		return fmt.Errorf("validate: %s.%s: int-or-range requires int or [min, max], got %T", conceptName, argName, val)
+		minN, maxN := toInt(list[0]), toInt(list[1])
+		if minN > maxN {
+			return fmt.Errorf("validate: %s.%s: int-or-range bounds inverted: min %d > max %d", conceptName, argName, minN, maxN)
+		}
 
 	default:
-		// Unknown / not-yet-implemented types accept any value at
-		// the catalogue boundary. The evaluator may apply additional
-		// validation when it processes the argument.
+		// Unknown type name. Reject rather than silently accept
+		// (validation-pass-1 finding #17). The catalogue's type
+		// vocabulary is closed — a concept declaring a type the
+		// validator doesn't recognize is a schema-author error.
+		return fmt.Errorf("validate: %s.%s: schema declares unknown type %q (catalogue type vocabulary is closed)",
+			conceptName, argName, schema.Type)
 	}
 
 	return nil
