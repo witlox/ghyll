@@ -1,84 +1,114 @@
 # specs/v2/features/
 
-Gherkin feature files for v2 ghyll's acceptance suite. One file per
-component, with all scenarios for that component grouped under one
-`Feature:` declaration (proper Gherkin convention).
+The **unified end-state BDD set** for ghyll. Each `.feature` file
+describes behavior that ghyll exhibits (or will exhibit) when v2 is
+complete. Each carries a comment-line marker after the `Feature:`
+declaration:
 
-Extracted from `specs/direction/components/*.md` per round-5
-reconciliation. The component spec markdown remains the design
-narrative; these `.feature` files are the executable contract.
+- `# Implementation: v1` — currently implemented in shipping v1 code.
+  v2 inherits the behavior; the same Go code (or a refactored
+  successor) satisfies these scenarios.
+- `# Implementation: v2 (not yet built)` — describes v2-only
+  behavior. Currently aspirational; scenarios will become passing as
+  v2 components land per `specs/direction/build-notes.md` build
+  order.
 
-## Files
+When a v2 component is implemented and reaches parity, its
+implementation marker flips from `v2 (not yet built)` to `v1+v2`
+(or simply `v2` if it replaces v1 wholesale).
 
-(Initial counts are from the extraction; the adversarial pass added
-the items in *italics*.)
+## The 16 features
 
-- **[init.feature](init.feature)** — Project initialization (27
-  scenarios). *+grid.current ↔ grid.v<N>.yaml inconsistency,
-  modify-edge-cases via Scenario Outline (raise-only across regex/
-  scope/severity/unknown fields), op-id re-entry across sessions.*
-- **[runner.feature](runner.feature)** — Machine-clause runner (28
-  scenarios). *+evaluator process-failure modes (timeout, OOM,
-  malformed JSON, stderr-noise, oversized output, zombies),
-  strengthened concurrency probes (parallel timestamps, race-detector),
-  strengthened successful-evaluation with proof-of-scan.*
-- **[state-machine.feature](state-machine.feature)** — Status state
-  machine engine (26 scenarios, includes 2 Scenario Outlines).
-  *+illegal-transition matrix for clauses (12 examples),
-  illegal-transition matrix for findings (6 examples), crash-recovery
-  boundary cases (awaiting-attestation, split-brain, truncated
-  checkpoint), grid-current missing, residue edge cases.*
-- **[adversarial.feature](adversarial.feature)** — Per-arrow
-  adversarial phase (18 scenarios). *+remediation-rounds-max
-  boundary outline, loop-bomb prevention (producer-fix-without-change),
-  strengthened full re-attack (clean-context verification,
-  sub-activity markers), concrete depth-tier handling.*
-- **[amendment.feature](amendment.feature)** — Grid amendment and
-  global lock (17 scenarios). *+lock liveness (orphaned-lock
-  recovery), waiting-on-aborted-pass-attestation, FIFO under
-  contention, queue-growth alert, reader/writer race, strengthened
-  atomic write with fsync ordering.*
-- **[attestation.feature](attestation.feature)** — Operator
-  attestation flow (24 scenarios). *+op-id adversarial input via
-  Outline (path traversal, NUL, oversized, unicode RTL, JSON injection),
-  oversized residue note, three-role path encoding, init-arrow path
-  encoding, multi-operator near-simultaneous verdicts, session-end
-  mid-attestation, strengthened JSONL atomicity + fsync ordering.*
+### Inherited from v1 (10)
 
-## Naming and granularity
+These describe behavior implemented by v1 today; v2 reuses the same
+infrastructure or behavioral contracts.
 
-One `.feature` per component, multiple `Scenario:` blocks within
-each file. The internal F-N sub-groupings in the component specs
-become comment headers (`# ---- F-N name ----`) within the
-`Feature:` block — useful for navigation but not Gherkin-syntactic.
+| Feature | Notes |
+|---|---|
+| [memory.feature](memory.feature) | Merkle DAG checkpoint chain. v2's state-machine + amendment write to this same log per `cross-context.md`. |
+| [keys.feature](keys.feature) | ed25519 device keys. Used for checkpoint signing in both v1 and v2. |
+| [sync.feature](sync.feature) | Git orphan branch sync (`ghyll/memory` branch). Carried forward to v2. |
+| [vault.feature](vault.feature) | Team memory vault HTTP service. Kept in v2. |
+| [config.feature](config.feature) | TOML config loader. v2 extends with init-time bindings, depth ladder, severity threshold, N knobs (ADR-005, ADR-011). |
+| [stream.feature](stream.feature) | SSE streaming to terminal. Kept in v2. |
+| [tools.feature](tools.feature) | Direct OS tool calls. Kept in v2. |
+| [edit.feature](edit.feature) | Edit tool. Kept in v2. |
+| [glob.feature](glob.feature) | Glob tool. Kept in v2. |
+| [web.feature](web.feature) | Web fetch / search tools. Kept in v2. |
 
-## Validation history
+### New in v2 — not yet built (6)
 
-- **Initial extraction (3e60a55)** — ~103 scenarios extracted from
-  the component-design markdown's primary-behavior sections.
-  Captured happy-path coverage; lacked adversarial scrutiny.
-- **Adversarial pass (this commit)** — cold-context attack on the
-  initial extraction. 18 findings (3 critical, 7 high, 6 medium,
-  2 low), verdict "not ready to wire" — a stub clearing happy-path
-  assertions would have passed ~60% of the suite. Findings recorded
-  in [`validation-adversarial-pass.md`](validation-adversarial-pass.md).
-- **Additions (this commit)** — strengthened 10 weakly-asserted
-  scenarios; added ~37 new scenarios across the five missing
-  categories (evaluator process failures, crash recovery between
-  component boundaries, adversarial operator input, concurrency
-  liveness, illegal-transition matrices).
+These describe v2-only behavior. Scenarios become passing as v2
+components land.
 
-Total: 140 scenario declarations across 6 files (~1,400 lines of
-Gherkin). Scenario Outlines expand to additional test cases (the
-illegal-transition matrices alone add 18 effective cases).
+| Feature | Build-notes step |
+|---|---|
+| [init.feature](init.feature) | Step 2 — project initialization, auto-propose + operator-confirm |
+| [runner.feature](runner.feature) | Step 3 — machine-clause runner, enforcement spine |
+| [state-machine.feature](state-machine.feature) | Step 3 (alongside runner) — clause/arrow/finding/pass lifecycles |
+| [adversarial.feature](adversarial.feature) | Step 5 — per-arrow adversarial phase |
+| [amendment.feature](amendment.feature) | Step 4-ish — grid amendment + global lock |
+| [attestation.feature](attestation.feature) | Step 4-ish — operator attestation flow |
+
+## Retired v1 features (not present here)
+
+The following 7 v1 features describe v1-only mechanisms that
+**will not exist in v2's end state**. They remain at `specs/features/`
+(running against v1 code today) but are not part of the unified
+end-state BDD set; they retire when v1 code retires:
+
+- `compaction.feature` — v1's context-management mechanism. v2 uses
+  init + grid + state-machine instead.
+- `drift.feature` — v1's drift detection. v2's correctness mechanism
+  is the gate system, not drift.
+- `routing.feature` — v1's context-depth routing. v2 routes per
+  `gates.md` §7 (depth-sensitivity-driven).
+- `plan-mode.feature` — v1's plan-mode toggle on dialects. Replaced
+  by v2's depth-sensitive routing + adversarial phase.
+- `sub-agents.feature` — v1's sub-agent tool. v2 has internal
+  fresh-adversary spawn but no operator-facing sub-agent tool.
+- `resume.feature` — v1's session resume from checkpoint. v2's
+  "resume" is pass re-traversal — different mechanism.
+- `workflow.feature` — v1's `.ghyll/` workflow loader. Replaced by
+  v2's hardcoded diamond + gate enforcement.
 
 ## Status
 
-These features are the **specification**, not yet wired to step
-definitions or an acceptance runner. The corresponding step files
-will live at `tests/v2/` (or wherever the v2 implementation places
-them) once the v2 code lands.
+- The 10 v1-inherited features are **currently passing** (the v1
+  acceptance suite at `tests/acceptance/` runs them against v1 code
+  at `specs/features/`).
+- The 6 v2-only features are **currently aspirational** (no step
+  definitions yet; await v2 component implementations).
+- The unified set will become a single passing acceptance suite
+  when v2 reaches parity and v1 retires.
 
-The v1 acceptance suite at `tests/acceptance/` remains in place
-running against `specs/features/` (v1 BDD scenarios). v1 and v2
-test suites coexist until v2 reaches feature parity.
+## Validation history
+
+- **Initial extraction (3e60a55)** — 6 v2-only features (~103
+  scenarios) extracted from component-design markdown.
+- **Adversarial pass (10a776e)** — cold-context attack returned 18
+  findings, verdict "not ready to wire." ~37 scenarios added
+  across the 6 v2-only files to address weakness; ~10 existing
+  strengthened. Findings recorded in
+  [`validation-adversarial-pass.md`](validation-adversarial-pass.md).
+- **v1 inheritance (this commit)** — 10 v1 features copied here,
+  each annotated `# Implementation: v1`. v1-only features (7) stay
+  at `specs/features/` and retire with v1.
+
+Total now: 16 features. Scenarios across v2-only files: ~140
+(includes ~18 from Scenario Outlines that expand at runtime).
+v1-inherited scenarios: as-is from v1 (~40-50 across the 10 files).
+Combined ~180–190 scenario declarations in the unified end-state
+BDD set.
+
+## Path layout (future)
+
+When v2 reaches feature parity and v1 retires:
+
+- `specs/features/` (v1 home) goes away. The 7 retiring features
+  delete with v1.
+- `specs/v2/features/` either stays where it is (no path churn) or
+  promotes to `specs/features/` (cleanest long-term).
+- This decision can be deferred until v1 retires — no consequence
+  to deferring.

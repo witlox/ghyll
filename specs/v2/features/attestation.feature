@@ -1,3 +1,4 @@
+# Implementation: v2 (not yet built; await attestation flow per build-notes)
 Feature: Operator attestation flow
 
   # Coordinates operator verdicts on attested clauses. Owns the operator

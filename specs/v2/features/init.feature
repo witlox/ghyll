@@ -1,3 +1,4 @@
+# Implementation: v2 (not yet built; await init component per build-notes step 2)
 Feature: Project initialization
 
   # Project initialization is step one when ghyll is invoked on a new

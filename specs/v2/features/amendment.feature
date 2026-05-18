@@ -1,3 +1,4 @@
+# Implementation: v2 (not yet built)
 Feature: Grid amendment and global lock
 
   # Serializes grid changes through a project-wide write-lock. FIFO

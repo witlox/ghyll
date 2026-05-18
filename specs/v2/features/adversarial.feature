@@ -1,3 +1,4 @@
+# Implementation: v2 (not yet built; await adversarial phase per build-notes step 5)
 Feature: Per-arrow adversarial phase
 
   # Spawns a fresh adversary instance per round with clean context.
