@@ -114,12 +114,15 @@ fixed.
 The role set (the "diamond"):
 
 ```
-analyst → architect → implementer → auditor → integrator
+analyst → architect → implementer → integrator
 ```
 
-Note: there is **no standalone adversary role**. Adversarial scrutiny is
-a *phase of every arrow* (§3.5), not a role — a role in a sequence can
-be skipped; a phase of a transition cannot.
+Note: there is **no standalone adversary role and no standalone
+auditor role**. Adversarial scrutiny and depth classification are
+*phases of every arrow* (§3.5), not roles — a role in a sequence can
+be skipped; a phase of a transition cannot. The depth-classification
+work that an auditor role might do is part of the per-arrow
+adversarial phase, applied uniformly to every depth-sensitive arrow.
 
 ### 3.4 The workflow becomes an embedded, enforced default
 
@@ -254,8 +257,8 @@ reach deployment?*
 
 - **Correctness friction** — catches a real, demonstrable failure class.
   Keep it. It is the product. (Proven so far: mutation-score machine
-  clauses and the implementer→auditor adversarial phase — aimed at the
-  17 audited shallow-test rows.)
+  clauses and the implementer→integrator adversarial phase — aimed at
+  the 17 audited shallow-test rows.)
 - **Dead friction** — feels rigorous, discriminates nothing. Pure cost.
 
 The two feel identical to the operator: both make you wait. ghyll must

@@ -70,17 +70,15 @@ three are phase 3 work:
 
 ## What is NOT built — do not confabulate these
 
-- **The other four role files.** `architect.md`, `implementer.md`,
-  `auditor.md`, `integrator.md` exist in Kiseki form but have NOT been
-  reconciled to `gates.md`. They must each be revised the way
-  `analyst.md` was: declare exit-gate clauses as catalogue instances
-  (machine) or judgements (attested), each with eval and depth type;
-  emit the arrow artifact. Do this against the *existing* ghyll role
-  files, not from memory — reconcile, do not replace.
+- **The other three role files.** `architect.md`, `implementer.md`,
+  `integrator.md` are drafted but have not yet been re-validated after
+  the phase-3 architect pass. They must remain reconciled to the
+  evolving `gates.md`; expect another reconciliation after phase 4.
 
-  (There is NO standalone adversary role. Adversarial scrutiny is the
-  first phase of every depth-sensitive arrow per `gates.md` §11. Do
-  not write `adversary.md`.)
+  (There is NO standalone adversary role and NO standalone auditor
+  role. Adversarial scrutiny and depth classification are *phases* of
+  every depth-sensitive arrow per `gates.md` §11. Do not write
+  `adversary.md` or `auditor.md`.)
 - **The harness enforcement itself.** `gates.md` describes behavior;
   nothing yet enforces it. The machine clauses are only real once ghyll
   actually runs the checks (build targets, mutation runs, trace-link
@@ -90,11 +88,13 @@ three are phase 3 work:
   failure was the integrator transition being unenforced. The
   non-skippable cross-context integrator gate is the single
   highest-value enforcement target and is not yet specified.
-- **The definition phase tooling.** `gates.md` §8 describes it;
-  no implementation exists.
+- **Project initialization tooling.** `gates.md` §2 describes it;
+  no implementation exists. This is the must-have step-one when ghyll
+  is invoked on a new project; the schema cannot run without it.
 - **The catalogue's per-language instrument bindings.** `gates.md`
-  §4.1 names the concept; bindings (`lint-clean.go`, `compiles.rust`,
-  etc.) are per-project config and not yet written.
+  §5.1 names the concept; bindings (`lint-clean.go`, `compiles.rust`,
+  etc.) are per-project config declared at initialization and not yet
+  written.
 
 ## Build order (recommendation, not instruction)
 

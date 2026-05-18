@@ -118,20 +118,20 @@ attack itself.
 
 ## Contract
 
-Per `gates.md` §3, the analyst has a single exit gate. Conditions that
+Per `gates.md` §4, the analyst has a single exit gate. Conditions that
 were previously framed as "entry preconditions" (mode determinable; one
 bounded context; no concurrent draft) are exit clauses of the *upstream*
-(definition-phase → analyst) arrow and are not the analyst's gate to
-emit. The v0 grid (`gates.md` §2.4) ships those clauses on the upstream
+(initialization → analyst) arrow and are not the analyst's gate to
+emit. The v0 grid (`gates.md` §3.4) ships those clauses on the upstream
 arrow.
 
 ### Exit gate
 
 Every clause carries an evaluation type (`machine` / `attested`) and a
 depth type (`depth-robust` / `depth-sensitive`) per `gates.md`. Machine
-clauses reference catalogue concepts (`gates.md` §4.1) by name.
+clauses reference catalogue concepts (`gates.md` §5.1) by name.
 
-Universal-base clauses (`gates.md` §4.2: `compiles`, `lint-clean`,
+Universal-base clauses (`gates.md` §5.2: `compiles`, `lint-clean`,
 `no-todo-marker`, `every-step-bound`) are inherited automatically and
 not listed here — their scope on the analyst arrow is the `specs/`
 artifacts for the context under analysis.
@@ -141,7 +141,7 @@ artifacts for the context under analysis.
 | G1 | Every term in `ubiquitous-language.md` appears exactly once | `unique-definition`(`ubiquitous-language.md`) | machine | depth-robust |
 | G2 | Every invariant in `invariants.md` is written as an assertable predicate | `predicate-form`(`invariants.md`) | machine | depth-robust |
 | G3 | Every bounded context referenced anywhere in `specs/` has a `domain-model.md` entry | `trace-link-present`(context-references → domain-model) | machine | depth-robust |
-| G4 | Every exported behaviour in scope traces to a spec clause; orphan behaviours (brownfield: orphan code paths) are listed as residue | `no-orphan-symbol`(scope: exported-behaviours, residue-target: coverage-claim) | machine | depth-robust |
+| G4 | Every exported behaviour in scope traces to a spec clause; orphan behaviours (brownfield: orphan code paths) are listed in the coverage-claim residue | `no-orphan-symbol`(exported-behaviours) | machine | depth-robust |
 | G5 | (brownfield) Every entry in `divergences.md` is `resolved` or `accepted-risk` — none `open` | `no-open-finding`(`divergences.md`) | machine | depth-robust |
 | G6 | The analyst→architect coverage claim exists at its declared location | `arrow-artifact-present`(analyst→architect coverage-claim) | machine | depth-robust |
 | G7 | Every feature has Gherkin scenarios for failure paths, not only happy paths | (judgement) | attested | depth-sensitive |
@@ -157,15 +157,15 @@ artifacts for the context under analysis.
 machine-detectable. A spec can pass every `machine` clause and still be
 hollow.
 
-G4 is the orphan-code check. The first Kiseki audit walked spec→code
-only and could not see code without a spec; G4 closes that direction.
+G4 is the orphan-code check — it closes the code→spec direction that
+a spec→code-only walk would miss.
 
 For each `attested` clause the analyst emits a **hint** per `gates.md`
 §9: rule-selected locations, stated basis, disclosed residue, no
 verdict. If locations cannot be selected by a stated rule, the clause
 is recorded `unevaluated` with reason `no-rule-selectable-locations`,
 and the analyst raises an `unable-to-hint` finding against itself
-(`gates.md` §6.1, §6.3).
+(`gates.md` §7.1, §7.3).
 
 ---
 
@@ -178,13 +178,13 @@ clauses currently pass.
 End: update artifacts. Log assumptions. List open questions. Report
 gate status:
 
-- **Clause-level** (per `gates.md` §6.1): each clause's status —
+- **Clause-level** (per `gates.md` §7.1): each clause's status —
   `pending` / `pass` / `fail` / `awaiting-attestation` /
   `insufficient-basis` / `unevaluated` (with reason if applicable).
-- **Arrow-level** (per `gates.md` §6.2): the propagated arrow status —
+- **Arrow-level** (per `gates.md` §7.2): the propagated arrow status —
   `complete` / `provisional` / `unevaluated` / `blocked` /
   `invalidated`.
-- **Findings** (per `gates.md` §6.3): any `unable-to-hint` or other
+- **Findings** (per `gates.md` §7.3): any `unable-to-hint` or other
   findings raised against the analyst's own output.
 
 ---
