@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
+
+	"github.com/witlox/ghyll/internal/skipdirs"
 )
 
 // no-todo-marker built-in evaluator. Per gates/concepts/no-todo-marker.yaml:
@@ -88,7 +91,7 @@ func EvaluateNoTodoMarker(ctx context.Context, c Clause) (*Result, error) {
 		if !matchesScope(scope, rel) {
 			return nil
 		}
-		fileHits, err := scanFileForMarkers(path, rel, matcher)
+		fileHits, err := scanFileForMarkers(ctx, path, rel, matcher)
 		if err != nil {
 			return err
 		}
@@ -121,8 +124,10 @@ func requireStringArg(args map[string]any, key string) (string, error) {
 	return s, nil
 }
 
-// coerceStringList accepts []string, []any (yaml-decoded), or a
-// single string and returns the canonical []string form.
+// coerceStringList accepts []string or []any (yaml-decoded) and
+// returns the canonical []string form. A bare string is NOT accepted
+// — validation-pass-2 F45: silently coercing a string to a single-
+// element list masks the common "forgot the brackets" typo.
 func coerceStringList(v any) ([]string, error) {
 	switch x := v.(type) {
 	case []string:
@@ -139,10 +144,8 @@ func coerceStringList(v any) ([]string, error) {
 			out = append(out, s)
 		}
 		return out, nil
-	case string:
-		return []string{x}, nil
 	}
-	return nil, fmt.Errorf("not a list of strings: %T", v)
+	return nil, fmt.Errorf("not a list of strings: %T (need YAML list form like [a, b])", v)
 }
 
 // markerMatcher tests whether a line contains any of the markers.
@@ -151,6 +154,11 @@ type markerMatcher func(line string) (marker string, ok bool)
 // compileMarkerMatcher builds a matcher that finds any of the markers
 // as a substring. Case-insensitive matching lowercases both sides
 // before comparison.
+//
+// Both case-sensitive and case-insensitive matchers return the
+// file's actual matched substring (not the configured marker form)
+// — validation-pass-2 F41 — so the hit report reflects what was
+// found, not what was configured.
 func compileMarkerMatcher(markers []string, caseSensitive bool) markerMatcher {
 	if caseSensitive {
 		// Build a single regex with word-boundary-ish matching. We
@@ -176,12 +184,27 @@ func compileMarkerMatcher(markers []string, caseSensitive bool) markerMatcher {
 	}
 	return func(line string) (string, bool) {
 		lower := strings.ToLower(line)
-		for i, m := range lowerMarkers {
-			if strings.Contains(lower, m) {
-				return markers[i], true
+		// Pick the longest matching marker first to avoid mis-
+		// attributing e.g. "TODO-FIXME" to the shorter "TODO" prefix.
+		bestStart := -1
+		bestEnd := -1
+		for _, m := range lowerMarkers {
+			idx := strings.Index(lower, m)
+			if idx < 0 {
+				continue
+			}
+			end := idx + len(m)
+			if bestStart < 0 || (end-idx) > (bestEnd-bestStart) {
+				bestStart = idx
+				bestEnd = end
 			}
 		}
-		return "", false
+		if bestStart < 0 {
+			return "", false
+		}
+		// Return the file's actual substring at the match position
+		// so the operator sees real casing, not the configured form.
+		return line[bestStart:bestEnd], true
 	}
 }
 
@@ -230,16 +253,15 @@ func matchesScope(scope, rel string) bool {
 }
 
 // isSkippedDir reports whether a directory name is in the harness/
-// build skip set. Kept in sync with bootstrap.dirsToSkipForProfile
-// for the subset relevant to source scans.
+// build skip set. Delegates to internal/skipdirs for a single
+// canonical definition (validation-pass-2 F39).
+//
+// The runner uses IsBuildOrHarness, NOT IsSourceWalkSkip — operators
+// may declare no-todo-marker clauses with scope `specs/**`, so
+// runner-side scans must descend into specs/docs/tests/test
+// directories.
 func isSkippedDir(name string) bool {
-	switch name {
-	case ".git", ".ghyll", ".github", "node_modules", "vendor",
-		"target", "bin", "build", "dist", "out",
-		".idea", ".vscode", "__pycache__", ".pytest_cache":
-		return true
-	}
-	return false
+	return skipdirs.IsBuildOrHarness(name)
 }
 
 // scanFileForMarkers scans one file line-by-line, returning a hit
@@ -250,28 +272,55 @@ func isSkippedDir(name string) bool {
 // nil) — large binaries / generated artifacts would slow the scan
 // without producing useful signal. A skipped file is silent; the
 // operator's coverage residue catches it.
-func scanFileForMarkers(absPath, relPath string, matcher markerMatcher) ([]map[string]any, error) {
-	info, err := os.Lstat(absPath)
+//
+// validation-pass-2 F17: opens with O_NOFOLLOW so a symlink-swap
+// race between the walk's lstat and our open cannot redirect us to
+// out-of-scope content. The size check is done via fstat on the
+// already-open fd to close the TOCTOU window.
+//
+// F12: refuses non-regular files (named pipes, devices, sockets)
+// so the scanner can't block forever on read.
+//
+// F18: a single >1MB line returns bufio.ErrTooLong which we now
+// translate to a skip-with-record rather than abort-the-walk.
+//
+// F40: checks ctx.Err() every 1024 lines so a cancelled context
+// interrupts long-file scans.
+func scanFileForMarkers(ctx context.Context, absPath, relPath string, matcher markerMatcher) ([]map[string]any, error) {
+	f, err := openNoFollow(absPath)
+	if err != nil {
+		// Symlinks fail O_NOFOLLOW with ELOOP — silently skip.
+		if isSymlinkOpenError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, nil // skip symlinks
+	if !info.Mode().IsRegular() {
+		// Refuse fifos, sockets, devices, dirs — read would hang or
+		// behave weirdly.
+		return nil, nil
 	}
 	if info.Size() > maxTodoScanFileSize {
 		return nil, nil
 	}
-	f, err := os.Open(absPath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
+
 	var hits []map[string]any
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	line := 0
 	for scanner.Scan() {
 		line++
+		if line%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		text := scanner.Text()
 		marker, ok := matcher(text)
 		if !ok {
@@ -285,6 +334,19 @@ func scanFileForMarkers(absPath, relPath string, matcher markerMatcher) ([]map[s
 		})
 	}
 	if err := scanner.Err(); err != nil {
+		// validation-pass-2 F18: a single line longer than the
+		// scanner buffer (1MB) returns ErrTooLong. Skip the file
+		// rather than aborting the entire evaluation; record the
+		// skip as a hit so the operator triages.
+		if errors.Is(err, bufio.ErrTooLong) {
+			hits = append(hits, map[string]any{
+				"file":             relPath,
+				"line":             line + 1,
+				"marker":           "(line-too-long)",
+				"surrounding-text": "file contains a line longer than 1MB; scan partial",
+			})
+			return hits, nil
+		}
 		return nil, fmt.Errorf("scan %q: %w", absPath, err)
 	}
 	return hits, nil
@@ -295,9 +357,49 @@ func scanFileForMarkers(absPath, relPath string, matcher markerMatcher) ([]map[s
 // scope. 4 MB covers all realistic source files.
 const maxTodoScanFileSize = 4 * 1024 * 1024
 
+// openNoFollow opens a file refusing to traverse a final-component
+// symlink. On Linux this uses O_NOFOLLOW; on platforms without it,
+// falls back to a Lstat-guarded Open (TOCTOU window remains but
+// shrinks to lstat→open). Used by no-todo-marker's scan to defend
+// the TOCTOU described in validation-pass-2 F17.
+func openNoFollow(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+}
+
+// isSymlinkOpenError reports whether err is the
+// "symlink-encountered-with-O_NOFOLLOW" failure. On Linux this is
+// ELOOP. We unwrap to *os.PathError → syscall.Errno.
+func isSymlinkOpenError(err error) bool {
+	var pe *os.PathError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	var errno syscall.Errno
+	if !errors.As(pe.Err, &errno) {
+		return false
+	}
+	return errno == syscall.ELOOP
+}
+
 // RegisterBuiltins adds the universal-base evaluators implemented
 // in the runner package (currently: no-todo-marker; compiles,
-// lint-clean, every-step-bound will follow). Idempotent.
+// lint-clean, every-step-bound will follow).
+//
+// Uses Replace when the concept is already registered so calling
+// RegisterBuiltins a second time during init re-entry (D18) bumps
+// the registration's Generation rather than panicking on
+// ErrConceptAlreadyRegistered.
 func RegisterBuiltins(r *Registry) {
-	r.Register("no-todo-marker", EvaluateNoTodoMarker)
+	registerOrReplace(r, "no-todo-marker", EvaluateNoTodoMarker)
+}
+
+// registerOrReplace tries Register first; if the concept is already
+// registered, falls back to Replace. The runner's typical lifecycle
+// has a single RegisterBuiltins call at startup; this helper allows
+// idempotent setup in tests and re-entry flows.
+func registerOrReplace(r *Registry, concept string, e Evaluator) {
+	if err := r.Register(concept, e); err == nil {
+		return
+	}
+	_ = r.Replace(concept, e)
 }

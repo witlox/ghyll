@@ -135,3 +135,47 @@ type ScenarioState struct {
 func (s *ScenarioState) AddTerminal(msg string) {
 	s.TerminalOutput = append(s.TerminalOutput, msg)
 }
+
+// buildClauseArgs returns a default arg map for a catalogue concept,
+// populating both defaulted args AND required-no-default args with
+// synthetic placeholder values. Used by step files that build
+// proposed clauses; validation-pass-2 F29 now enforces required-arg
+// completeness at Apply time.
+func buildClauseArgs(c catalogue.Concept) map[string]any {
+	out := map[string]any{}
+	for name, schema := range c.Arguments {
+		if schema.Default != nil {
+			out[name] = schema.Default
+			continue
+		}
+		if schema.Required {
+			out[name] = syntheticBDDArgValue(schema.Type)
+		}
+	}
+	return out
+}
+
+// syntheticBDDArgValue mirrors bootstrap.syntheticArgValue (which is
+// test-only in that package); duplicated here so step files don't
+// reach into bootstrap's unexported helpers.
+func syntheticBDDArgValue(argType string) any {
+	switch argType {
+	case "path-glob":
+		return "src/**"
+	case "regex":
+		return "^test"
+	case "language-id":
+		return "go"
+	case "severity":
+		return "medium"
+	case "boolean":
+		return false
+	case "int", "depth-tier", "int-or-range":
+		return 0
+	case "number":
+		return 0.5
+	case "list":
+		return []any{}
+	}
+	return "test-value"
+}

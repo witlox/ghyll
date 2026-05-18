@@ -74,6 +74,22 @@ type RiskAssessment struct {
 	CorrectnessCritical bool
 }
 
+// validate rejects RiskAssessment values that don't make sense:
+// negative counts (validation-pass-2 F31). The harness has no way to
+// have "minus two bounded contexts"; treating such input as a
+// silent low-stakes signal misleads the rationale.
+func (a RiskAssessment) validate() error {
+	if a.BoundedContextCount < 0 {
+		return fmt.Errorf("RiskAssessment: BoundedContextCount must be >= 0; got %d",
+			a.BoundedContextCount)
+	}
+	if a.CrossContextSeams < 0 {
+		return fmt.Errorf("RiskAssessment: CrossContextSeams must be >= 0; got %d",
+			a.CrossContextSeams)
+	}
+	return nil
+}
+
 // Evaluate returns Refuse iff every signal says low-stakes
 // (≤1 context AND 0 seams AND not novel AND not critical). A single
 // strong signal in any axis flips the recommendation to Proceed.
@@ -146,15 +162,28 @@ var (
 	ErrRefusalAlreadyResolved = errors.New("refusal-already-resolved")
 )
 
-// ProposeRefusal records init's recommendation. Idempotent if called
-// twice with the same Risk values; ErrRefusalAlreadyResolved if the
-// operator has already accepted or overridden.
+// ProposeRefusal records init's recommendation. Per validation-pass-2
+// F54: NOT idempotent — a second call returns ErrRefusalAlreadyResolved
+// regardless of whether the risk values match. On the error path,
+// returns RecommendationRefuse (the actual recorded recommendation)
+// not Proceed, so a caller that ignores the error still gets the
+// safer answer.
+//
+// F31: rejects negative counts (BoundedContextCount, CrossContextSeams).
 func (p *ProjectProfile) ProposeRefusal(risk RiskAssessment) (Recommendation, error) {
 	if p == nil {
 		return RecommendationProceed, errors.New("ProposeRefusal: nil ProjectProfile")
 	}
+	if err := risk.validate(); err != nil {
+		return RecommendationProceed, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.refusal != nil {
-		return RecommendationProceed, fmt.Errorf("%w", ErrRefusalAlreadyResolved)
+		// Return the existing recommendation so a caller that misses
+		// the error doesn't proceed.
+		return p.refusal.Recommended, fmt.Errorf("%w: previously recommended %s",
+			ErrRefusalAlreadyResolved, p.refusal.Recommended)
 	}
 	p.risk = risk
 	rec := risk.Evaluate()
@@ -165,17 +194,23 @@ func (p *ProjectProfile) ProposeRefusal(risk RiskAssessment) (Recommendation, er
 }
 
 // AcceptRefusal records that the operator accepted init's refusal
-// recommendation. After AcceptRefusal, RefusalAccepted is true and the
-// caller should terminate.
+// recommendation. After AcceptRefusal, RefusalAccepted is true and
+// the caller should terminate.
 //
-// Returns ErrRefusalNotProposed if ProposeRefusal hasn't been called
-// or didn't return RecommendationRefuse.
+// Validation-pass-2 F10: refuses with ErrRefusalAlreadyResolved if
+// the refusal has already been Accepted or Overridden — the state
+// machine never silently flips a resolved verdict.
 func (p *ProjectProfile) AcceptRefusal() error {
 	if p == nil {
 		return errors.New("AcceptRefusal: nil ProjectProfile")
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.refusal == nil {
 		return ErrRefusalNotProposed
+	}
+	if p.refusal.Accepted || p.refusal.OverrideResidue != "" {
+		return ErrRefusalAlreadyResolved
 	}
 	p.refusal.Accepted = true
 	return nil
@@ -184,21 +219,23 @@ func (p *ProjectProfile) AcceptRefusal() error {
 // OverrideRefusal records that the operator overrode init's refusal
 // recommendation. The residue argument is the operator-supplied
 // rationale; empty residue is refused so the override cannot be
-// silent.
-//
-// Returns ErrRefusalNotProposed if ProposeRefusal didn't propose
-// refusal; ErrRefusalOverrideEmpty if residue is empty.
+// silent. Validation-pass-2 F10: refuses with ErrRefusalAlreadyResolved
+// if Accept or Override has already landed.
 func (p *ProjectProfile) OverrideRefusal(residue string) error {
 	if p == nil {
 		return errors.New("OverrideRefusal: nil ProjectProfile")
 	}
-	if p.refusal == nil {
-		return ErrRefusalNotProposed
-	}
 	if strings.TrimSpace(residue) == "" {
 		return ErrRefusalOverrideEmpty
 	}
-	p.refusal.Accepted = false
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.refusal == nil {
+		return ErrRefusalNotProposed
+	}
+	if p.refusal.Accepted || p.refusal.OverrideResidue != "" {
+		return ErrRefusalAlreadyResolved
+	}
 	p.refusal.OverrideResidue = residue
 	return nil
 }
@@ -206,7 +243,12 @@ func (p *ProjectProfile) OverrideRefusal(residue string) error {
 // Refusal returns a copy of the refusal outcome, or nil if init has
 // not proposed refusal.
 func (p *ProjectProfile) Refusal() *RefusalOutcome {
-	if p == nil || p.refusal == nil {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.refusal == nil {
 		return nil
 	}
 	cp := *p.refusal

@@ -25,7 +25,9 @@ func TestSessionRegistry_DeclareThenActive(t *testing.T) {
 
 func TestSessionRegistry_SecondDeclareRefused(t *testing.T) {
 	// Scenario 212: while Alice is active, Bob's declare must be
-	// refused with ErrSessionAlreadyActive and the error names Alice.
+	// refused with ErrSessionAlreadyActive. validation-pass-2 F12:
+	// the error names a HASH of Alice's op-id (not the raw string)
+	// so PII doesn't leak to less-trusted callers.
 	r := NewSessionRegistry()
 	if _, err := r.Declare("alice@example.com"); err != nil {
 		t.Fatal(err)
@@ -37,8 +39,11 @@ func TestSessionRegistry_SecondDeclareRefused(t *testing.T) {
 	if !errors.Is(err, ErrSessionAlreadyActive) {
 		t.Errorf("err = %v; want ErrSessionAlreadyActive", err)
 	}
-	if !strings.Contains(err.Error(), "alice@example.com") {
-		t.Errorf("error %q should name the active op-id", err)
+	if !strings.Contains(err.Error(), "op-id-hash") {
+		t.Errorf("error %q should reference an op-id-hash, not the raw op-id", err)
+	}
+	if strings.Contains(err.Error(), "alice@example.com") {
+		t.Errorf("error %q should NOT contain Alice's raw op-id (PII leak)", err)
 	}
 	// Bob's declare must NOT have replaced Alice.
 	if got := r.ActiveOpID(); got != "alice@example.com" {

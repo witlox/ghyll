@@ -139,7 +139,9 @@ func TestApply_ModifyRaisingThresholdAllowed(t *testing.T) {
 	// Scenario 99: Operator returns "modify" with {threshold: 0.85}
 	// against a default {threshold: 0.7}. Raise-only.
 	ap, cat := buildSingleClauseProposal(t, "mutation-score(scope, threshold, language)")
-	ap.Proposed[0].DefaultArgs = map[string]any{"threshold": 0.7}
+	// Override threshold while keeping the helper's required-arg
+	// fill (scope, test-scope, language) so F29 validation passes.
+	ap.Proposed[0].DefaultArgs["threshold"] = 0.7
 	v := Verdict{
 		Kind:         VerdictModify,
 		ModifiedArgs: map[string]any{"threshold": 0.85},
@@ -239,22 +241,27 @@ func TestExtend_RejectsDuplicateID(t *testing.T) {
 	// Extension cannot duplicate a proposed clause's ID nor a
 	// previously-recorded clause's ID.
 	ap, cat := buildSingleClauseProposal(t, "compiles")
+	compilesArgs := map[string]any{"scope": "src/**", "language": "go"}
+	noTodoArgs := map[string]any{"scope": "src/**"}
 	// Duplicate of proposed G1.
 	err := ap.Extend(ProposedClause{
-		ID: "G1", EvalType: "machine", DepthType: "depth-robust", ConceptName: "compiles",
+		ID: "G1", EvalType: "machine", DepthType: "depth-robust",
+		ConceptName: "compiles", DefaultArgs: compilesArgs,
 	}, cat)
 	if !errors.Is(err, ErrExtensionInvalid) {
 		t.Errorf("duplicate of proposed: got %v; want ErrExtensionInvalid", err)
 	}
 	// Successful extend.
 	if err := ap.Extend(ProposedClause{
-		ID: "X-new", EvalType: "machine", DepthType: "depth-robust", ConceptName: "no-todo-marker",
+		ID: "X-new", EvalType: "machine", DepthType: "depth-robust",
+		ConceptName: "no-todo-marker", DefaultArgs: noTodoArgs,
 	}, cat); err != nil {
 		t.Fatal(err)
 	}
 	// Now duplicate of recorded.
 	err = ap.Extend(ProposedClause{
-		ID: "X-new", EvalType: "machine", DepthType: "depth-robust", ConceptName: "no-todo-marker",
+		ID: "X-new", EvalType: "machine", DepthType: "depth-robust",
+		ConceptName: "no-todo-marker", DefaultArgs: noTodoArgs,
 	}, cat)
 	if !errors.Is(err, ErrExtensionInvalid) {
 		t.Errorf("duplicate of recorded: got %v; want ErrExtensionInvalid", err)
@@ -348,6 +355,7 @@ func TestAllVerdictsReceived(t *testing.T) {
 		EvalType:    "machine",
 		DepthType:   "depth-robust",
 		ConceptName: "compiles",
+		DefaultArgs: map[string]any{"scope": "src/**", "language": "go"},
 	})
 	if ap.AllVerdictsReceived() {
 		t.Error("AllVerdictsReceived true before any verdict applied")
@@ -396,6 +404,20 @@ func buildSingleClauseProposal(t *testing.T, conceptHint string) (*ArrowProposal
 	if !ok {
 		t.Fatalf("buildSingleClauseProposal: catalogue missing %q", conceptName)
 	}
+	// validation-pass-2 F29: BuildProposal/Apply now validate that
+	// every required arg is present. extractDefaultArgs only pulls
+	// defaultable args; for tests we populate required-no-default
+	// args with synthetic placeholder values.
+	args := extractDefaultArgs(concept)
+	for argName, schema := range concept.Arguments {
+		if !schema.Required {
+			continue
+		}
+		if _, present := args[argName]; present {
+			continue
+		}
+		args[argName] = syntheticArgValue(schema.Type)
+	}
 	ap := &ArrowProposal{
 		Upstream:   "analyst",
 		Downstream: "architect",
@@ -406,7 +428,7 @@ func buildSingleClauseProposal(t *testing.T, conceptHint string) (*ArrowProposal
 			EvalType:     "machine",
 			DepthType:    "depth-robust",
 			ConceptName:  conceptName,
-			DefaultArgs:  extractDefaultArgs(concept),
+			DefaultArgs:  args,
 			DefaultCost:  concept.DefaultCost,
 			RoleArgsHint: conceptHint,
 			RoleSource:   "test",
@@ -414,6 +436,48 @@ func buildSingleClauseProposal(t *testing.T, conceptHint string) (*ArrowProposal
 		verdicts: make(map[string]Verdict),
 	}
 	return ap, cat
+}
+
+// syntheticArgValue returns a placeholder value of the given catalogue
+// argument type. Used by test helpers that build proposed clauses
+// for concepts whose required args have no default — F29 now
+// requires those args to be present at Apply time.
+func syntheticArgValue(argType string) any {
+	switch argType {
+	case "string", "artifact-ref", "command", "duration", "enum-or-path":
+		return "test-value"
+	case "path-glob":
+		return "src/**"
+	case "regex":
+		return "^test"
+	case "language-id":
+		return "go"
+	case "role-id":
+		return "analyst"
+	case "bounded-context-id":
+		return "test-context"
+	case "pass-id", "arrow-id", "dependency-id":
+		return "test-id"
+	case "int":
+		return 0
+	case "number":
+		return 0.5
+	case "boolean":
+		return false
+	case "list":
+		return []any{}
+	case "severity":
+		return "medium"
+	case "finding-status":
+		return "open"
+	case "depth-tier":
+		return 0
+	case "enum":
+		return ""
+	case "int-or-range":
+		return 0
+	}
+	return ""
 }
 
 // indexRune is a tiny strings.IndexRune to avoid importing strings just

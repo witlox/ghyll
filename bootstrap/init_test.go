@@ -14,13 +14,26 @@ import (
 func builtArrowProposal(t *testing.T, cat *catalogue.Catalogue, upstream, downstream, context string) *ArrowProposal {
 	t.Helper()
 	concept, _ := cat.Get("compiles")
+	// Populate required-no-default args with synthetic values
+	// (validation-pass-2 F29 — Apply now enforces required-arg
+	// completeness).
+	args := extractDefaultArgs(concept)
+	for argName, schema := range concept.Arguments {
+		if !schema.Required {
+			continue
+		}
+		if _, present := args[argName]; present {
+			continue
+		}
+		args[argName] = syntheticArgValue(schema.Type)
+	}
 	ap := NewArrowProposal(upstream, downstream, context, []ProposedClause{{
 		ID:          "G1",
 		Description: "compiles for testing",
 		EvalType:    "machine",
 		DepthType:   "depth-robust",
 		ConceptName: "compiles",
-		DefaultArgs: extractDefaultArgs(concept),
+		DefaultArgs: args,
 		DefaultCost: concept.DefaultCost,
 		RoleSource:  "test",
 	}})
@@ -175,10 +188,18 @@ func TestBuildInitGrid_RejectsIncompleteVerdicts(t *testing.T) {
 	}
 	profile := &ProjectProfile{BoundedContexts: []BoundedContext{{ID: "contextA"}}}
 	concept, _ := cat.Get("compiles")
+	args := extractDefaultArgs(concept)
+	for n, s := range concept.Arguments {
+		if s.Required {
+			if _, ok := args[n]; !ok {
+				args[n] = syntheticArgValue(s.Type)
+			}
+		}
+	}
 	// Two proposed clauses; only one gets a verdict.
 	ap := NewArrowProposal("analyst", "architect", "contextA", []ProposedClause{
-		{ID: "G1", EvalType: "machine", DepthType: "depth-robust", ConceptName: "compiles", DefaultArgs: extractDefaultArgs(concept)},
-		{ID: "G2", EvalType: "machine", DepthType: "depth-robust", ConceptName: "compiles", DefaultArgs: extractDefaultArgs(concept)},
+		{ID: "G1", EvalType: "machine", DepthType: "depth-robust", ConceptName: "compiles", DefaultArgs: cloneArgs(args)},
+		{ID: "G2", EvalType: "machine", DepthType: "depth-robust", ConceptName: "compiles", DefaultArgs: cloneArgs(args)},
 	})
 	if err := ap.Apply("G1", Verdict{Kind: VerdictConfirm}, cat); err != nil {
 		t.Fatal(err)

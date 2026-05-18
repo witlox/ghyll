@@ -190,8 +190,8 @@ Feature: Project initialization
       | arg                | original      | proposed      | action                                                          |
       | scope              | "src/**"      | "src/main.go" | accepts (narrower scope is tighter, fewer files allowed to fail)|
       | scope              | "src/main.go" | "src/**"      | refuses with "cannot-weaken-default: wider scope"               |
-      | regex              | "^TODO"       | "^TODO\|^XXX" | accepts (more strings caught)                                   |
-      | regex              | "^TODO\|^XXX" | "^TODO"       | refuses with "cannot-weaken-default: fewer markers"             |
+      | regex              | "^TODO"       | "^TODO\|^XXX" | refuses with "regex-modify-not-supported"                       |
+      | regex              | "^TODO\|^XXX" | "^TODO"       | refuses with "regex-modify-not-supported"                       |
       | severity-threshold | high          | medium        | refuses with "cannot-weaken-default: lower threshold"           |
       | nonexistent        | (any)         | (any)         | refuses with "modify-on-unknown-field"                          |
 

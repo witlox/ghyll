@@ -205,8 +205,16 @@ func (s *ScenarioState) initRefusesAndListsAliceOpID(expectedSentinel string) er
 	if !strings.Contains(s.BobDeclareErr.Error(), expectedSentinel) {
 		return fmt.Errorf("err %q should contain sentinel %q", s.BobDeclareErr, expectedSentinel)
 	}
-	if !strings.Contains(s.BobDeclareErr.Error(), "alice@example.com") {
-		return fmt.Errorf("err %q should name Alice's op-id", s.BobDeclareErr)
+	// validation-pass-2 F12: op-id is no longer leaked verbatim in
+	// cross-trust-boundary error messages — the active op-id appears
+	// as a SHA-256-truncated hash. The "lists Alice's op-id" wording
+	// in the scenario is now interpreted as "lists a stable
+	// identifier for Alice's lock" rather than the raw email.
+	if !strings.Contains(s.BobDeclareErr.Error(), "op-id-hash") {
+		return fmt.Errorf("err %q should reference op-id-hash (Alice's identifier)", s.BobDeclareErr)
+	}
+	if strings.Contains(s.BobDeclareErr.Error(), "alice@example.com") {
+		return fmt.Errorf("err %q must NOT leak Alice's raw op-id (PII)", s.BobDeclareErr)
 	}
 	// And Alice's session is still active (Bob's failure didn't
 	// disturb it).

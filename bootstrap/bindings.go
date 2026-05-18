@@ -43,10 +43,13 @@ func (k BindingKey) String() string {
 // concrete error returned by CheckRequiredBindings is a
 // *MissingBindingError so callers can inspect the full Missing list.
 var (
-	ErrMissingBinding       = errors.New("missing-binding")
-	ErrBindingConceptEmpty  = errors.New("binding-concept-empty")
-	ErrBindingLanguageEmpty = errors.New("binding-language-empty")
-	ErrBindingCommandEmpty  = errors.New("binding-command-empty")
+	ErrMissingBinding              = errors.New("missing-binding")
+	ErrBindingConceptEmpty         = errors.New("binding-concept-empty")
+	ErrBindingLanguageEmpty        = errors.New("binding-language-empty")
+	ErrBindingCommandEmpty         = errors.New("binding-command-empty")
+	ErrBindingConceptInvalid       = errors.New("binding-concept-invalid")
+	ErrBindingLanguageInvalid      = errors.New("binding-language-invalid")
+	ErrBindingOverwriteRequiresAck = errors.New("binding-overwrite-requires-ack")
 )
 
 // MissingBindingError is returned by CheckRequiredBindings when at
@@ -81,33 +84,83 @@ func (e *MissingBindingError) Is(target error) bool {
 // grid. Refuses empty concept / language / command (silent no-op
 // bindings would defeat the purpose).
 //
-// Re-declaring an existing binding overwrites the command. This is
-// intentional: init's re-entry flow may amend an earlier declaration
-// (the binding was wrong, not just missing). Future iterations may
-// require an explicit Overwrite step; for now the bias is toward
-// flexibility during re-entry.
+// Per validation-pass-2 F51: refuses Concept or Language containing
+// `.` (the BindingKey.String / BindingKeysFromStrings round-trip
+// would be ambiguous).
+//
+// Per validation-pass-2 F53: returns ErrBindingOverwriteRequiresAck
+// if the (concept, language) is already bound to a DIFFERENT command.
+// Callers that genuinely intend to amend (init re-entry, operator
+// fixing a wrong binding) use DeclareBindingReplace explicitly.
+// Re-declaring with the same command is silently accepted (idempotent).
 func (g *Grid) DeclareBinding(concept, language, command string) error {
 	if g == nil {
 		return errors.New("DeclareBinding: nil Grid")
 	}
+	concept, language, command, err := normalizeBindingTriple(concept, language, command)
+	if err != nil {
+		return err
+	}
+	key := BindingKey{Concept: concept, Language: language}.String()
+	if g.LanguageBindings == nil {
+		g.LanguageBindings = make(map[string]string)
+	}
+	if existing, ok := g.LanguageBindings[key]; ok && existing != command {
+		return fmt.Errorf("%w: %s already bound to %q (use DeclareBindingReplace to amend)",
+			ErrBindingOverwriteRequiresAck, key, existing)
+	}
+	g.LanguageBindings[key] = command
+	return nil
+}
+
+// DeclareBindingReplace amends an existing binding's command,
+// returning the previously-bound command for audit. Returns an error
+// if no binding exists yet — use DeclareBinding for the initial
+// declaration. Per validation-pass-2 F53.
+func (g *Grid) DeclareBindingReplace(concept, language, command string) (string, error) {
+	if g == nil {
+		return "", errors.New("DeclareBindingReplace: nil Grid")
+	}
+	concept, language, command, err := normalizeBindingTriple(concept, language, command)
+	if err != nil {
+		return "", err
+	}
+	key := BindingKey{Concept: concept, Language: language}.String()
+	if g.LanguageBindings == nil {
+		return "", fmt.Errorf("DeclareBindingReplace: %s not yet declared", key)
+	}
+	previous, ok := g.LanguageBindings[key]
+	if !ok {
+		return "", fmt.Errorf("DeclareBindingReplace: %s not yet declared", key)
+	}
+	g.LanguageBindings[key] = command
+	return previous, nil
+}
+
+// normalizeBindingTriple trims and validates a (concept, language,
+// command) triple. Shared by DeclareBinding and DeclareBindingReplace.
+func normalizeBindingTriple(concept, language, command string) (string, string, string, error) {
 	concept = strings.TrimSpace(concept)
 	language = strings.TrimSpace(language)
 	command = strings.TrimSpace(command)
 	if concept == "" {
-		return ErrBindingConceptEmpty
+		return "", "", "", ErrBindingConceptEmpty
 	}
 	if language == "" {
-		return ErrBindingLanguageEmpty
+		return "", "", "", ErrBindingLanguageEmpty
 	}
 	if command == "" {
-		return ErrBindingCommandEmpty
+		return "", "", "", ErrBindingCommandEmpty
 	}
-	if g.LanguageBindings == nil {
-		g.LanguageBindings = make(map[string]string)
+	if strings.Contains(concept, ".") {
+		return "", "", "", fmt.Errorf("%w: %q contains '.' (reserved as binding-key delimiter)",
+			ErrBindingConceptInvalid, concept)
 	}
-	key := BindingKey{Concept: concept, Language: language}.String()
-	g.LanguageBindings[key] = command
-	return nil
+	if strings.Contains(language, ".") {
+		return "", "", "", fmt.Errorf("%w: %q contains '.' (reserved as binding-key delimiter)",
+			ErrBindingLanguageInvalid, language)
+	}
+	return concept, language, command, nil
 }
 
 // LookupBinding returns the command for the (concept, language)
@@ -140,6 +193,11 @@ func (g *Grid) LookupBinding(concept, language string) (string, bool) {
 //
 // Callers detect the suspend signal via errors.Is(err, ErrMissingBinding)
 // and inspect the concrete error to enumerate the gaps.
+//
+// Validation-pass-2 F52: the keys returned in MissingBindingError.Missing
+// are NORMALIZED (TrimSpace applied). Callers that passed in
+// whitespace-padded keys will see the trimmed form in the error; the
+// audit log records what was actually checked, not what was typed.
 func (g *Grid) CheckRequiredBindings(required []BindingKey) error {
 	if len(required) == 0 {
 		return nil

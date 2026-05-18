@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/witlox/ghyll/internal/skipdirs"
 )
 
 // Orphan-symbol extraction. Per init.feature scenario 41 (brownfield
@@ -54,14 +56,25 @@ var (
 	ErrContextDirMissing       = errors.New("context-source-dir-missing")
 )
 
+// MaxGoSourceFileSize bounds the per-file Go parser input to keep
+// brownfield init from OOMing on a giant generated file
+// (validation-pass-2 F23). 16 MB covers all realistic Go source.
+const MaxGoSourceFileSize = 16 * 1024 * 1024
+
 // ExtractContextSymbols walks projectDir/src/<contextID>/ and returns
 // the exported symbols discovered there. Currently supports Go only;
 // other languages produce ErrExtractorNotImplemented entries via
 // supportedLanguageExtractor.
 //
 // Returns ErrContextDirMissing if the per-context source directory
-// does not exist. The caller (init's brownfield discovery flow) is
-// expected to skip such contexts or prompt the operator.
+// does not exist or is a symlink (validation-pass-2 F5/F8). The
+// caller (init's brownfield discovery flow) is expected to skip
+// such contexts or prompt the operator.
+//
+// Per validation-pass-2 F24: per-file extraction errors are
+// accumulated into a multierror and returned alongside the
+// successfully-extracted symbols. A broken Go file no longer
+// aborts the entire context scan.
 //
 // Symbol order is deterministic: by file path, then by source position
 // within each file.
@@ -72,19 +85,29 @@ func ExtractContextSymbols(projectDir, contextID string) ([]ExportedSymbol, erro
 	if contextID == "" {
 		return nil, errors.New("ExtractContextSymbols: contextID empty")
 	}
+	if !isValidContextID(contextID) {
+		return nil, fmt.Errorf("ExtractContextSymbols: invalid contextID %q", contextID)
+	}
 	ctxDir := filepath.Join(projectDir, "src", contextID)
-	info, err := os.Stat(ctxDir)
+	info, err := os.Lstat(ctxDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %s", ErrContextDirMissing, ctxDir)
 		}
-		return nil, fmt.Errorf("ExtractContextSymbols: stat %q: %w", ctxDir, err)
+		return nil, fmt.Errorf("ExtractContextSymbols: lstat %q: %w", ctxDir, err)
+	}
+	// Validation-pass-2 F5: refuse a symlinked context directory.
+	// `src/contextA -> /etc` would otherwise walk the host FS.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: %q is a symlink (refused for containment)",
+			ErrContextDirMissing, ctxDir)
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("ExtractContextSymbols: %q is not a directory", ctxDir)
 	}
 
 	var symbols []ExportedSymbol
+	var fileErrs []error
 	walkErr := filepath.WalkDir(ctxDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -95,9 +118,13 @@ func ExtractContextSymbols(projectDir, contextID string) ([]ExportedSymbol, erro
 			if path == ctxDir {
 				return nil
 			}
-			if _, skip := dirsToSkipForProfile[d.Name()]; skip {
+			if dirsToSkipForProfile(d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Skip symlinks within the context tree.
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
@@ -122,7 +149,12 @@ func ExtractContextSymbols(projectDir, contextID string) ([]ExportedSymbol, erro
 		}
 		fileSymbols, err := extractor(projectDir, path, contextID)
 		if err != nil {
-			return fmt.Errorf("extract %q: %w", path, err)
+			// Validation-pass-2 F24: accumulate per-file errors
+			// rather than aborting the walk. Other files in the
+			// context continue to be scanned.
+			rel, _ := filepath.Rel(projectDir, path)
+			fileErrs = append(fileErrs, fmt.Errorf("extract %q: %w", rel, err))
+			return nil
 		}
 		symbols = append(symbols, fileSymbols...)
 		return nil
@@ -136,6 +168,9 @@ func ExtractContextSymbols(projectDir, contextID string) ([]ExportedSymbol, erro
 		}
 		return symbols[i].Name < symbols[j].Name
 	})
+	if len(fileErrs) > 0 {
+		return symbols, errors.Join(fileErrs...)
+	}
 	return symbols, nil
 }
 
@@ -154,10 +189,37 @@ func extractorFor(lang string) extractorFunc {
 
 // extractGoSymbols parses a single Go source file and returns its
 // exported top-level declarations. Implementation uses go/parser; we
-// skip function bodies (parser.SkipObjectResolution + ImportsOnly
-// would skip too much, so we parse declarations only via
-// parser.AllErrors with go/ast inspection).
-func extractGoSymbols(projectDir, filePath, contextID string) ([]ExportedSymbol, error) {
+// skip function bodies via parser.SkipObjectResolution.
+//
+// Validation-pass-2 F23:
+//   - Refuses files larger than MaxGoSourceFileSize so a generated
+//     mega-file can't OOM the parser.
+//   - Wraps parser.ParseFile in a deferred recover() — historical
+//     panics in go/parser on malformed UTF-8 boundaries no longer
+//     abort the brownfield scan.
+func extractGoSymbols(projectDir, filePath, contextID string) (out []ExportedSymbol, err error) {
+	info, statErr := os.Lstat(filePath)
+	if statErr != nil {
+		return nil, fmt.Errorf("stat: %w", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Symlinks already filtered at the walk level, but defend
+		// here in case a caller invokes the extractor directly.
+		return nil, nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	if info.Size() > MaxGoSourceFileSize {
+		return nil, fmt.Errorf("file exceeds max size %d bytes (got %d)",
+			MaxGoSourceFileSize, info.Size())
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("parser panicked: %v", rec)
+			out = nil
+		}
+	}()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filePath, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -165,8 +227,8 @@ func extractGoSymbols(projectDir, filePath, contextID string) ([]ExportedSymbol,
 		// init's brownfield discovery should report, not hide.
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	rel, err := filepath.Rel(projectDir, filePath)
-	if err != nil {
+	rel, relErr := filepath.Rel(projectDir, filePath)
+	if relErr != nil {
 		rel = filePath
 	}
 	var symbols []ExportedSymbol
@@ -224,20 +286,28 @@ func extractGoSymbols(projectDir, filePath, contextID string) ([]ExportedSymbol,
 }
 
 // ClassifyOrphans returns the subset of symbols that do not appear in
-// any file under specsDir. A symbol "appears" if its Name occurs as a
-// substring in any spec file's text (a permissive heuristic — false
-// positives are residue candidates for operator triage, not gate
-// failures).
+// any file under specsDir.
+//
+// Per validation-pass-2 F20: "appears" means the symbol's Name appears
+// as a token (word-boundary match), not a substring — so short names
+// like `Run` or `ID` don't false-negative because the letters happen
+// to appear inside English prose. Tokens are extracted from spec text
+// via identifier-like word boundaries.
+//
+// Per validation-pass-2 F6 / F19: spec text is tokenized once into a
+// set and looked up O(1) per symbol — was O(N×B) before.
+//
+// Per validation-pass-2 F5: total spec corpus is capped at
+// MaxSpecCorpusBytes (64 MB) — a hostile spec/ tree that would OOM
+// the previous unbounded concatenation now returns an error.
 //
 // If specsDir does not exist, every symbol is an orphan candidate
-// (no specs means no mapping). Files larger than maxSpecFileSize
-// are skipped to bound memory; encountering one returns an error
-// so the operator knows the scan was partial.
+// (no specs means no mapping).
 func ClassifyOrphans(symbols []ExportedSymbol, specsDir string) ([]OrphanCandidate, error) {
 	if len(symbols) == 0 {
 		return nil, nil
 	}
-	specText, err := loadSpecText(specsDir)
+	tokens, err := loadSpecTokens(specsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +322,7 @@ func ClassifyOrphans(symbols []ExportedSymbol, specsDir string) ([]OrphanCandida
 			})
 			continue
 		}
-		if !strings.Contains(specText, s.Name) {
+		if _, present := tokens[s.Name]; !present {
 			out = append(out, OrphanCandidate{
 				Symbol: s,
 				Reason: "no spec clause references this symbol",
@@ -267,23 +337,37 @@ func ClassifyOrphans(symbols []ExportedSymbol, specsDir string) ([]OrphanCandida
 // hostile file could exhaust memory.
 const maxSpecFileSize = 1 * 1024 * 1024
 
-// loadSpecText concatenates the text of every file under specsDir
-// recursively. Returns "" + nil if specsDir doesn't exist (every
-// symbol becomes orphan). Returns an error on any file too large to
-// safely read.
-func loadSpecText(specsDir string) (string, error) {
+// MaxSpecCorpusBytes bounds the aggregate spec text the orphan
+// classifier will ingest. 64 MB is comfortably above any realistic
+// spec/ tree and below the threshold where a 10× larger one (10k
+// files × 1MB each) would OOM the process (validation-pass-2 F5).
+const MaxSpecCorpusBytes = 64 * 1024 * 1024
+
+// loadSpecTokens scans every file under specsDir and returns the
+// set of identifier-like tokens it contains. Token = a run of
+// letters/digits/underscores; this matches how Go (and most
+// languages) form identifiers and avoids false-negative orphans on
+// symbols whose name appears as a substring inside an unrelated
+// English word.
+//
+// Returns nil + nil if specsDir doesn't exist (every symbol becomes
+// orphan). Returns an error on:
+//   - A single spec file exceeding maxSpecFileSize.
+//   - Aggregate corpus exceeding MaxSpecCorpusBytes (F5).
+//   - Filesystem errors during walk/read.
+func loadSpecTokens(specsDir string) (map[string]struct{}, error) {
 	if specsDir == "" {
-		return "", nil
+		return nil, nil
 	}
 	info, err := os.Stat(specsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return nil, nil
 		}
-		return "", fmt.Errorf("loadSpecText: %w", err)
+		return nil, fmt.Errorf("loadSpecTokens: %w", err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("loadSpecText: %q is not a directory", specsDir)
+		return nil, fmt.Errorf("loadSpecTokens: %q is not a directory", specsDir)
 	}
 	// Collect file paths during the walk; read them in a second pass.
 	// Avoids the TOCTOU-race pattern of reading inside the walk
@@ -293,6 +377,7 @@ func loadSpecText(specsDir string) (string, error) {
 		size int64
 	}
 	var files []sized
+	var totalBytes int64
 	walkErr := filepath.WalkDir(specsDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -304,32 +389,85 @@ func loadSpecText(specsDir string) (string, error) {
 			if path == specsDir {
 				return nil
 			}
-			if _, skip := dirsToSkipForProfile[d.Name()]; skip {
+			// loadSpecTokens walks an operator-supplied specs directory;
+			// IsBuildOrHarness skips just the build/harness dirs but
+			// NOT spec/doc (those are precisely the dirs we want).
+			if skipdirs.IsBuildOrHarness(d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Skip symlinks (validation-pass-2 F4 — refused inner symlinks
+		// so size-check on lstat isn't fooled by a small symlink to a
+		// large target).
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		fi, err := d.Info()
 		if err != nil {
 			return err
 		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
 		if fi.Size() > maxSpecFileSize {
-			return fmt.Errorf("spec file %q exceeds max size %d", path, maxSpecFileSize)
+			rel, _ := filepath.Rel(specsDir, path)
+			return fmt.Errorf("spec file %q exceeds max size %d", rel, maxSpecFileSize)
+		}
+		totalBytes += fi.Size()
+		if totalBytes > MaxSpecCorpusBytes {
+			return fmt.Errorf("spec corpus exceeds max %d bytes (under %q)",
+				MaxSpecCorpusBytes, specsDir)
 		}
 		files = append(files, sized{path: path, size: fi.Size()})
 		return nil
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return nil, walkErr
 	}
-	var sb strings.Builder
+	// Tokenize as we read so we never hold the full concatenated
+	// corpus in memory at once.
+	tokens := make(map[string]struct{})
 	for _, f := range files {
 		data, err := os.ReadFile(f.path)
 		if err != nil {
-			return "", fmt.Errorf("read %q: %w", f.path, err)
+			rel, _ := filepath.Rel(specsDir, f.path)
+			return nil, fmt.Errorf("read %q: %w", rel, err)
 		}
-		sb.Write(data)
-		sb.WriteByte('\n')
+		extractIdentifierTokens(data, tokens)
 	}
-	return sb.String(), nil
+	return tokens, nil
+}
+
+// extractIdentifierTokens scans data for identifier-like runs (letters,
+// digits, underscores) and adds each distinct token to out. Tokens
+// shorter than 2 characters are kept (so symbols like "T" aren't
+// missed) — the operator triages false negatives.
+func extractIdentifierTokens(data []byte, out map[string]struct{}) {
+	start := -1
+	add := func(s string) {
+		if s != "" {
+			out[s] = struct{}{}
+		}
+	}
+	for i := 0; i < len(data); i++ {
+		b := data[i]
+		isIdent := (b >= 'a' && b <= 'z') ||
+			(b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9') ||
+			b == '_'
+		if isIdent {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			add(string(data[start:i]))
+			start = -1
+		}
+	}
+	if start >= 0 {
+		add(string(data[start:]))
+	}
 }

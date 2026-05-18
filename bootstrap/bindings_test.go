@@ -65,17 +65,60 @@ func TestDeclareBinding_RejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestDeclareBinding_OverwriteAllowed(t *testing.T) {
-	// Init re-entry may amend a binding; we allow overwrite rather
-	// than forcing the operator through a delete + re-declare flow.
+func TestDeclareBinding_IdempotentSameValue(t *testing.T) {
+	// validation-pass-2 F53: same-value re-declare is idempotent
+	// (no error); different-value re-declare requires Replace.
 	g := NewGrid("alice")
 	_ = g.DeclareBinding("lint-clean", "go", "staticcheck")
-	if err := g.DeclareBinding("lint-clean", "go", "staticcheck && go vet"); err != nil {
-		t.Fatalf("overwrite should succeed: %v", err)
+	if err := g.DeclareBinding("lint-clean", "go", "staticcheck"); err != nil {
+		t.Errorf("same-value re-declare should be idempotent; got %v", err)
+	}
+}
+
+func TestDeclareBinding_DifferentValueRequiresReplace(t *testing.T) {
+	// validation-pass-2 F53: silent overwrite was a no-audit gap.
+	g := NewGrid("alice")
+	_ = g.DeclareBinding("lint-clean", "go", "staticcheck")
+	err := g.DeclareBinding("lint-clean", "go", "staticcheck && go vet")
+	if !errors.Is(err, ErrBindingOverwriteRequiresAck) {
+		t.Errorf("different-value re-declare: got %v; want ErrBindingOverwriteRequiresAck", err)
+	}
+	// DeclareBindingReplace lands the change and returns the previous.
+	prev, err := g.DeclareBindingReplace("lint-clean", "go", "staticcheck && go vet")
+	if err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if prev != "staticcheck" {
+		t.Errorf("Replace returned %q; want previous value 'staticcheck'", prev)
 	}
 	cmd, _ := g.LookupBinding("lint-clean", "go")
 	if cmd != "staticcheck && go vet" {
-		t.Errorf("cmd = %q; want overwritten value", cmd)
+		t.Errorf("cmd after Replace = %q; want amended value", cmd)
+	}
+}
+
+func TestDeclareBinding_RejectsDotInConcept(t *testing.T) {
+	// validation-pass-2 F51: '.' is the reserved key delimiter.
+	g := NewGrid("alice")
+	err := g.DeclareBinding("a.b", "go", "echo")
+	if !errors.Is(err, ErrBindingConceptInvalid) {
+		t.Errorf("got %v; want ErrBindingConceptInvalid", err)
+	}
+}
+
+func TestDeclareBinding_RejectsDotInLanguage(t *testing.T) {
+	g := NewGrid("alice")
+	err := g.DeclareBinding("lint-clean", "a.b", "echo")
+	if !errors.Is(err, ErrBindingLanguageInvalid) {
+		t.Errorf("got %v; want ErrBindingLanguageInvalid", err)
+	}
+}
+
+func TestDeclareBindingReplace_NotDeclaredYet(t *testing.T) {
+	g := NewGrid("alice")
+	_, err := g.DeclareBindingReplace("lint-clean", "go", "x")
+	if err == nil {
+		t.Error("Replace on unbound key should error")
 	}
 }
 

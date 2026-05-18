@@ -1,13 +1,29 @@
 package bootstrap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+
+	"golang.org/x/text/unicode/norm"
+
+	"github.com/witlox/ghyll/internal/skipdirs"
 )
+
+// MaxProfileWalkFiles bounds the per-ProfileRepo walk so a
+// pathological repo (millions of files, accidentally-checked-in
+// dataset) cannot stall init indefinitely. Validation-pass-2 F11.
+const MaxProfileWalkFiles = 100_000
+
+// MaxBoundedContexts bounds the number of bounded contexts a single
+// profile can hold. Validation-pass-2 F38: prevents O(n²) dup-scan
+// on DeclareContext and unbounded YAML output.
+const MaxBoundedContexts = 256
 
 // Init sub-phase A: project profile + context discovery.
 // Per ADR-011 sub-phase A:
@@ -47,7 +63,19 @@ const (
 //
 // DiamondRoles is fixed per ADR-003 (the four-role diamond). The
 // arrow set the harness ships with is derived from DiamondRoles.
+//
+// ProjectProfile is safe for concurrent use. All mutation paths
+// (DeclareContext / ProposeRefusal / AcceptRefusal / OverrideRefusal)
+// and all readers go through the internal mutex
+// (validation-pass-2 F9). Callers may observe a consistent
+// point-in-time view via the typed accessors while another goroutine
+// is mutating.
 type ProjectProfile struct {
+	// Public fields are populated once at construction (ProfileRepo)
+	// and effectively immutable for Mode, Languages, DiamondRoles.
+	// BoundedContexts is the exception — DeclareContext appends to
+	// it; readers should use BoundedContextsSnapshot() to get a
+	// race-safe view.
 	Mode            Mode
 	BoundedContexts []BoundedContext
 	Languages       []string
@@ -58,11 +86,29 @@ type ProjectProfile struct {
 	// caller threading it back through.
 	projectDir string
 
+	// mu guards BoundedContexts, risk, refusal. All exported methods
+	// that read or write any of these acquire mu.
+	mu sync.Mutex
+
 	// risk + refusal are set by ProposeRefusal / AcceptRefusal /
 	// OverrideRefusal in risk.go. Kept unexported so callers reach
 	// them through the typed accessors.
 	risk    RiskAssessment
 	refusal *RefusalOutcome
+}
+
+// BoundedContextsSnapshot returns a deep copy of the current
+// bounded-context list. Race-safe alternative to reading the public
+// slice directly. Validation-pass-2 F9.
+func (p *ProjectProfile) BoundedContextsSnapshot() []BoundedContext {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]BoundedContext, len(p.BoundedContexts))
+	copy(out, p.BoundedContexts)
+	return out
 }
 
 // FixedDiamondRoles is the four-role diamond per ADR-003. The diamond
@@ -91,28 +137,11 @@ var fileExtensionToLanguage = map[string]string{
 	".kt":   "kotlin",
 }
 
-// dirsToSkipForProfile is the set of directory names ProfileRepo will
-// not descend into when looking for source code or contexts. These
-// are harness-owned, build, or non-source areas.
-var dirsToSkipForProfile = map[string]struct{}{
-	".git":          {},
-	".ghyll":        {},
-	".github":       {},
-	"node_modules":  {},
-	"vendor":        {},
-	"target":        {},
-	"bin":           {},
-	"build":         {},
-	"dist":          {},
-	"out":           {},
-	"specs":         {},
-	"docs":          {},
-	"tests":         {},
-	"test":          {},
-	".idea":         {},
-	".vscode":       {},
-	"__pycache__":   {},
-	".pytest_cache": {},
+// dirsToSkipForProfile delegates to internal/skipdirs.IsSourceWalkSkip.
+// Validation-pass-2 F39 unified the previously-duplicated sets across
+// bootstrap and runner.
+func dirsToSkipForProfile(name string) bool {
+	return skipdirs.IsSourceWalkSkip(name)
 }
 
 // Profile errors.
@@ -123,8 +152,22 @@ var (
 	ErrProfileContextInvalid = errors.New("profile-context-id-invalid")
 )
 
+// Profile errors (in addition to the ones declared elsewhere).
+var (
+	ErrProfileWalkBudgetExceeded = errors.New("profile-walk-budget-exceeded")
+	ErrProfileTooManyContexts    = errors.New("profile-too-many-bounded-contexts")
+)
+
 // ProfileRepo scans projectDir and returns a profile describing the
 // repo state at init time.
+//
+// Wraps ProfileRepoContext with context.Background. Prefer
+// ProfileRepoContext from callers that have a context already.
+func ProfileRepo(projectDir string) (*ProjectProfile, error) {
+	return ProfileRepoContext(context.Background(), projectDir)
+}
+
+// ProfileRepoContext is the context-aware variant.
 //
 // Mode is determined by whether the directory contains any
 // recognized source code:
@@ -134,26 +177,37 @@ var (
 //     proposed from src/<id>/ subdirectories. Languages reflects the
 //     observed file extensions.
 //   - Greenfield: no source files found. BoundedContexts and Languages
-//     are empty; the operator supplies them via DeclareContext (and a
-//     future DeclareLanguage).
+//     are empty; the operator supplies them via DeclareContext.
 //
-// ProfileRepo does not write to disk or invoke external commands; it
-// is read-only over the directory tree.
-func ProfileRepo(projectDir string) (*ProjectProfile, error) {
+// ProfileRepoContext does not write to disk or invoke external
+// commands; it is read-only over the directory tree.
+//
+// File-count cap: the walk visits at most MaxProfileWalkFiles entries
+// before returning ErrProfileWalkBudgetExceeded — protects against
+// pathological repos (dataset trees, accidentally-checked-in
+// node_modules outside the skip list). Validation-pass-2 F11.
+//
+// Symlinks: per-entry symlinks in src/ are refused so that a malicious
+// or careless `src/foo -> /etc` does not become a proposed bounded
+// context. Validation-pass-2 F8.
+func ProfileRepoContext(ctx context.Context, projectDir string) (*ProjectProfile, error) {
 	if projectDir == "" {
 		return nil, ErrProfileNilDir
 	}
-	info, err := os.Stat(projectDir)
+	info, err := os.Lstat(projectDir)
 	if err != nil {
-		return nil, fmt.Errorf("ProfileRepo: stat %q: %w", projectDir, err)
+		return nil, fmt.Errorf("ProfileRepoContext: lstat %q: %w", projectDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("ProfileRepoContext: %q is a symlink (refused)", projectDir)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("ProfileRepo: %q is not a directory", projectDir)
+		return nil, fmt.Errorf("ProfileRepoContext: %q is not a directory", projectDir)
 	}
 
-	languages, hasSource, err := scanLanguages(projectDir)
+	languages, hasSource, err := scanLanguages(ctx, projectDir)
 	if err != nil {
-		return nil, fmt.Errorf("ProfileRepo: scan languages: %w", err)
+		return nil, fmt.Errorf("ProfileRepoContext: scan languages: %w", err)
 	}
 
 	mode := ModeGreenfield
@@ -162,7 +216,7 @@ func ProfileRepo(projectDir string) (*ProjectProfile, error) {
 		mode = ModeBrownfield
 		contexts, err = scanBrownfieldContexts(projectDir)
 		if err != nil {
-			return nil, fmt.Errorf("ProfileRepo: scan contexts: %w", err)
+			return nil, fmt.Errorf("ProfileRepoContext: scan contexts: %w", err)
 		}
 	}
 
@@ -182,17 +236,29 @@ func ProfileRepo(projectDir string) (*ProjectProfile, error) {
 // set) and returns the deduplicated, lexicographically sorted set of
 // detected language ids. hasSource reports whether any recognized
 // source file was found at all (drives greenfield vs brownfield).
-func scanLanguages(projectDir string) ([]string, bool, error) {
+//
+// Per validation-pass-2 F11: respects ctx.Cancel and caps the walk at
+// MaxProfileWalkFiles entries.
+func scanLanguages(ctx context.Context, projectDir string) ([]string, bool, error) {
 	seen := make(map[string]struct{})
+	visited := 0
 	err := filepath.WalkDir(projectDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		visited++
+		if visited > MaxProfileWalkFiles {
+			return fmt.Errorf("%w: visited %d (cap %d) under %q",
+				ErrProfileWalkBudgetExceeded, visited, MaxProfileWalkFiles, projectDir)
 		}
 		if d.IsDir() {
 			if path == projectDir {
 				return nil
 			}
-			if _, skip := dirsToSkipForProfile[d.Name()]; skip {
+			if dirsToSkipForProfile(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -219,6 +285,16 @@ func scanLanguages(projectDir string) ([]string, bool, error) {
 // (the operator must declare contexts manually even in brownfield —
 // directory-layout convention is a hint, not a requirement).
 //
+// Validation-pass-2 F8: rejects symlinks. A `src/foo -> /etc` would
+// otherwise propose a bounded context named "foo" pointing outside
+// the project tree.
+//
+// Validation-pass-2 F33: applies isValidContextID to each directory
+// name; names that don't pass (spaces, leading digits, Unicode that
+// might confuse downstream display layers) are silently skipped.
+// The operator can DeclareContext explicitly to add a context the
+// auto-scan rejected.
+//
 // Contexts are returned in lexicographic order by ID for determinism.
 func scanBrownfieldContexts(projectDir string) ([]BoundedContext, error) {
 	srcDir := filepath.Join(projectDir, "src")
@@ -231,12 +307,23 @@ func scanBrownfieldContexts(projectDir string) ([]BoundedContext, error) {
 	}
 	var out []BoundedContext
 	for _, entry := range entries {
+		// Lstat to refuse symlinks (DirEntry.Type reflects lstat,
+		// not stat).
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		if !entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
 		// Skip hidden / system directories under src/.
 		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		// Skip names that don't satisfy bounded-context-id format.
+		// Silent skip is intentional: the operator may have
+		// intentionally placed an unrelated tool dir under src/.
+		if !isValidContextID(name) {
 			continue
 		}
 		out = append(out, BoundedContext{
@@ -253,10 +340,14 @@ func scanBrownfieldContexts(projectDir string) ([]BoundedContext, error) {
 // brownfield mode to add a context the directory scan didn't find
 // (e.g., a context spanning multiple directories).
 //
-// The id must be non-empty after trimming and must not duplicate an
-// existing context's id. id must contain only ASCII letters, digits,
-// hyphens, and underscores — the bounded-context-id type in the
-// catalogue (gates.md §E).
+// The id must be non-empty after trimming and NFC normalization, and
+// must not duplicate an existing context's id. id must contain only
+// ASCII letters, digits, hyphens, and underscores — the bounded-
+// context-id type in the catalogue (gates.md §E). Validation-pass-2:
+//   - F30: NFC-normalize so composed/decomposed forms canonicalize
+//     before the ASCII check.
+//   - F38: cap at MaxBoundedContexts entries.
+//   - F9: take the profile mutex for thread safety.
 func (p *ProjectProfile) DeclareContext(id, description string) error {
 	if p == nil {
 		return errors.New("DeclareContext: nil ProjectProfile")
@@ -265,16 +356,31 @@ func (p *ProjectProfile) DeclareContext(id, description string) error {
 	if trimmed == "" {
 		return ErrProfileContextEmpty
 	}
-	if !isValidContextID(trimmed) {
-		return fmt.Errorf("%w: %q", ErrProfileContextInvalid, trimmed)
+	// Validation-pass-2 F50: refuse inputs that don't already equal
+	// their trimmed form. Silently normalizing " foo " → "foo"
+	// surprises operators who pasted three "different" inputs and
+	// got one ID.
+	if trimmed != id {
+		return fmt.Errorf("%w: %q has leading/trailing whitespace (use the trimmed form)",
+			ErrProfileContextInvalid, id)
+	}
+	normalized := norm.NFC.String(trimmed)
+	if !isValidContextID(normalized) {
+		return fmt.Errorf("%w: %q (bounded-context-id must match [a-zA-Z][a-zA-Z0-9_-]*)",
+			ErrProfileContextInvalid, normalized)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.BoundedContexts) >= MaxBoundedContexts {
+		return fmt.Errorf("%w: cap %d", ErrProfileTooManyContexts, MaxBoundedContexts)
 	}
 	for _, c := range p.BoundedContexts {
-		if c.ID == trimmed {
-			return fmt.Errorf("%w: %q", ErrProfileContextDup, trimmed)
+		if c.ID == normalized {
+			return fmt.Errorf("%w: %q", ErrProfileContextDup, normalized)
 		}
 	}
 	p.BoundedContexts = append(p.BoundedContexts, BoundedContext{
-		ID:          trimmed,
+		ID:          normalized,
 		Description: description,
 	})
 	return nil

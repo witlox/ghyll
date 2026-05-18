@@ -5,6 +5,49 @@ import (
 	"fmt"
 )
 
+// GridDefaults names the policy values BuildInitGrid bakes into the
+// new grid. Per validation-pass-2 F32: previously these came from
+// NewGrid's hardcoded defaults — the operator never saw them. Now
+// the caller explicitly supplies (or explicitly accepts the
+// hardcoded defaults via DefaultGridDefaults()) so the init flow has
+// a documented decision point.
+type GridDefaults struct {
+	SeverityThreshold          string
+	DepthLadder                []DepthLadderTier
+	InsufficientBasisRoundsMax int
+	RemediationRoundsMax       int
+}
+
+// DefaultGridDefaults returns the hardcoded ghyll defaults
+// (severity-threshold=medium, 4-tier ladder, 3/5 round caps). Calling
+// this is the explicit "I accept the defaults" path; passing custom
+// values is the policy-tuning path.
+func DefaultGridDefaults() GridDefaults {
+	return GridDefaults{
+		SeverityThreshold:          "medium",
+		DepthLadder:                DefaultDepthLadder(),
+		InsufficientBasisRoundsMax: 3,
+		RemediationRoundsMax:       5,
+	}
+}
+
+// validate rejects GridDefaults values that are obviously wrong.
+func (d GridDefaults) validate() error {
+	if d.SeverityThreshold == "" {
+		return errors.New("GridDefaults: SeverityThreshold empty")
+	}
+	if len(d.DepthLadder) == 0 {
+		return errors.New("GridDefaults: DepthLadder empty")
+	}
+	if d.InsufficientBasisRoundsMax < 1 {
+		return errors.New("GridDefaults: InsufficientBasisRoundsMax must be >= 1")
+	}
+	if d.RemediationRoundsMax < 1 {
+		return errors.New("GridDefaults: RemediationRoundsMax must be >= 1")
+	}
+	return nil
+}
+
 // End-of-init grid assembly.
 //
 // After sub-phase A (profile + contexts) and sub-phase B (auto-propose
@@ -27,6 +70,8 @@ var (
 	ErrInitVerdictsIncomplete  = errors.New("init-verdicts-incomplete")
 	ErrInitContextNotInProfile = errors.New("init-arrow-context-not-in-profile")
 	ErrInitRefusalAccepted     = errors.New("init-refusal-accepted")
+	ErrInitRefusalUnresolved   = errors.New("init-refusal-proposed-but-unresolved")
+	ErrInitDefaultsNotReviewed = errors.New("init-grid-defaults-not-reviewed")
 )
 
 // BuildInitGrid composes a *Grid from the init flow's outputs. The
@@ -57,7 +102,24 @@ var (
 // Grid.LanguageBindings is left as the caller supplied (typically
 // empty for greenfield first init; the runner declares missing
 // bindings via Grid.DeclareBinding during re-entry per D18).
+// BuildInitGrid composes a *Grid using the hardcoded
+// DefaultGridDefaults. Use BuildInitGridWith to pass operator-tuned
+// policy values explicitly.
 func BuildInitGrid(opID string, profile *ProjectProfile, proposals []*ArrowProposal) (*Grid, error) {
+	return BuildInitGridWith(opID, profile, proposals, DefaultGridDefaults())
+}
+
+// BuildInitGridWith is the explicit-defaults variant. The init flow
+// SHOULD prefer this so policy values are operator-visible
+// (validation-pass-2 F32).
+func BuildInitGridWith(opID string, profile *ProjectProfile, proposals []*ArrowProposal, defaults GridDefaults) (*Grid, error) {
+	if err := defaults.validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInitDefaultsNotReviewed, err)
+	}
+	return buildInitGridImpl(opID, profile, proposals, defaults)
+}
+
+func buildInitGridImpl(opID string, profile *ProjectProfile, proposals []*ArrowProposal, defaults GridDefaults) (*Grid, error) {
 	if opID == "" {
 		return nil, ErrInitOpIDEmpty
 	}
@@ -67,14 +129,23 @@ func BuildInitGrid(opID string, profile *ProjectProfile, proposals []*ArrowPropo
 	if profile.RefusalAccepted() {
 		return nil, ErrInitRefusalAccepted
 	}
+	// Validation-pass-2 F37: if refusal was proposed but never
+	// accepted or overridden, the operator hasn't resolved the
+	// decision. Refuse rather than silently bypass the refusal flow.
+	if profile.RefusalProposed() {
+		refusal := profile.Refusal()
+		if refusal == nil || (!refusal.Accepted && refusal.OverrideResidue == "") {
+			return nil, fmt.Errorf("%w", ErrInitRefusalUnresolved)
+		}
+	}
 	if len(proposals) == 0 {
 		return nil, ErrInitProposalsEmpty
 	}
 
-	// Index profile contexts so we can reject arrows pointing at
-	// undeclared ones.
-	declared := make(map[string]struct{}, len(profile.BoundedContexts))
-	for _, c := range profile.BoundedContexts {
+	// Snapshot the bounded contexts under the profile mutex (F9).
+	contexts := profile.BoundedContextsSnapshot()
+	declared := make(map[string]struct{}, len(contexts))
+	for _, c := range contexts {
 		declared[c.ID] = struct{}{}
 	}
 
@@ -83,9 +154,13 @@ func BuildInitGrid(opID string, profile *ProjectProfile, proposals []*ArrowPropo
 			return nil, errors.New("BuildInitGrid: nil ArrowProposal in proposals")
 		}
 		if !ap.AllVerdictsReceived() {
+			ap.mu.Lock()
+			haveCount := len(ap.verdicts)
+			wantCount := len(ap.Proposed)
+			ap.mu.Unlock()
 			return nil, fmt.Errorf("%w: arrow %s→%s/%s has %d of %d verdicts",
 				ErrInitVerdictsIncomplete, ap.Upstream, ap.Downstream, ap.Context,
-				len(ap.verdicts), len(ap.Proposed))
+				haveCount, wantCount)
 		}
 		if _, ok := declared[ap.Context]; !ok {
 			return nil, fmt.Errorf("%w: %q (arrow %s→%s)",
@@ -94,7 +169,12 @@ func BuildInitGrid(opID string, profile *ProjectProfile, proposals []*ArrowPropo
 	}
 
 	g := NewGrid(opID)
-	g.BoundedContexts = append([]BoundedContext(nil), profile.BoundedContexts...)
+	g.BoundedContexts = contexts
+	// Apply operator-supplied defaults over the NewGrid baseline.
+	g.SeverityThreshold = defaults.SeverityThreshold
+	g.DepthLadder = append([]DepthLadderTier(nil), defaults.DepthLadder...)
+	g.InsufficientBasisRoundsMax = defaults.InsufficientBasisRoundsMax
+	g.RemediationRoundsMax = defaults.RemediationRoundsMax
 
 	for _, ap := range proposals {
 		g.Arrows = append(g.Arrows, serializeArrow(ap))

@@ -203,6 +203,32 @@ func (s *ScenarioState) aProposedClauseFromRoleFile(role, clauseID, concept stri
 	if err != nil {
 		return fmt.Errorf("BuildProposal: %w", err)
 	}
+	// validation-pass-2 F29: Apply validates required-arg
+	// completeness. Auto-propose only populates DEFAULTED args from
+	// the catalogue schema; the operator-intended values for
+	// required-no-default args come from the role-args hint in the
+	// real harness. For the BDD test, fill them with synthetic values.
+	for i, p := range ap.Proposed {
+		if !p.IsMachine() {
+			continue
+		}
+		concept, ok := cat.Get(p.ConceptName)
+		if !ok {
+			continue
+		}
+		for argName, schema := range concept.Arguments {
+			if !schema.Required {
+				continue
+			}
+			if _, present := ap.Proposed[i].DefaultArgs[argName]; present {
+				continue
+			}
+			if ap.Proposed[i].DefaultArgs == nil {
+				ap.Proposed[i].DefaultArgs = map[string]any{}
+			}
+			ap.Proposed[i].DefaultArgs[argName] = syntheticBDDArgValue(schema.Type)
+		}
+	}
 	s.Proposal = ap
 	return nil
 }
@@ -271,12 +297,7 @@ func (s *ScenarioState) setupDefaultProposal() error {
 		return fmt.Errorf("load catalogue: %w", err)
 	}
 	concept, _ := cat.Get("compiles")
-	defaults := map[string]any{}
-	for name, schema := range concept.Arguments {
-		if schema.Default != nil {
-			defaults[name] = schema.Default
-		}
-	}
+	defaults := buildClauseArgs(concept)
 	s.Proposal = bootstrap.NewArrowProposal("analyst", "architect", "context-A", []bootstrap.ProposedClause{{
 		ID:          "G1",
 		Description: "default proposal for BDD setup",

@@ -64,13 +64,18 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 		called = true
 		return &Result{Pass: true}, nil
 	}
-	r.Register("test-concept", stub)
+	if err := r.Register("test-concept", stub); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 	if r.Count() != 1 {
 		t.Errorf("Count() = %d; want 1", r.Count())
 	}
-	got, ok := r.Lookup("test-concept")
+	got, identity, ok := r.Lookup("test-concept")
 	if !ok || got == nil {
 		t.Fatalf("Lookup returned %v, ok=%v", got, ok)
+	}
+	if identity.Concept != "test-concept" || identity.Generation != 1 {
+		t.Errorf("identity = %+v; want {test-concept, 1}", identity)
 	}
 	_, _ = got(context.Background(), Clause{})
 	if !called {
@@ -80,29 +85,64 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 
 func TestRegistry_LookupMissing(t *testing.T) {
 	r := NewRegistry()
-	if _, ok := r.Lookup("nothing"); ok {
+	if _, _, ok := r.Lookup("nothing"); ok {
 		t.Error("Lookup of missing concept should return false")
 	}
 }
 
-func TestRegistry_RegisterOverwrites(t *testing.T) {
+func TestRegistry_RegisterRefusesDuplicate(t *testing.T) {
+	// Per validation-pass-2 F14: Register refuses silent overwrite;
+	// callers use Replace explicitly to amend.
 	r := NewRegistry()
-	r.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
+	if err := r.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: true}, nil
-	})
-	r.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: false}, nil
 	})
-	e, _ := r.Lookup("x")
+	if !errors.Is(err, ErrConceptAlreadyRegistered) {
+		t.Errorf("second Register: got %v; want ErrConceptAlreadyRegistered", err)
+	}
+}
+
+func TestRegistry_ReplaceBumpsGeneration(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
+		return &Result{Pass: true}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, idV1, _ := r.Lookup("x")
+	if err := r.Replace("x", func(ctx context.Context, c Clause) (*Result, error) {
+		return &Result{Pass: false}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e, idV2, _ := r.Lookup("x")
+	if idV2.Generation != idV1.Generation+1 {
+		t.Errorf("Replace did not bump Generation: %d → %d", idV1.Generation, idV2.Generation)
+	}
 	res, _ := e(context.Background(), Clause{})
 	if res.Pass {
-		t.Error("re-registered evaluator did not take effect")
+		t.Error("Replace did not install new evaluator")
+	}
+}
+
+func TestRegistry_ReplaceMissing(t *testing.T) {
+	r := NewRegistry()
+	err := r.Replace("nope", func(ctx context.Context, c Clause) (*Result, error) {
+		return nil, nil
+	})
+	if err == nil {
+		t.Error("Replace on unregistered concept should error")
 	}
 }
 
 func TestRunner_EvaluatePass(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("trivial-pass", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("trivial-pass", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: true, Details: map[string]any{"hits": []map[string]any{}}}, nil
 	})
 	r := NewRunner(reg).
@@ -134,7 +174,7 @@ func TestRunner_EvaluatePass(t *testing.T) {
 
 func TestRunner_EvaluateFail(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("trivial-fail", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("trivial-fail", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: false, Details: map[string]any{"hits": []any{"some-hit"}}}, nil
 	})
 	r := NewRunner(reg)
@@ -149,7 +189,7 @@ func TestRunner_EvaluateFail(t *testing.T) {
 
 func TestRunner_EvaluateUnevaluated(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("returns-unevaluated", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("returns-unevaluated", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Unevaluated: true, Reason: "no signal available"}, nil
 	})
 	r := NewRunner(reg)
@@ -173,7 +213,7 @@ func TestRunner_EvaluateUnknownConcept(t *testing.T) {
 
 func TestRunner_EvaluateEvaluatorError(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("errors", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("errors", func(ctx context.Context, c Clause) (*Result, error) {
 		return nil, errors.New("binding broke")
 	})
 	r := NewRunner(reg)
@@ -188,7 +228,7 @@ func TestRunner_EvaluateEvaluatorError(t *testing.T) {
 
 func TestRunner_EvaluateNilResult(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("returns-nil", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("returns-nil", func(ctx context.Context, c Clause) (*Result, error) {
 		return nil, nil
 	})
 	r := NewRunner(reg)
@@ -200,7 +240,7 @@ func TestRunner_EvaluateNilResult(t *testing.T) {
 
 func TestRunner_EvaluatorPanicCaught(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("panics", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("panics", func(ctx context.Context, c Clause) (*Result, error) {
 		panic("evaluator went boom")
 	})
 	r := NewRunner(reg)
@@ -212,7 +252,7 @@ func TestRunner_EvaluatorPanicCaught(t *testing.T) {
 
 func TestRunner_EvaluateRequiresIDs(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
+	_ = reg.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: true}, nil
 	})
 	r := NewRunner(reg)

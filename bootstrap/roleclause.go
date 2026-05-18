@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -82,21 +83,15 @@ func ParseRoleFile(path string) (*RoleFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ParseRoleFile: %q: %w", path, err)
 	}
-	role := strings.TrimSuffix(filepathBase(path), ".md")
+	// Validation-pass-2 F25: use filepath.Base (handles Windows
+	// separators and special path forms) rather than a hand-rolled
+	// scan on '/' and '\'.
+	role := strings.TrimSuffix(filepath.Base(path), ".md")
 	return &RoleFile{
 		Role:    role,
 		Path:    path,
 		Clauses: clauses,
 	}, nil
-}
-
-// filepathBase returns the basename of a path. Inlined here to avoid
-// pulling path/filepath for a one-call need.
-func filepathBase(p string) string {
-	if i := strings.LastIndexAny(p, "/\\"); i >= 0 {
-		return p[i+1:]
-	}
-	return p
 }
 
 // parseExitGateTable finds the canonical exit-gate header and parses
@@ -119,6 +114,15 @@ func parseExitGateTable(content string) ([]RoleClause, error) {
 	// Skip header + separator (`|---|---|...`).
 	if headerLine+2 >= len(lines) {
 		return nil, ErrRoleFileNoTable
+	}
+	// Validation-pass-2 F48: verify the row at headerLine+1 actually
+	// looks like a separator. Without this, a missing separator
+	// silently drops the first data row (the parser treats it as the
+	// separator).
+	separator := strings.TrimSpace(lines[headerLine+1])
+	if !markdownSeparatorRE.MatchString(separator) {
+		return nil, fmt.Errorf("%w: expected separator after header (got %q)",
+			ErrRoleFileNoTable, separator)
 	}
 	var clauses []RoleClause
 	for i := headerLine + 2; i < len(lines); i++ {
@@ -144,14 +148,19 @@ func normalizeHeader(s string) string {
 
 // parseRoleClauseRow parses one markdown table row into a RoleClause.
 // Expects exactly 5 logical cells (between leading and trailing `|`).
+//
+// Validation-pass-2 F21: pipes inside backtick-quoted spans and
+// pipes escaped as `\|` are treated as literal cell content, not
+// cell separators. This lets clause descriptions or arg hints
+// contain `|` (e.g., a regex alternation in an args parenthetical).
 func parseRoleClauseRow(line string) (RoleClause, error) {
-	// Strip leading/trailing pipes, split by `|`. Cells may contain
-	// backticks but not raw pipe characters (markdown convention).
+	// Strip leading/trailing pipes.
 	inner := strings.TrimPrefix(line, "|")
 	inner = strings.TrimSuffix(inner, "|")
-	cells := strings.Split(inner, "|")
+	cells := splitMarkdownCells(inner)
 	if len(cells) != 5 {
-		return RoleClause{}, fmt.Errorf("%w: expected 5 cells, got %d", ErrRoleClauseMalformed, len(cells))
+		return RoleClause{}, fmt.Errorf("%w: expected 5 cells, got %d (escape literal | as \\| or wrap in backticks)",
+			ErrRoleClauseMalformed, len(cells))
 	}
 	for i := range cells {
 		cells[i] = strings.TrimSpace(cells[i])
@@ -189,6 +198,43 @@ func parseRoleClauseRow(line string) (RoleClause, error) {
 	}, nil
 }
 
+// splitMarkdownCells splits a markdown table row's inner content on
+// `|`, but respects backtick spans and `\|` escapes — pipes inside
+// those are kept as literal content. Validation-pass-2 F21.
+func splitMarkdownCells(inner string) []string {
+	var out []string
+	var cur strings.Builder
+	inBacktick := false
+	for i := 0; i < len(inner); i++ {
+		b := inner[i]
+		// Handle escaped pipe regardless of backtick state.
+		if b == '\\' && i+1 < len(inner) && inner[i+1] == '|' {
+			cur.WriteByte('|')
+			i++
+			continue
+		}
+		if b == '`' {
+			inBacktick = !inBacktick
+			cur.WriteByte(b)
+			continue
+		}
+		if b == '|' && !inBacktick {
+			out = append(out, cur.String())
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(b)
+	}
+	out = append(out, cur.String())
+	return out
+}
+
+// markdownSeparatorRE matches a markdown table separator row like
+// `|---|---|---|---|---|` (with optional whitespace and alignment
+// colons). Used to verify the row after the table header actually
+// is a separator (validation-pass-2 F48).
+var markdownSeparatorRE = regexp.MustCompile(`^\|(\s*:?-+:?\s*\|)+$`)
+
 // conceptCallRE matches `concept-name`(args). Supports backticked
 // concept names and arbitrary characters (incl. backticks, unicode
 // arrows) inside the parentheses. The args group is non-greedy and
@@ -210,14 +256,57 @@ var conceptCallRE = regexp.MustCompile("^`([a-z][a-z0-9-]*)`\\((.*)\\)$")
 //
 // Returns ("", "", nil) for attested clauses (cell reads "(judgement)").
 //
+// Validation-pass-2 F22: case-insensitive on "(judgement)" and
+// tolerates internal whitespace ("(Judgement)", "( judgement )" all
+// accepted).
+//
+// Validation-pass-2 F49: strips zero-width characters (ZWSP, ZWNJ,
+// ZWJ, BOM, WJ) and bidi controls before matching so a stray pasted
+// invisible char doesn't defeat the regex with no diagnostic.
+//
 // Returns an error if the cell doesn't match either form.
 func parseConceptCell(cell string) (string, string, error) {
-	if cell == "(judgement)" {
+	clean := stripZeroWidthAndBidi(cell)
+	// Case-insensitive attested check (F22).
+	if isAttestedJudgement(clean) {
 		return "", "", nil
 	}
-	m := conceptCallRE.FindStringSubmatch(cell)
+	m := conceptCallRE.FindStringSubmatch(clean)
 	if m == nil {
 		return "", "", fmt.Errorf("not a recognized concept call or (judgement)")
 	}
 	return m[1], m[2], nil
+}
+
+// isAttestedJudgement reports whether cell reads "(judgement)" with
+// case-insensitive matching and tolerance for whitespace inside the
+// parens.
+func isAttestedJudgement(cell string) bool {
+	cell = strings.TrimSpace(cell)
+	if !strings.HasPrefix(cell, "(") || !strings.HasSuffix(cell, ")") {
+		return false
+	}
+	inner := strings.TrimSpace(cell[1 : len(cell)-1])
+	return strings.EqualFold(inner, "judgement")
+}
+
+// stripZeroWidthAndBidi removes characters that are invisible but
+// could disrupt cell-level pattern matching. Mirrors the set
+// rejected by op-id validation (session.go) for consistency.
+func stripZeroWidthAndBidi(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case 0x200B, 0x200C, 0x200D, // ZWSP / ZWNJ / ZWJ
+			0x200E, 0x200F, // LRM / RLM
+			0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // LRE/RLE/PDF/LRO/RLO
+			0x2060,                         // WJ
+			0x2066, 0x2067, 0x2068, 0x2069, // LRI/RLI/FSI/PDI
+			0xFEFF: // BOM
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

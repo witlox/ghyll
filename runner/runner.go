@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,7 +40,9 @@ const (
 )
 
 // String returns the wire form used in attestation records and the
-// pass log.
+// pass log. Out-of-range values surface as "invalid-clause-status"
+// (loud, unambiguous corruption signal — validation-pass-2 F56) so
+// they don't look like a legitimate state to downstream readers.
 func (s ClauseStatus) String() string {
 	switch s {
 	case StatusPending:
@@ -53,7 +56,7 @@ func (s ClauseStatus) String() string {
 	case StatusUnevaluated:
 		return "unevaluated"
 	default:
-		return "unknown"
+		return fmt.Sprintf("invalid-clause-status(%d)", int(s))
 	}
 }
 
@@ -106,10 +109,16 @@ type Result struct {
 // Clause is the input to an evaluator: a concept name plus the
 // operator-confirmed arguments. ProjectDir scopes filesystem-bound
 // evaluators (e.g., no-todo-marker walks projectDir/<scope>).
+//
+// ClauseID and PassID identify the clause's containing record so
+// subprocess evaluators (future) can tag their logs with the same
+// IDs the runner uses in EvaluationRun. Per validation-pass-2 F59.
 type Clause struct {
 	Concept    string
 	Args       map[string]any
 	ProjectDir string
+	ClauseID   string
+	PassID     string
 }
 
 // Evaluator decides one machine clause. Returns the verdict + details
@@ -119,38 +128,110 @@ type Clause struct {
 // transition).
 type Evaluator func(ctx context.Context, c Clause) (*Result, error)
 
+// EvaluatorIdentity is a stable token identifying a specific evaluator
+// registration. Carried in EvaluationRun so attestation can pin the
+// exact binding that produced a result, even across hot-swaps. Per
+// validation-pass-2 F14.
+type EvaluatorIdentity struct {
+	Concept    string // the catalogue concept name
+	Generation int64  // increments on each Register call for this concept
+}
+
+// String returns "concept@gen" for log lines and audit records.
+func (e EvaluatorIdentity) String() string {
+	return fmt.Sprintf("%s@%d", e.Concept, e.Generation)
+}
+
+// registered holds an Evaluator plus its identity for attestation.
+type registered struct {
+	fn       Evaluator
+	identity EvaluatorIdentity
+}
+
 // Registry is the dispatcher from concept name to Evaluator.
 //
 // Built-in evaluators (universal-base concepts like no-todo-marker,
-// every-step-bound) register themselves via init() in their
-// respective files. Project-declared evaluators (language bindings:
+// every-step-bound) register themselves via RegisterBuiltins from
+// the caller. Project-declared evaluators (language bindings:
 // lint-clean.go, tests-pass.python, etc.) are registered explicitly
 // from the grid's LanguageBindings.
+//
+// Registry distinguishes Register (one-shot; refuses if already
+// registered) from Replace (explicit hot-swap; bumps Generation).
+// validation-pass-2 F14 — silent overwrite was a no-audit gap.
 type Registry struct {
-	mu sync.RWMutex
-	by map[string]Evaluator
+	mu  sync.RWMutex
+	by  map[string]registered
+	gen map[string]int64 // monotonic generation counter per concept
 }
+
+// Registry errors.
+var (
+	ErrConceptAlreadyRegistered = errors.New("runner-concept-already-registered")
+)
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{by: make(map[string]Evaluator)}
+	return &Registry{
+		by:  make(map[string]registered),
+		gen: make(map[string]int64),
+	}
 }
 
-// Register associates an evaluator with a concept name. Re-registering
-// overwrites silently — bindings declared late in init may amend an
-// earlier registration.
-func (r *Registry) Register(concept string, e Evaluator) {
+// Register associates an evaluator with a concept name. Refuses with
+// ErrConceptAlreadyRegistered if the concept is already registered;
+// use Replace for an explicit hot-swap.
+func (r *Registry) Register(concept string, e Evaluator) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.by[concept] = e
+	if _, exists := r.by[concept]; exists {
+		return fmt.Errorf("%w: %s", ErrConceptAlreadyRegistered, concept)
+	}
+	r.gen[concept] = 1
+	r.by[concept] = registered{
+		fn: e,
+		identity: EvaluatorIdentity{
+			Concept:    concept,
+			Generation: 1,
+		},
+	}
+	return nil
 }
 
-// Lookup returns the evaluator for the named concept, or nil + false.
-func (r *Registry) Lookup(concept string) (Evaluator, bool) {
+// Replace overwrites an existing registration and bumps the
+// Generation counter so subsequent EvaluationRun records carry the
+// new identity. Used during init re-entry when an operator amends a
+// binding (D18). Returns ErrConceptAlreadyRegistered if the concept
+// is not registered yet (use Register first).
+func (r *Registry) Replace(concept string, e Evaluator) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.by[concept]; !exists {
+		return fmt.Errorf("Replace: concept %q not registered", concept)
+	}
+	r.gen[concept]++
+	r.by[concept] = registered{
+		fn: e,
+		identity: EvaluatorIdentity{
+			Concept:    concept,
+			Generation: r.gen[concept],
+		},
+	}
+	return nil
+}
+
+// Lookup returns the evaluator and its identity for the named concept.
+// The identity captures which Generation of the registration was
+// observed, so a concurrent Replace does not invalidate the
+// EvaluationRun's attestation.
+func (r *Registry) Lookup(concept string) (Evaluator, EvaluatorIdentity, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	e, ok := r.by[concept]
-	return e, ok
+	reg, ok := r.by[concept]
+	if !ok {
+		return nil, EvaluatorIdentity{}, false
+	}
+	return reg.fn, reg.identity, true
 }
 
 // Count returns the number of registered evaluators.
@@ -163,15 +244,33 @@ func (r *Registry) Count() int {
 // EvaluationRun is the persistent record of one evaluator invocation.
 // Per gates.md §7.1a + the runner.md design: identifies the clause,
 // the pass, when it started/finished, and the result.
+//
+// Fields are exported for serialization. Callers MUST NOT mutate
+// fields after Evaluate returns (validation-pass-2 F58); the
+// EvaluationRun is a snapshot intended for attestation. To preserve
+// chain-of-custody, hash the record at the boundary before persisting
+// — any later mutation is then detectable.
+//
+// EvaluatorIdentity captures which Generation of the registry's
+// binding produced this result (F14). A concurrent Replace between
+// the Lookup and the evaluator return does not invalidate this — the
+// identity is captured under the read lock with the function.
+//
+// RunError carries the operational error (broken binding, evaluator
+// panic, etc.) so an EndStatus of Fail can be distinguished from a
+// real clause-fail in persisted records (F15). It is also a string
+// (not error) so the record serializes deterministically.
 type EvaluationRun struct {
 	ID          string
 	ClauseID    string
 	PassID      string
+	Evaluator   EvaluatorIdentity
 	StartedAt   time.Time
 	CompletedAt time.Time
 	StartStatus ClauseStatus
 	EndStatus   ClauseStatus
 	Result      *Result
+	RunError    string
 }
 
 // Duration returns the wall-clock time the evaluator ran.
@@ -181,6 +280,11 @@ func (e *EvaluationRun) Duration() time.Duration {
 	}
 	return e.CompletedAt.Sub(e.StartedAt)
 }
+
+// runIDCounter is a process-wide atomic counter that guarantees
+// unique EvaluationRun.IDs even when two Evaluate calls observe the
+// same nanosecond from time.Now() (validation-pass-2 F43).
+var runIDCounter atomic.Uint64
 
 // Runner orchestrates a single-clause evaluation. The runner type
 // holds the evaluator registry; instances are cheap and intended to
@@ -192,8 +296,8 @@ type Runner struct {
 	// timestamps. Defaults to time.Now when zero.
 	now func() time.Time
 
-	// idgen returns a fresh evaluation-run-id. Defaults to a
-	// timestamp-derived string when nil.
+	// idgen returns a fresh evaluation-run-id. Defaults to
+	// defaultIDGen (timestamp + monotonic counter).
 	idgen func() string
 }
 
@@ -226,9 +330,22 @@ func (r *Runner) WithIDGen(g func() string) *Runner {
 // invalid edge produces ErrInvalidTransition rather than a silent
 // status corruption.
 //
-// Evaluator panics are caught and reported as ErrEvaluatorPanicked
-// with a fail-status run record (panicking evaluators are binding
-// bugs the operator must fix, not silent clause failures).
+// Evaluator panics are caught via deferred recover() and reported as
+// ErrEvaluatorPanicked with a fail-status run record. CAVEATS
+// (validation-pass-2 F16):
+//   - recover() only catches panics on the goroutine it's deferred
+//     in. An evaluator that spawns its own goroutines and panics
+//     there will crash the process. Evaluators MUST NOT spawn
+//     goroutines that outlive the call.
+//   - A stack-overflow panic may be unrecoverable depending on
+//     remaining stack budget. Evaluators MUST NOT recurse unbounded.
+//
+// Future subprocess-based evaluators (language bindings) get
+// stronger isolation than the in-process built-ins.
+//
+// Clause's ClauseID and PassID are populated from the function
+// arguments if the caller passed zero values, so subprocess
+// evaluators (future) see them in c.ClauseID / c.PassID.
 func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause) (*EvaluationRun, error) {
 	if r.Registry == nil {
 		return nil, errors.New("Evaluate: runner has no Registry")
@@ -236,9 +353,16 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	if clauseID == "" || passID == "" {
 		return nil, errors.New("Evaluate: clauseID and passID must be non-empty")
 	}
-	evaluator, ok := r.Registry.Lookup(c.Concept)
+	evaluator, identity, ok := r.Registry.Lookup(c.Concept)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrEvaluatorUnknown, c.Concept)
+	}
+	// Populate the clause's IDs so the evaluator sees them.
+	if c.ClauseID == "" {
+		c.ClauseID = clauseID
+	}
+	if c.PassID == "" {
+		c.PassID = passID
 	}
 
 	startedAt := r.now()
@@ -252,15 +376,22 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	endStatus, runErr := r.deriveEndStatus(runStatus, result, err)
 	completedAt := r.now()
 
+	var runErrText string
+	if runErr != nil {
+		runErrText = runErr.Error()
+	}
+
 	return &EvaluationRun{
 		ID:          r.idgen(),
 		ClauseID:    clauseID,
 		PassID:      passID,
+		Evaluator:   identity,
 		StartedAt:   startedAt,
 		CompletedAt: completedAt,
 		StartStatus: startStatus, // observable lifecycle starts at pending
 		EndStatus:   endStatus,
 		Result:      result,
+		RunError:    runErrText,
 	}, runErr
 }
 
@@ -307,14 +438,17 @@ func safeInvoke(ctx context.Context, e Evaluator, c Clause) (result *Result, err
 	return e(ctx, c)
 }
 
-// defaultIDGen returns a sortable timestamp-derived id. Format:
-// "ev-YYYYMMDD-HHMMSS-nanos" so log readers can group by pass and
-// time at a glance. Not cryptographically random; the runner does
-// not need that property.
+// defaultIDGen returns a sortable timestamp-derived id with a
+// monotonic process-wide counter appended (validation-pass-2 F43):
+// "ev-YYYYMMDD-HHMMSS-nanos-counter". Two Evaluate calls in the same
+// nanosecond produce different IDs because the counter differs.
+// Not cryptographically random; the runner needs uniqueness, not
+// unpredictability.
 func defaultIDGen() string {
 	t := time.Now().UTC()
-	return fmt.Sprintf("ev-%04d%02d%02d-%02d%02d%02d-%09d",
+	n := runIDCounter.Add(1)
+	return fmt.Sprintf("ev-%04d%02d%02d-%02d%02d%02d-%09d-%d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(),
-		t.Nanosecond())
+		t.Nanosecond(), n)
 }

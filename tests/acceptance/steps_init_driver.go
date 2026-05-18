@@ -67,12 +67,7 @@ func (s *ScenarioState) operatorHasProvidedAllVerdicts() error {
 		DiamondRoles:    bootstrap.FixedDiamondRoles,
 	}
 	concept, _ := cat.Get("compiles")
-	defaults := map[string]any{}
-	for name, schema := range concept.Arguments {
-		if schema.Default != nil {
-			defaults[name] = schema.Default
-		}
-	}
+	defaults := buildClauseArgs(concept)
 	ap := bootstrap.NewArrowProposal("analyst", "architect", "contextA", []bootstrap.ProposedClause{{
 		ID:          "G1",
 		Description: "compiles for end-to-end test",
@@ -256,7 +251,7 @@ func (s *ScenarioState) initRerunsFromScratch() error {
 		EvalType:    "machine",
 		DepthType:   "depth-robust",
 		ConceptName: "compiles",
-		DefaultArgs: map[string]any{},
+		DefaultArgs: buildClauseArgs(concept),
 		DefaultCost: concept.DefaultCost,
 	}})
 	if err := ap.Apply("G1", bootstrap.Verdict{Kind: bootstrap.VerdictConfirm}, cat); err != nil {

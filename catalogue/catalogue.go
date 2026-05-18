@@ -199,10 +199,19 @@ func (c *Catalogue) Count() int {
 // Production code MUST use Load — the closed-vocabulary guarantee
 // (ADR-005) depends on schemas being shipped with the harness. This
 // helper bypasses that for test isolation; it is not safe for
-// production use.
+// production use. Go cannot enforce the test-only contract; CI lint
+// rules should grep for NewForTest calls outside *_test.go and
+// fail the build if any are found (validation-pass-2 F44).
+//
+// Panics on duplicate concept names (validation-pass-2 F60) — Load
+// rejects duplicates explicitly; the test helper should be at least
+// as strict so a test-fixture bug is surfaced loudly.
 func NewForTest(concepts ...Concept) *Catalogue {
 	cat := &Catalogue{concepts: make(map[string]Concept, len(concepts))}
 	for _, c := range concepts {
+		if _, dup := cat.concepts[c.Name]; dup {
+			panic(fmt.Sprintf("catalogue.NewForTest: duplicate concept name %q", c.Name))
+		}
 		cat.concepts[c.Name] = c
 	}
 	return cat

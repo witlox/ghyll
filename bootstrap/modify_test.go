@@ -329,43 +329,26 @@ func TestIsPathGlobNarrowing(t *testing.T) {
 	}
 }
 
-func TestIsRegexWidening(t *testing.T) {
-	cases := []struct {
-		orig, proposed string
-		want           bool
-	}{
-		{"^TODO", "^TODO|^XXX", true},      // more alternations → widening
-		{"^TODO|^XXX", "^TODO", false},     // fewer alternations → narrowing
-		{"^TODO", "^TODO", true},           // equal
-		{"^TODO|^XXX", "^TODO|^XXX", true}, // equal
-		{"^A|^B|^C", "^A|^B|^C|^D", true},  // strict superset
-		{"^A|^B", "^A|^C", false},          // different alternations (B replaced by C)
-		{"^A", "^B", false},                // completely different
+func TestCheckModification_RegexAlwaysRefused(t *testing.T) {
+	// validation-pass-2 F2: regex-modify is refused outright. The
+	// prior alternation-split heuristic was bypassable.
+	cat := catalogue.NewForTest(catalogue.Concept{
+		Name: "regex-test",
+		Arguments: map[string]catalogue.ArgumentSchema{
+			"pattern": {Type: "regex", Required: true},
+		},
+		Evaluator: catalogue.EvaluatorContract{Contract: "machine"},
+	})
+	orig := map[string]any{"pattern": "^TODO"}
+	// Even an "obvious widening" is refused.
+	prop := map[string]any{"pattern": "^TODO|^XXX"}
+	err := CheckModification("regex-test", orig, prop, cat)
+	if !errors.Is(err, ErrModifyRegexUnsupported) {
+		t.Errorf("err = %v; want ErrModifyRegexUnsupported", err)
 	}
-	for _, c := range cases {
-		t.Run(c.orig+"->"+c.proposed, func(t *testing.T) {
-			got := isRegexWidening(c.orig, c.proposed)
-			if got != c.want {
-				t.Errorf("isRegexWidening(%q, %q) = %v; want %v", c.orig, c.proposed, got, c.want)
-			}
-		})
-	}
-}
-
-func TestSplitTrim(t *testing.T) {
-	got := splitTrim(" a | b |c", "|")
-	want := []string{"a", "b", "c"}
-	if len(got) != 3 {
-		t.Fatalf("got len %d; want 3", len(got))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("[%d] = %q; want %q", i, got[i], want[i])
-		}
-	}
-	// Empty pieces dropped.
-	got = splitTrim("|", "|")
-	if len(got) != 0 {
-		t.Errorf("|→%v; want []", got)
+	// Identity (same value) is allowed (no-op modify).
+	same := map[string]any{"pattern": "^TODO"}
+	if err := CheckModification("regex-test", orig, same, cat); err != nil {
+		t.Errorf("identical regex args should pass; got %v", err)
 	}
 }

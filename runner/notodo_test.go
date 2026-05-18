@@ -210,8 +210,14 @@ func TestNoTodoMarker_RespectsContext(t *testing.T) {
 func TestRegisterBuiltins(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltins(r)
-	if _, ok := r.Lookup("no-todo-marker"); !ok {
+	if _, _, ok := r.Lookup("no-todo-marker"); !ok {
 		t.Error("no-todo-marker not registered by RegisterBuiltins")
+	}
+	// Second call goes through Replace (Generation bumps).
+	RegisterBuiltins(r)
+	_, id, _ := r.Lookup("no-todo-marker")
+	if id.Generation != 2 {
+		t.Errorf("Generation after second RegisterBuiltins = %d; want 2", id.Generation)
 	}
 }
 
