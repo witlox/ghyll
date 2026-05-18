@@ -84,10 +84,63 @@ func (r FindingRecord) AsDeriveInput() Finding {
 // this struct is the runtime hot path. A separate ledger would
 // pull from FindingsStore at checkpoint boundaries.
 type FindingsStore struct {
-	mu      sync.RWMutex
-	byArrow map[string][]FindingRecord // arrowID → findings
-	byID    map[string]findingLocator  // findingID → (arrowID, idx)
-	version uint64                     // F5: snapshot version
+	mu        sync.RWMutex
+	byArrow   map[string][]FindingRecord // arrowID → findings
+	byID      map[string]findingLocator  // findingID → (arrowID, idx)
+	version   uint64                     // F5: snapshot version
+	observers []FindingsObserver         // phase-5 hook
+}
+
+// FindingsObserver is invoked under the store's write lock on every
+// mutation (Raise/Transition/Forget/ForgetArrow). The future state-
+// machine engine registers an observer to journal mutations without
+// polling Version().
+//
+// Observers MUST be fast and non-blocking — they run with the store's
+// write lock held. Long work (disk I/O, network) should hand off to a
+// goroutine and return immediately.
+//
+// Kind values are the wire-stable names below. `before` is the zero
+// FindingRecord for Raise events; `after` is the zero FindingRecord
+// for Forget events. Both are populated for Transition.
+type FindingsObserver func(event FindingsEvent)
+
+// FindingsEventKind names the mutation type for FindingsEvent.
+type FindingsEventKind string
+
+const (
+	FindingsEventRaise       FindingsEventKind = "raise"
+	FindingsEventTransition  FindingsEventKind = "transition"
+	FindingsEventForget      FindingsEventKind = "forget"
+	FindingsEventForgetArrow FindingsEventKind = "forget-arrow"
+)
+
+// FindingsEvent is the payload delivered to a FindingsObserver.
+type FindingsEvent struct {
+	Kind    FindingsEventKind
+	ArrowID string        // present for all events
+	Before  FindingRecord // zero for Raise; zero for ForgetArrow's per-record fan-out
+	After   FindingRecord // zero for Forget
+	Version uint64        // store version AFTER the mutation
+}
+
+// Observe registers an observer to be invoked on every mutation.
+// Observers fire in registration order. The store retains the
+// observer; there is no Unregister (a typical engine registers
+// exactly one observer at startup).
+func (s *FindingsStore) Observe(fn FindingsObserver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observers = append(s.observers, fn)
+}
+
+// emit fires all observers under the existing write lock. Caller MUST
+// hold s.mu (write lock). Inlined into mutators so the lock window is
+// the same span as the state mutation.
+func (s *FindingsStore) emit(e FindingsEvent) {
+	for _, ob := range s.observers {
+		ob(e)
+	}
 }
 
 // findingLocator points to a record's location inside byArrow.
@@ -166,6 +219,12 @@ func (s *FindingsStore) Raise(r FindingRecord) error {
 	// dangles byID.
 	s.byID[r.ID] = findingLocator{arrowID: r.ArrowID, idx: idx}
 	s.version++
+	s.emit(FindingsEvent{
+		Kind:    FindingsEventRaise,
+		ArrowID: r.ArrowID,
+		After:   stored,
+		Version: s.version,
+	})
 	return nil
 }
 
@@ -209,6 +268,7 @@ func (s *FindingsStore) transitionImpl(id string, to FindingStatus, role, reason
 	if rec.TransitionCount >= maxFindingTransitions {
 		return fmt.Errorf("%w: %s has churned %d times", ErrFindingTransitionChurn, id, rec.TransitionCount)
 	}
+	before := *rec
 	rec.Status = to
 	rec.TransitionCount++
 	if role != "" || reason != "" {
@@ -220,6 +280,13 @@ func (s *FindingsStore) transitionImpl(id string, to FindingStatus, role, reason
 		}
 	}
 	s.version++
+	s.emit(FindingsEvent{
+		Kind:    FindingsEventTransition,
+		ArrowID: rec.ArrowID,
+		Before:  before,
+		After:   *rec,
+		Version: s.version,
+	})
 	return nil
 }
 
@@ -321,6 +388,7 @@ func (s *FindingsStore) Forget(id string) error {
 		return fmt.Errorf("%w: %s", ErrFindingUnknownID, id)
 	}
 	arr := s.byArrow[loc.arrowID]
+	before := arr[loc.idx]
 	arr = append(arr[:loc.idx], arr[loc.idx+1:]...)
 	s.byArrow[loc.arrowID] = arr
 	delete(s.byID, id)
@@ -329,6 +397,12 @@ func (s *FindingsStore) Forget(id string) error {
 		s.byID[arr[i].ID] = findingLocator{arrowID: loc.arrowID, idx: i}
 	}
 	s.version++
+	s.emit(FindingsEvent{
+		Kind:    FindingsEventForget,
+		ArrowID: loc.arrowID,
+		Before:  before,
+		Version: s.version,
+	})
 	return nil
 }
 
@@ -346,6 +420,16 @@ func (s *FindingsStore) ForgetArrow(arrowID string) int {
 	}
 	delete(s.byArrow, arrowID)
 	s.version++
+	// Fan-out one ForgetArrow event per record so observers can journal
+	// each removal. Single bulk event would lose per-record identity.
+	for _, r := range src {
+		s.emit(FindingsEvent{
+			Kind:    FindingsEventForgetArrow,
+			ArrowID: arrowID,
+			Before:  r,
+			Version: s.version,
+		})
+	}
 	return len(src)
 }
 

@@ -127,6 +127,16 @@ type Clause struct {
 	ProjectDir string
 	ClauseID   string
 	PassID     string
+
+	// ArrowID identifies the arrow this clause belongs to per
+	// gates.md §7.1a. Optional in v1 (zero string acceptable); the
+	// phase-5 engine populates it so persisted EvaluationRun records
+	// are self-keyed without a retrofit.
+	ArrowID string
+
+	// GridVersion is the bump-counter for the engine's grid at the
+	// time of evaluation. Zero when no engine is attached.
+	GridVersion uint64
 }
 
 // Evaluator decides one machine clause. Returns the verdict + details
@@ -274,6 +284,8 @@ type EvaluationRun struct {
 	ID          string
 	ClauseID    string
 	PassID      string
+	ArrowID     string // gates.md §7.1a arrow identity — populated from Clause.ArrowID
+	GridVersion uint64 // bump-counter from the engine's grid; 0 if unset
 	Evaluator   EvaluatorIdentity
 	StartedAt   time.Time
 	CompletedAt time.Time
@@ -422,6 +434,8 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 		ID:          r.idgen(),
 		ClauseID:    clauseID,
 		PassID:      passID,
+		ArrowID:     c.ArrowID,
+		GridVersion: c.GridVersion,
 		Evaluator:   identity,
 		StartedAt:   startedAt,
 		CompletedAt: completedAt,

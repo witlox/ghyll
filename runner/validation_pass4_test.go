@@ -443,3 +443,62 @@ func TestF31_FilteredParentEnv_DoesNotLeakSecrets(t *testing.T) {
 		}
 	}
 }
+
+// Phase-5 preflight: FindingsStore.Observe fires for every mutation
+// kind under the write lock.
+func TestPhase5Preflight_FindingsStoreObserve(t *testing.T) {
+	s := NewFindingsStore()
+	var events []FindingsEvent
+	s.Observe(func(e FindingsEvent) { events = append(events, e) })
+	_ = s.Raise(FindingRecord{ID: "F1", ArrowID: "A1", Type: FindingTypeLocalBug})
+	_ = s.Transition("F1", FindingStatusResolved)
+	_ = s.Forget("F1")
+	_ = s.Raise(FindingRecord{ID: "F2", ArrowID: "A2", Type: FindingTypeLocalBug})
+	_ = s.ForgetArrow("A2")
+	wantKinds := []FindingsEventKind{
+		FindingsEventRaise,
+		FindingsEventTransition,
+		FindingsEventForget,
+		FindingsEventRaise,
+		FindingsEventForgetArrow,
+	}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("event count = %d; want %d (events: %+v)", len(events), len(wantKinds), events)
+	}
+	for i, want := range wantKinds {
+		if events[i].Kind != want {
+			t.Errorf("event[%d].Kind = %v; want %v", i, events[i].Kind, want)
+		}
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i].Version <= events[i-1].Version {
+			t.Errorf("event[%d].Version = %d; want > %d", i, events[i].Version, events[i-1].Version)
+		}
+	}
+}
+
+// Phase-5 preflight: Clause.ArrowID + GridVersion propagate into the
+// persisted EvaluationRun.
+func TestPhase5Preflight_EvaluationRunCarriesArrowIDAndGridVersion(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register("test-pass", func(_ context.Context, _ Clause) (*Result, error) {
+		return &Result{Pass: true}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(reg)
+	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{
+		Concept:     "test-pass",
+		ArrowID:     "analyst→arch/L4/checkout",
+		GridVersion: 42,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ArrowID != "analyst→arch/L4/checkout" {
+		t.Errorf("ArrowID = %q; want analyst→arch/L4/checkout", run.ArrowID)
+	}
+	if run.GridVersion != 42 {
+		t.Errorf("GridVersion = %d; want 42", run.GridVersion)
+	}
+}
