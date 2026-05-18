@@ -71,9 +71,10 @@ exist that are NOT role files (no `init.md`, no `adversary.md`):
   round re-attack spawns a fresh `adversary` instance.
 
 These identities label attestation paths and finding provenance.
-Attestation paths in §10.2 may therefore include them, e.g.,
-`init→analyst`, `analyst→adversary→architect`,
-`implementer→adversary→integrator`.
+Attestation paths in §10.2 may therefore include them. The on-disk
+path encoding uses `__` (double underscore) as the separator between
+role-ids (filesystem-safe): `init__analyst`,
+`analyst__adversary__architect`, `implementer__adversary__integrator`.
 
 A **role transition** is the move from one role to the next. Every
 transition IS an **arrow**. An arrow is a first-class artifact: it
@@ -110,6 +111,8 @@ diamond.
 | Depth ladder labels | Project's labels for the depth tiers used by the adversarial phase (§11.1); the harness ships a generic 4-tier default that the project may override |
 | Language bindings | Per-language instrument bindings for catalogue concepts (e.g., `lint-clean.go = staticcheck && go vet`). **The harness ships NO language defaults**; each project declares its own bindings here. If a needed binding is absent at any later point, the harness suspends and re-enters initialization to obtain it. |
 | Severity thresholds | The threshold above which an open finding blocks an arrow (§7.3) |
+| `insufficient-basis-rounds-max` | Default `3`. Max rounds the operator can return `insufficient-basis` on the same clause before escalation (§10). |
+| `remediation-rounds-max` | Default `5`. Max rounds the adversarial phase re-attacks the same finding before escalating non-convergence to the operator (§11). |
 | Artifact ID conventions | Hybrid: path-based addressing is the default; clauses that other arrows depend on (or that must survive content rewordings) get a manually-assigned `id:` field. The operator decides per clause whether a manual ID is needed. |
 | Per-arrow dependency declarations | Which spec artifacts each arrow depends on, for invalidation propagation (§7.2). Each declaration carries a granularity: `file` \| `section` \| `clause-id`. |
 | Explicit residue | Which `(stratum, context)` cells the operator has chosen NOT to declare, and why |
@@ -428,11 +431,16 @@ state machine.
 ### 7.1 Clause lifecycle
 
 ```
-                          ┌─ machine evaluator → pass | fail
+                          ┌─ machine evaluator → running → pass | fail
 (initial: pending) ───────┤
                           └─ attested → awaiting-attestation
                                            └─ operator → pass | fail | insufficient-basis
 ```
+
+The `running` state is entered when a machine evaluator is actively
+invoked and is observable to other components (for liveness checks,
+concurrency coordination). Attested clauses skip `running` because
+operator decision is not a runtime evaluation.
 
 At any evaluation, if the model depth used was below the clause's
 declared depth requirement, the clause status is `unevaluated` instead
@@ -445,6 +453,10 @@ of `pass` / `fail` / etc. The `unevaluated` status carries an optional
   clause could not select hint locations by a stated rule. In this
   case the role *also* raises a finding of type `unable-to-hint`
   against itself (see §7.3).
+- `producer-no-response` — the producer role failed to respond to a
+  hint-emission request within the configured timeout. The clause is
+  recorded `unevaluated` pending re-route at deeper tier or operator
+  intervention.
 
 `unevaluated` is a first-class status. An arrow with any `unevaluated`
 clause cannot close — `provisional` is not a substitute. A
@@ -465,7 +477,7 @@ Clause status is **per-pass**. Pass history lives in the checkpoint
 log, not in the status field.
 
 **Clause status set:**
-`pending`, `pass`, `fail`, `awaiting-attestation`,
+`pending`, `running`, `pass`, `fail`, `awaiting-attestation`,
 `insufficient-basis`, `unevaluated`.
 
 ### 7.1a Arrow and pass identity
@@ -501,6 +513,10 @@ Pass status set: `running`, `completed`, `aborted`.
   - `crash` — harness or model failure; arrow status unchanged.
   - `manual-stop` — operator closed session mid-pass; arrow status
     unchanged.
+  - `requires-deeper-artifact` — the operator routed an
+    `insufficient-basis` clause upstream for deeper rework after N
+    rounds (§10). Arrow status unchanged; the upstream arrow becomes
+    the target for a new pass at a deeper tier.
 
 Only `invalidated` aborts change the arrow's status. Other abort
 reasons leave the arrow at whatever the latest *completed* pass
@@ -589,6 +605,21 @@ Findings are raised by the **adversarial phase** of an arrow (§11) or
 by a role against itself (e.g., `unable-to-hint`). They live on the
 arrow artifact, not on a clause.
 
+**Finding-type enum** (closed, harness-shipped):
+
+- `clause-falsification` — raised when adversarial phase falsified a
+  specific declared clause (§11 sub-activity 1).
+- `open-sweep` — raised by adversarial phase scanning for defects no
+  declared clause names (§11 sub-activity 2).
+- `depth-below-min` — raised by depth-classification when a requirement
+  was classified below its declared minimum (§11 sub-activity 3).
+- `unable-to-hint` — raised by a producer against itself when it
+  cannot select hint locations by a stated rule (§9). Routed to
+  remediation the same way clause-falsification findings are.
+
+New finding types enter via deliberate harness changes, like the
+catalogue concepts (§5.1).
+
 ```
 (open) ──┬─ producer fixes → adversarial phase re-attacks ──┬─ resolved
          │                                          └─ open (still defective)
@@ -639,7 +670,20 @@ precedence above `provisional`. Re-route at deeper tier to clear;
 if still unevaluated after a remediation round, the operator
 attests severity directly (recording the basis).
 
-**Finding status set:** `open`, `resolved`, `accepted-risk`.
+**Finding status set:** `open`, `running` (re-attack in progress),
+`resolved`, `accepted-risk`, `unevaluated` (severity could not be
+assigned — adversary was below required depth).
+
+`unevaluated` findings block `no-open-finding` (cannot be silently
+disposed). Re-traversal at deeper tier may reassign severity, at
+which point the finding becomes `open` with its real severity and
+must then be `resolved` or `accepted-risk`.
+
+The clause-status `pass` is **independent** of finding disposition:
+a clause becomes `pass` when its evaluation succeeds; findings live
+on the arrow, not on a single clause. An arrow with `pass` clauses
+but `open` findings above threshold is `blocked` per §7.2 via the
+auto-inserted `no-open-finding` (§11.3).
 
 ### 7.4 Project-level status (derived)
 
@@ -734,8 +778,10 @@ An arrow with any `attested` clause in `awaiting-attestation` or
 **`insufficient-basis` escalation.** Returning `insufficient-basis`
 keeps the arrow `provisional` indefinitely. The producer may
 re-emit the hint at a deeper depth tier in the next remediation
-round — a re-emit is itself a remediation step. After **N=3 rounds**
-of `insufficient-basis` on the same clause, the clause escalates:
+round — a re-emit is itself a remediation step. After
+**`insufficient-basis-rounds-max` rounds** (default 3, set at init
+per §2.1) of `insufficient-basis` on the same clause, the clause
+escalates:
 
 - Either the operator attests `accepted-risk` with a
   `write-residue-note` recording why the basis remains insufficient,
@@ -743,7 +789,10 @@ of `insufficient-basis` on the same clause, the clause escalates:
   with `requires-deeper-artifact` as the rationale, which sends
   the artifact for deeper rework upstream.
 
-The default `N=3` may be raised at initialization (§2.1).
+The default `insufficient-basis-rounds-max = 3` may be raised at
+initialization (§2.1). The separate
+`remediation-rounds-max` (default 5; §2.1, §11.2) bounds the
+adversarial-phase re-attack loop and is unrelated to this knob.
 
 ### 10.1 Attestation weight
 
@@ -840,8 +889,12 @@ Every arrow carrying any `depth-sensitive` clause has three phases:
 2. **Remediation.** A bounded loop. The producer addresses each
    finding: either *fixes* it (re-attack confirms `resolved`) or
    *proposes accepted-risk* (the operator attests — the producer may
-   not accept its own risk). Non-convergence in N rounds → escalate,
-   do not spin.
+   not accept its own risk). Non-convergence in
+   `remediation-rounds-max` rounds (default 5; §2.1) → escalate to
+   operator, do not spin. Each re-attack is a **full re-attack**:
+   the fresh adversary attacks the entire upstream artifact, not
+   only the targets of prior findings. This catches regressions
+   where a fix for one finding inadvertently breaks something else.
 
 3. **Verification.** Gate clauses evaluated. If the adversarial phase
    ran on this arrow, the harness **auto-inserts two machine clauses**

@@ -71,8 +71,11 @@ attestation of `accepted-risk` (attestation flow).
    structurally distinct from the producer; the producer role
    cannot serve as its own adversary. Enforced by the synthetic
    role-id mechanism.
-6. **Bounded remediation.** No more than N rounds. After N, escalate
-   to operator. Default N=5; init may override.
+6. **Bounded remediation.** No more than `remediation-rounds-max`
+   rounds (default 5; declared at init per `gates.md` §2.1). After
+   the limit, escalate to operator. Distinct from
+   `insufficient-basis-rounds-max` (default 3) which bounds the
+   *attestation* escalation path.
 7. **No silent dismissal.** A finding can only transition to
    `resolved` if a fresh adversary's re-attack confirms the defect
    is no longer reproducible. Producer reporting "fixed" is not
@@ -234,24 +237,37 @@ Feature: Depth classification sub-activity
 ```gherkin
 Feature: Remediation loop
 
-  Scenario: Producer fixes a finding
+  Scenario: Producer fixes a finding (full re-attack per D32)
     Given finding F1 status `open` raised by adversary round R0
     When the producer (the upstream role) addresses F1 by editing
         the upstream artifact
-    Then the producer signals the orchestrator that F1 is
-        addressed
+    Then the producer signals the orchestrator via a typed
+        `producer-fix-signal` message:
+          { type: producer-fix-signal,
+            pass-id: <id>,
+            addressed-findings: [F1] }
     And the orchestrator spawns a fresh adversary R1
     And R1 receives the same inputs as R0 EXCEPT it sees the
         updated upstream artifact
-    And R1 re-runs clause-falsification scoped to F1's target
-        (efficient re-attack)
+    And R1 runs ALL three sub-activities (clause-falsification,
+        open sweep, depth classification) over the ENTIRE upstream
+        artifact — NOT scoped to F1's target. The full re-attack
+        catches regressions where the fix for F1 inadvertently
+        broke something elsewhere (D32).
     And if R1 cannot reproduce F1, F1 transitions to `resolved`
     And if R1 reproduces F1, F1 stays `open` and another round
         begins
+    And any new findings R1 raises are added to the open set
 
   Scenario: Producer proposes accepted-risk
     Given finding F1 status `open`
-    When the producer proposes accepted-risk
+    When the producer proposes accepted-risk via a typed
+        `accepted-risk-proposal` message:
+          { type: accepted-risk-proposal,
+            pass-id: <id>,
+            finding-id: F1,
+            rationale: <text>,
+            inspected-context: <text> }
     Then the orchestrator hands F1 to the attestation flow
         component
     And the operator attests accepted-risk OR rejects
@@ -266,10 +282,11 @@ Feature: Remediation loop
     And F3 stays `open`
     And remediation continues for F3
 
-  Scenario: Non-convergence — escalate after N rounds
-    Given finding F1 has been re-attacked through N=5 rounds and
-        remains `open`
-    When round 5 completes
+  Scenario: Non-convergence — escalate after remediation-rounds-max
+    Given finding F1 has been re-attacked through
+        `remediation-rounds-max` rounds (default 5) and remains
+        `open`
+    When the final round completes
     Then the orchestrator stops the remediation loop
     And escalates to the operator with kind `remediation-non-convergence`
     And the operator must decide: accepted-risk OR route the
@@ -352,10 +369,9 @@ Feature: Hand off to verification
 
 ## Open questions
 
-- **Targeted vs full re-attack.** F-5 scenario 1 says re-attack is
-  "scoped to F1's target." But sometimes a producer's fix to F1
-  inadvertently breaks F-elsewhere. Should re-attack be full each
-  time, or targeted? Spec currently silent; implementation choice.
+- ~~**Targeted vs full re-attack.**~~ Resolved by D32: always full
+  re-attack. The fresh adversary runs all three sub-activities over
+  the entire upstream artifact each round.
 - **Adversary continuity across remediation.** Invariant 1 says
   fresh adversary per round. But an experienced adversary (across
   multiple projects, not within one project) might be more

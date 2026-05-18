@@ -33,7 +33,7 @@ amendment lands against the state produced by the first).
 |---|---|
 | **Amendment** | A request to change the arrow grid. Carries: who requested it (typically integrator → analyst), what changed (which spec artifacts, which arrows), and a new version-id `v(N+1)`. |
 | **Amendment queue** | A FIFO queue holding amendment requests waiting for the write-lock. |
-| **Write-lock** | A project-wide mutex covering grid writes. Held by the amendment in-progress; other amendments wait. |
+| **Write-lock** | A project-wide mutex covering grid writes. Owned by **this component** (D34). Held by the amendment in-progress; other amendments wait. Init takes the lock at end-of-init for the v1 write (D35). |
 | **Affected arrow** | An arrow whose declared dependencies (per `gates.md` §2.1) include a spec artifact changed by the amendment, OR an arrow that declared no dependencies (conservative fallback per D22). |
 | **In-flight check** | When an amendment is about to commit, the component checks every `running` pass to determine which are affected. |
 | **Atomic commit** | The grid file is written atomically (temp + rename). Either the new version is fully recorded or the previous version is unchanged. |

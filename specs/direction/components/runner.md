@@ -63,7 +63,12 @@ runner serves as the verification phase of §11). Grid amendment
    amendment component.
 5. **Concurrency safety.** Two evaluation runs for the same
    `(arrow-id, clause-id, pass-id)` triple cannot exist
-   simultaneously. The runner enforces this with a per-clause lock.
+   simultaneously. Per-clause transition serialization is owned by
+   the **state-machine engine's per-clause transition lock** (D34);
+   the runner observes that lock when invoking evaluators. The
+   runner additionally owns a **per-`(role, context)` lock** that
+   enforces `single-active-role-instance` at pre-spawn time (before
+   any pass starts).
 6. **Persistence is monotonic per pass.** Within a single pass-id,
    clause statuses can only transition along the lifecycle in §7.1
    (no backwards movement). A pass that needs to re-evaluate is a
@@ -87,6 +92,9 @@ Feature: Evaluate a single machine clause
     When the runner evaluates the clause as part of pass P1
     Then the evaluator runs to completion
     And the clause status transitions: pending → running → pass
+        (the `running` state is the observable in-flight state per
+        gates.md §7.1; the runner enters it before invoking the
+        evaluator and exits to pass/fail on the evaluator's return)
     And an evaluation-run record is appended to the pass log:
         { evaluation-run-id, clause-id, pass-id,
           started-at, completed-at, result: {pass: true, details: {hits: []}} }
@@ -296,7 +304,7 @@ Feature: Each pass emits a checkpoint at conclusion
 | FM-2 | Evaluator hangs (exceeds timeout) | Single clause + pass duration | The runner kills the evaluator after `timeout` (per concept schema or arrow override). Clause is `unevaluated` with reason `evaluator-timeout`. Re-run at next pass; recurring timeouts are a binding bug. |
 | FM-3 | Evaluator returns malformed JSON / output | Single clause | Treated identically to FM-1 (crash). The runner is strict about evaluator-output shape. |
 | FM-4 | Multiple evaluators competing for the same resource (CPU/IO) on a single machine | Pass throughput | The runner does not orchestrate resource scheduling; relies on OS. A future component (scheduler) may add concurrency limits per evaluator-class. |
-| FM-5 | Producer role doesn't respond to hint request | Pass | After timeout, the clause is recorded `unevaluated` with reason `producer-no-response`, and the operator can re-route. |
+| FM-5 | Producer role doesn't respond to hint request | Pass | After timeout, the clause is recorded `unevaluated` with reason `producer-no-response` (gates.md §7.1). The operator can re-route or wait for re-emission at deeper tier. |
 | FM-6 | Runner crashes mid-pass | Single pass | On restart, the runner detects the orphaned pass (no `completed-at`, no abort record), marks it `aborted` with `reason: crash`, and continues. The user must re-traverse. |
 | FM-7 | Two evaluators write to the same checkpoint file concurrently | Checkpoint log | The runner serializes checkpoint writes through the same project-wide write-lock used for grid amendments (D22). Two concurrent pass completions queue FIFO. |
 | FM-8 | A transition-refusal error is suppressed or ignored by a buggy caller | Whole project | This is a caller bug, not a runner bug. The schema's invariant is "the runner refuses"; what callers do with the refusal is outside its scope. UI/tooling must surface refusals visibly. |

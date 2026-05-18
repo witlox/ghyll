@@ -198,9 +198,13 @@ of `{file, line, kind, description}`.
 
 ### `no-orphan-symbol`
 
-**Purpose.** Every exported symbol in the scope traces to a declared
-spec clause; orphans (exported symbols with no spec entry) are listed
-in the arrow's coverage-claim residue.
+**Purpose.** Every entity in the scope (exported source-code symbol
+OR spec clause, depending on direction) traces to a declared
+counterpart in the other artifact; orphans are listed in the arrow's
+coverage-claim residue. Generalized per D44: the same concept can
+walk spec→implementation (find code with no spec) OR
+implementation→spec (find spec with no code), per the per-arrow
+`extractor` configuration.
 
 **Arguments.**
 
@@ -434,7 +438,9 @@ ubiquitous-language, etc.
 assertable predicate, not prose narrative. Defends against invariant
 documents that read as wishes ("the system should be available")
 rather than statements that can be checked ("`uptime >= 0.999` over
-any 30-day window").
+any 30-day window"). NOT intended for enum-field validity checks —
+use `cardinality-check` with the appropriate query for that
+(integrator.md G4 was updated per D44).
 
 **Arguments.**
 

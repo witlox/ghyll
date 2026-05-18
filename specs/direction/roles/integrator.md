@@ -131,7 +131,7 @@ plus the integration test suite.
 | G1 | Every analyst stratum-4 cross-context interaction has at least one integration-level test linked to it | `trace-link-present`(L4-interaction → integration-test) | machine | depth-robust |
 | G2 | Every integration test traces back to a stratum-4 spec clause | `trace-link-present`(integration-test → L4-spec) | machine | depth-robust |
 | G3 | The integration test suite fails when any critical dependency is removed (no all-mock pass-through) | `kill-server-fails-integration`(critical-dependencies) | machine | depth-robust |
-| G4 | Each finding in `findings.md` has a non-empty `Type` field on the declared enum | `predicate-form`(findings.type) | machine | depth-robust |
+| G4 | Each finding in `findings.md` has a `Type` field whose value is in the declared enum `{local-bug, missing-cross-context-spec, ...}` | `cardinality-check`(query: `findings.type values not in enum`, expected: 0) | machine | depth-robust |
 | G5 | Every finding in `findings.md` is `resolved`, `accepted-risk`, or has triggered an amendment arrow — none plain `open` | `no-open-finding`(integration findings) | machine | depth-robust |
 | G6 | The integration report exists at its declared location | `arrow-artifact-present`(integrator outbound integration-report) | machine | depth-robust |
 | G7 | Each cross-context interaction was exercised with both contexts running against real dependencies, not mocks | (judgement) | attested | depth-sensitive |

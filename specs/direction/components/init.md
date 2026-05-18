@@ -258,17 +258,18 @@ Feature: Auto-propose with operator confirmation
 ```gherkin
 Feature: Grid is written atomically
 
-  Scenario: Successful init
+  Scenario: Successful init writes versioned grid + pointer (D31)
     Given the operator has provided a verdict for every proposed
         clause
     And every binding referenced by the grid is declared
     And the init arrow's exit gate is `complete`
     When init writes the grid
-    Then `.ghyll/grid.yaml` (or equivalent) is written atomically
-        (temp file + rename)
-    And the grid file contains version `v1`
-    And subsequent ghyll invocations read the grid from this file
-        instead of re-running init
+    Then `.ghyll/grid.v1.yaml` is written atomically (temp file
+        + rename)
+    And `.ghyll/grid.current` is then written atomically (temp +
+        rename) containing the single line `v1`
+    And subsequent ghyll invocations read `grid.current` to find
+        the active version, then load `grid.v<N>.yaml`
 
   Scenario: Init crashes mid-write
     Given init is partway through writing the grid file
@@ -327,8 +328,11 @@ Feature: op-id declared at session start
   role's exit-gate template is. Each role's clauses become
   auto-proposals during F-5.
 - **Init → Grid amendment / global lock.** Init's grid write takes
-  the project-wide write-lock per D22, but at init time the lock is
-  always available (no other arrow is running yet — invariant 1).
+  the project-wide write-lock owned by the amendment component (D34).
+  Init acquires the lock at end-of-init for the v1 write (D35);
+  at that point the lock is uncontested (no other arrow has run yet
+  — invariant 1). Init writes `.ghyll/grid.v1.yaml` plus
+  `.ghyll/grid.current` (pointing to `v1`) per D31.
 - **Init → Adversarial phase.** Init's own arrow has an adversarial
   phase (it carries `depth-sensitive` clauses about depth-type
   assignments and residue honesty). The adversary identity is the

@@ -14,7 +14,10 @@ N-round escalation and the `op-id` session lifecycle.
 ## Scope
 
 **In scope.** Operator-session lifecycle (`op-id` declaration,
-multi-operator handoff). Hint presentation. Verdict capture and
+multi-operator handoff). The operator event bus — the single channel
+through which all operator-facing communication flows (attestation
+requests, escalation prompts, init prompts, refusal prompts,
+aborted-pass notifications). Hint presentation. Verdict capture and
 record emission (typed JSONL per `gates.md` §10.2). Coordination of
 the `insufficient-basis` escalation path (`gates.md` §10 + D23).
 Multi-operator coordination within a single pass.
@@ -114,7 +117,10 @@ Feature: Operator decides an attested clause
     When Alice inspects the locations and submits verdict `pass`
         with unit `confirm`
     Then a record is appended to
-        attestations/<vN>/contextA/.../<pass-id>.jsonl:
+        `attestations/v<N>/contextA/stratum-<S>/<role-pair>/<pass-id>.jsonl`,
+        where `<role-pair>` uses `__` (double underscore) as the
+        separator (e.g., `analyst__architect`,
+        `analyst__adversary__architect`, `init__analyst`):
         { unit: confirm,
           clause: C5,
           verdict: pass,
@@ -139,8 +145,12 @@ Feature: Operator decides an attested clause
         `residue-note: "feature file is too large to manually
                          inspect; need a deeper artifact"`
     Then a record is appended with the residue note
-    And C5's status becomes `insufficient-basis`
-    And the arrow's status becomes `provisional`
+    And the attestation flow signals state-machine engine to
+        transition C5 to `insufficient-basis`
+    And the engine *derives* the arrow's status (the attestation
+        flow does NOT directly set arrow status; arrow status is
+        always derived from clause+finding state per
+        state-machine.md invariant 2)
     And the round counter for C5 increments to 1
 ```
 
@@ -174,8 +184,17 @@ Feature: After N rounds of insufficient-basis, escalate
           op-id: alice@example.com,
           inspected: [...],
           residue-note: "<text>" }
-    And C5's status becomes `pass` (with accepted-risk metadata)
+    And the FINDING associated with C5 (the accepted-risk
+        proposal's target) transitions to status `accepted-risk`
+        per gates.md §7.3
+    And C5's CLAUSE-status transitions to `pass` once all findings
+        on the clause are disposed (`resolved` or `accepted-risk`)
     And the round counter resets
+
+  Note: clause status and finding status are independent. The
+  clause is `pass` because the operator has finalized; the finding
+  is `accepted-risk` because the risk was acknowledged. There is
+  no "pass with metadata" — these are two distinct objects.
 
   Scenario: Operator routes upstream
     Given the escalation prompt
@@ -187,10 +206,10 @@ Feature: After N rounds of insufficient-basis, escalate
     And the producer role is re-routed at a deeper tier to
         produce a richer artifact
 
-  Scenario: N is configurable
-    Given init declared N=5 for this project
+  Scenario: insufficient-basis-rounds-max is configurable
+    Given init declared insufficient-basis-rounds-max=5 for this project
     When clause C5 receives `insufficient-basis` for the 4th time
-    Then no escalation is triggered yet (N=5 not reached)
+    Then no escalation is triggered yet (max not reached)
     And the round counter is 4
 ```
 
@@ -284,7 +303,7 @@ Feature: Attestation records are verifiable
 |---|---|---|
 | A-1 | Operators will provide non-trivial residue notes when escalating to accepted-risk. | Falsifies if operators consistently write empty / placeholder notes. The schema records the procedure; behavioral quality is human-guarded. |
 | A-2 | Multi-operator handoff within a pass is rare. | Falsifies if it becomes common (e.g., shift-based teams). Should still work, but UX may need refinement. |
-| A-3 | N=3 is a reasonable default for `insufficient-basis` escalation. | Falsifies if many real-world clauses hit escalation routinely. Init may raise. |
+| A-3 | `insufficient-basis-rounds-max = 3` is a reasonable default. | Falsifies if many real-world clauses hit escalation routinely. Init may raise. |
 | A-4 | The append-only attestation log is sufficient for audit needs. | Falsifies if regulatory or contractual audit requires cryptographic signatures per record. Future: ed25519-sign each record. |
 
 ---

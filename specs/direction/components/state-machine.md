@@ -42,7 +42,10 @@ execution itself (that's the runner). Persistence layer mechanics
 1. **Transitions are validated.** Every status change goes through
    the engine. The engine rejects illegal transitions (e.g., `pass`
    → `pending` for a clause) and reports the violation. Direct
-   mutation of the store is impossible from outside.
+   mutation of the store is impossible from outside. **The engine
+   owns the per-clause transition lock** (D34) — only one
+   transition per `(pass-id, clause-id)` can be in flight at a
+   time; concurrent requests serialize on the lock.
 2. **Derivation is pure.** Given the same inputs (clause statuses,
    finding states, invalidation events), arrow-status derivation
    always produces the same output. The derivation function has no
@@ -74,9 +77,9 @@ The engine implements four state machines, all defined in `gates.md`:
 
 | Machine | States | Reference |
 |---|---|---|
-| **Clause** | `pending`, `pass`, `fail`, `awaiting-attestation`, `insufficient-basis`, `unevaluated` | §7.1 |
+| **Clause** | `pending`, `running`, `pass`, `fail`, `awaiting-attestation`, `insufficient-basis`, `unevaluated` | §7.1 |
 | **Arrow** | `complete`, `provisional`, `unevaluated`, `blocked`, `invalidated` | §7.2 |
-| **Finding** | `open`, `resolved`, `accepted-risk` | §7.3 |
+| **Finding** | `open`, `running`, `resolved`, `accepted-risk`, `unevaluated` | §7.3 |
 | **Pass** | `running`, `completed`, `aborted` (with `reason` field) | §7.1a |
 
 The engine does not redefine the machines; it implements them
@@ -222,10 +225,17 @@ Feature: Compute project-level status
 
   Scenario: Residue computation
     Given a grid with 5 undeclared (stratum, context) cells
-    And each cell's role exit-gate would auto-propose to a total
-        cost of 15 operator-action units
+    And the harness computes each undeclared cell's imputed cost
+        as the sum of per-clause default costs from the role's
+        exit-gate template under the project's language bindings
+    And the 5 cells compute to imputed costs [15, 15, 15, 15, 15]
+        (uniform in this example; real values vary per role and
+        per binding)
     When the residue is computed
-    Then R = 5 × 15 = 75
+    Then R = 15+15+15+15+15 = 75
+    And the project-status query reports R=75 alongside C and
+        complete-against-grid-vN
+
 ```
 
 ### F-6: Snapshot and replay
