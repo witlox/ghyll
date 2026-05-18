@@ -3,6 +3,7 @@ package acceptance
 import (
 	"time"
 
+	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/types"
 )
 
@@ -68,6 +69,11 @@ type ScenarioState struct {
 	TmpDir      string
 	GlobalDir   string // ~/.ghyll/ equivalent for tests
 	ToolTimeout time.Duration
+
+	// Initialization / operator session (gates.md §2; bootstrap pkg).
+	PendingOpID        string
+	OperatorSession    *bootstrap.Session
+	OperatorSessionErr error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

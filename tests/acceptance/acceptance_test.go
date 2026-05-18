@@ -14,8 +14,11 @@ func TestFeatures(t *testing.T) {
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
-			Format:   "pretty",
-			Paths:    []string{"../../specs/features"},
+			Format: "pretty",
+			Paths: []string{
+				"../../specs/features",
+				"../../specs/v2/features/init.feature",
+			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
 			// Strict mode: undefined/pending steps cause failure.
@@ -51,6 +54,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerVaultSteps(ctx, state)
 	registerKeySteps(ctx, state)
 	registerSessionFeatureSteps(ctx, state)
+
+	// Init step definitions (specs/v2/features/init.feature).
+	registerInitSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
