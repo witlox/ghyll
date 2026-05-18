@@ -148,7 +148,28 @@ type Clause struct {
 	// depth-sensitive clause to be honestly evaluated. Ignored when
 	// DepthType is depth-robust. Uses the DepthRank scale (0..3).
 	MinDepthTier DepthRank
+
+	// DepthTypeAttestationRef links back to the init-pass attestation
+	// that authored this clause's depth-type per gates.md §6. The
+	// runner does not verify the link (the engine layer owns
+	// attestation lookup); the field is carried so EvaluationRun can
+	// preserve provenance (validation-pass-7 F7).
+	DepthTypeAttestationRef string
 }
+
+// Clause invariants (validation-pass-7 F10):
+//   - Clause is a value type. Callers that share a Clause across
+//     goroutines MUST treat it as read-only after construction.
+//   - The runner shallow-clones the Args map at Evaluate entry so
+//     downstream evaluators can mutate freely; the caller's map is
+//     preserved verbatim. Other reference fields on Clause are not
+//     deep-copied — operator code MUST NOT mutate post-construction.
+//
+// Migration note (validation-pass-7 F9): v0 grids deserialized into
+// v2 Clauses get zero-valued DepthType/MinDepthTier. The bootstrap
+// loader is responsible for back-filling these from the concept
+// catalogue defaults before clauses reach the runner. A Clause with
+// an empty DepthType reaching RouteArrow is rejected.
 
 // Evaluator decides one machine clause. Returns the verdict + details
 // or an error if the evaluator could not run at all. Errors from the
@@ -292,18 +313,21 @@ func (r *Registry) Count() int {
 // real clause-fail in persisted records (F15). It is also a string
 // (not error) so the record serializes deterministically.
 type EvaluationRun struct {
-	ID          string
-	ClauseID    string
-	PassID      string
-	ArrowID     string // gates.md §7.1a arrow identity — populated from Clause.ArrowID
-	GridVersion uint64 // bump-counter from the engine's grid; 0 if unset
-	Evaluator   EvaluatorIdentity
-	StartedAt   time.Time
-	CompletedAt time.Time
-	StartStatus ClauseStatus
-	EndStatus   ClauseStatus
-	Result      *Result
-	RunError    string
+	ID                      string
+	ClauseID                string
+	PassID                  string
+	ArrowID                 string
+	GridVersion             uint64
+	DepthTypeAttestationRef string // validation-pass-7 F7
+	ActualTier              DepthRank
+	MinDepthTier            DepthRank
+	Evaluator               EvaluatorIdentity
+	StartedAt               time.Time
+	CompletedAt             time.Time
+	StartStatus             ClauseStatus
+	EndStatus               ClauseStatus
+	Result                  *Result
+	RunError                string
 }
 
 // Duration returns the wall-clock time the evaluator ran.
@@ -332,6 +356,18 @@ type Runner struct {
 	// idgen returns a fresh evaluation-run-id. Defaults to
 	// defaultIDGen (timestamp + monotonic counter).
 	idgen func() string
+
+	// actualTier is the depth tier the engine's dispatcher is
+	// running this Runner at. Used to enforce gates.md §6/§7.1
+	// (validation-pass-7 F1): a depth-sensitive clause whose
+	// MinDepthTier exceeds actualTier short-circuits to
+	// StatusUnevaluated with Reason=depth-below-required.
+	//
+	// Zero value (DepthRankNone) means "no tier declared" — the
+	// runner does not enforce depth in that case (legacy path; the
+	// engine should always set this via WithActualTier in
+	// production).
+	actualTier DepthRank
 }
 
 // NewRunner returns a Runner backed by the given registry. now and
@@ -353,6 +389,19 @@ func (r *Runner) WithClock(now func() time.Time) *Runner {
 // WithIDGen overrides the runner's evaluation-run-id generator.
 func (r *Runner) WithIDGen(g func() string) *Runner {
 	r.idgen = g
+	return r
+}
+
+// WithActualTier declares the depth tier the runner is running at
+// for purposes of §6/§7.1 enforcement (validation-pass-7 F1). The
+// engine's dispatcher SHOULD set this before invoking Evaluate; a
+// depth-sensitive clause with MinDepthTier > tier short-circuits to
+// Unevaluated with Reason=depth-below-required.
+//
+// Calling without this (or passing DepthRankNone) disables the
+// short-circuit — used by tests that don't care about routing.
+func (r *Runner) WithActualTier(tier DepthRank) *Runner {
+	r.actualTier = tier
 	return r
 }
 
@@ -414,6 +463,45 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	}
 
 	startedAt := r.now()
+
+	// Validation-pass-7 F1: enforce gates.md §6/§7.1 — a
+	// depth-sensitive clause whose MinDepthTier exceeds the
+	// runner's actualTier short-circuits to Unevaluated with
+	// Reason=depth-below-required. The engine's dispatcher should
+	// have routed the pass to a sufficient tier; this is the
+	// runtime check that catches mis-routes.
+	//
+	// Only enforced when actualTier > 0 (otherwise legacy callers
+	// that don't set tier behave as before).
+	if r.actualTier > DepthRankNone &&
+		c.DepthType == DepthTypeSensitive &&
+		c.MinDepthTier > r.actualTier {
+		return &EvaluationRun{
+			ID:                      r.idgen(),
+			ClauseID:                clauseID,
+			PassID:                  passID,
+			ArrowID:                 c.ArrowID,
+			GridVersion:             c.GridVersion,
+			DepthTypeAttestationRef: c.DepthTypeAttestationRef,
+			ActualTier:              r.actualTier,
+			MinDepthTier:            c.MinDepthTier,
+			Evaluator:               identity,
+			StartedAt:               startedAt,
+			CompletedAt:             r.now(),
+			StartStatus:             StatusPending,
+			EndStatus:               StatusUnevaluated,
+			Result: &Result{
+				Unevaluated: true,
+				Reason:      string(ReasonDepthBelowRequired),
+				Details: map[string]any{
+					"depth-type":     string(c.DepthType),
+					"min-depth-tier": int(c.MinDepthTier),
+					"actual-tier":    int(r.actualTier),
+				},
+			},
+		}, nil
+	}
+
 	startStatus := StatusPending
 	if !CanTransition(startStatus, StatusRunning) {
 		return nil, fmt.Errorf("%w: %s → %s", ErrInvalidTransition, startStatus, StatusRunning)
@@ -442,18 +530,21 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	}
 
 	return &EvaluationRun{
-		ID:          r.idgen(),
-		ClauseID:    clauseID,
-		PassID:      passID,
-		ArrowID:     c.ArrowID,
-		GridVersion: c.GridVersion,
-		Evaluator:   identity,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		StartStatus: startStatus, // observable lifecycle starts at pending
-		EndStatus:   endStatus,
-		Result:      result,
-		RunError:    runErrText,
+		ID:                      r.idgen(),
+		ClauseID:                clauseID,
+		PassID:                  passID,
+		ArrowID:                 c.ArrowID,
+		GridVersion:             c.GridVersion,
+		DepthTypeAttestationRef: c.DepthTypeAttestationRef,
+		ActualTier:              r.actualTier,
+		MinDepthTier:            c.MinDepthTier,
+		Evaluator:               identity,
+		StartedAt:               startedAt,
+		CompletedAt:             completedAt,
+		StartStatus:             startStatus,
+		EndStatus:               endStatus,
+		Result:                  result,
+		RunError:                runErrText,
 	}, runErr
 }
 

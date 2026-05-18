@@ -106,6 +106,97 @@ func TestGrid_ArrowsSortedSnapshot(t *testing.T) {
 	}
 }
 
+func TestGrid_LookupDeepCopiesAgainstPoisoning(t *testing.T) {
+	// Validation-pass-6 F1: mutating the returned ArrowDefinition's
+	// slices/maps must NOT poison stored state.
+	g := NewGrid()
+	def := sampleArrow("A1")
+	def.Clauses[0].Args = map[string]any{"k": "original"}
+	_, _ = g.Append(def)
+
+	out, _ := g.Lookup("A1")
+	out.Clauses[0].Concept = "POISONED"
+	out.Clauses[0].Args["k"] = "POISONED"
+	out.Requirements[0].Description = "POISONED"
+
+	again, _ := g.Lookup("A1")
+	if again.Clauses[0].Concept != "lint-clean" {
+		t.Errorf("Lookup poisoned via Clauses; got %q", again.Clauses[0].Concept)
+	}
+	if again.Clauses[0].Args["k"] != "original" {
+		t.Errorf("Lookup poisoned via Args; got %v", again.Clauses[0].Args["k"])
+	}
+	if again.Requirements[0].Description != "test req" {
+		t.Errorf("Lookup poisoned via Requirements; got %q", again.Requirements[0].Description)
+	}
+}
+
+func TestGrid_AppendDeepCopiesAgainstPoisoning(t *testing.T) {
+	// F1 (caller side): mutating the ArrowDefinition AFTER Append
+	// must NOT poison stored state.
+	g := NewGrid()
+	def := sampleArrow("A1")
+	def.Clauses[0].Concept = "original"
+	_, _ = g.Append(def)
+	def.Clauses[0].Concept = "POISONED"
+	stored, _ := g.Lookup("A1")
+	if stored.Clauses[0].Concept != "original" {
+		t.Errorf("post-Append mutation poisoned store; got %q", stored.Clauses[0].Concept)
+	}
+}
+
+func TestGrid_RejectsBlankStratumContext(t *testing.T) {
+	// F2: Validate must require non-empty Stratum/Context.
+	g := NewGrid()
+	def := sampleArrow("A1")
+	def.Stratum = ""
+	_, err := g.Append(def)
+	if err == nil {
+		t.Error("empty Stratum should fail Validate")
+	}
+	def.Stratum = "L4"
+	def.Context = "  "
+	_, err = g.Append(def)
+	if err == nil {
+		t.Error("whitespace Context should fail Validate")
+	}
+}
+
+func TestGrid_RejectsOverManyClauses(t *testing.T) {
+	// F4: cap on clauses per arrow.
+	g := NewGrid()
+	def := sampleArrow("A1")
+	def.Clauses = make([]Clause, maxArrowClauses+1)
+	for i := range def.Clauses {
+		def.Clauses[i] = Clause{Concept: "x"}
+	}
+	_, err := g.Append(def)
+	if err == nil {
+		t.Error("over-cap clauses should fail Validate")
+	}
+}
+
+func TestGrid_ConcurrentAppendLookupObserve(t *testing.T) {
+	// F15: race-detector test. Run under `go test -race`.
+	t.Parallel()
+	g := NewGrid()
+	var observed int
+	g.Observe(func(GridEvent) { observed++ })
+	done := make(chan struct{}, 8)
+	for i := 0; i < 8; i++ {
+		i := i
+		go func() {
+			def := sampleArrow("A" + string(rune('a'+i)))
+			_, _ = g.Append(def)
+			_ = g.Has("A" + string(rune('a'+i)))
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+}
+
 func TestArrowDefinition_Validate(t *testing.T) {
 	good := sampleArrow("A1")
 	if err := good.Validate(); err != nil {
