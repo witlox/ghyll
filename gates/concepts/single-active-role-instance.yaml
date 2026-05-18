@@ -28,5 +28,5 @@ default-cost: 0
 
 edge-cases:
   - A crashed pass that never recorded `aborted` could leave a stale lock. The coordination layer (per ADR-009) is expected to expire leases on liveness-check failure; this is harness implementation.
-  - Cross-context: a (role, contextA) pass and a (role, contextB) pass are NOT conflicting under this concept.
+  - "Cross-context: a (role, contextA) pass and a (role, contextB) pass are NOT conflicting under this concept."
   - The init role-id is project-scoped, not context-scoped — its single-active check uses a wildcard / sentinel context per init.md sub-phase A.
