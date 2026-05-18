@@ -17,7 +17,11 @@ building.
    phases (incl. the depth ladder).
 3. **[roles/](roles/)** — the four role contracts (analyst,
    architect, implementer, integrator) reconciled to `gates.md`.
-4. **[build-notes.md](build-notes.md)** — what is designed vs. what is
+4. **[components/](components/)** — the seven component-level specs
+   (concepts, init, runner, state-machine, adversarial, amendment,
+   attestation). Domain model, features, failure modes per
+   component.
+5. **[build-notes.md](build-notes.md)** — what is designed vs. what is
    deliberately not yet built. Read before any implementation work.
 
 Supporting documents:
