@@ -109,6 +109,11 @@ type ScenarioState struct {
 	DriverGrid     *bootstrap.Grid
 	DriverWriteErr error
 
+	// Session registry (init.feature 198, 205, 212).
+	SessionRegistry  *bootstrap.SessionRegistry
+	BobDeclareErr    error
+	UnknownClauseErr error
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error
