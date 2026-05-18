@@ -2,6 +2,15 @@
 
 A purpose-built coding agent CLI for self-hosted open-weight models. Runs inside a sandbox (SRT, bubblewrap, etc.). Uses git-native memory with Merkle DAG integrity.
 
+## Project State
+
+**Phase**: Brownfield with baseline. All packages implemented.
+
+**Fidelity checkpoint** (last auditor sweep): 75 THOROUGH, 3 MODERATE, 5 NONE.
+
+Use the diamond workflow (`.claude/CLAUDE.md`) for new features and bugfixes.
+Update this section after every fidelity sweep.
+
 ## Build
 
 ```bash
