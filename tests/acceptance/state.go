@@ -94,6 +94,10 @@ type ScenarioState struct {
 	Profile        *bootstrap.ProjectProfile
 	ProfileErr     error
 
+	// Refusal flow (init.feature 25, 66, 77).
+	PendingRisk   bootstrap.RiskAssessment
+	RiskEvaluated bool
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error

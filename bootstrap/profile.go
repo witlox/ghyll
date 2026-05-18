@@ -57,6 +57,12 @@ type ProjectProfile struct {
 	// extraction, language confirmation) can re-scan without the
 	// caller threading it back through.
 	projectDir string
+
+	// risk + refusal are set by ProposeRefusal / AcceptRefusal /
+	// OverrideRefusal in risk.go. Kept unexported so callers reach
+	// them through the typed accessors.
+	risk    RiskAssessment
+	refusal *RefusalOutcome
 }
 
 // FixedDiamondRoles is the four-role diamond per ADR-003. The diamond
