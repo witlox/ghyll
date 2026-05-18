@@ -21,9 +21,6 @@ func TestDepthLadder_Label(t *testing.T) {
 	if got := l.Label(DepthRankRealistic); got != "REALISTIC" {
 		t.Errorf("Label(realistic) = %q; want REALISTIC", got)
 	}
-	if got := l.Label(DepthRank(99)); got != "" {
-		t.Errorf("Label(99) should return empty; got %q", got)
-	}
 }
 
 func TestDepthLadder_ParseDepthRank_CaseInsensitive(t *testing.T) {
@@ -89,8 +86,38 @@ func TestNewDepthLadder_RejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestNewDepthLadder_RejectsNonASCII(t *testing.T) {
+	// F23: non-ASCII labels survive ToLower case-folding edges
+	// (Turkish dotless-I etc.); restrict to ASCII alphanumeric.
+	_, err := NewDepthLadder([4]string{"NONE", "İ-tier", "MOCKED", "REALISTIC"})
+	if err == nil {
+		t.Error("non-ASCII label should error")
+	}
+}
+
+func TestDefaultDepthLabels_ReturnsFreshArray(t *testing.T) {
+	// F36: mutating the returned array must NOT affect the
+	// package's source of truth.
+	a := DefaultDepthLabels()
+	a[0] = "PWNED"
+	b := DefaultDepthLabels()
+	if b[0] == "PWNED" {
+		t.Error("DefaultDepthLabels returned a shared mutable array")
+	}
+}
+
+func TestDepthLadder_Label_OutOfRange(t *testing.T) {
+	// F35: out-of-range rank should return a clearly invalid label,
+	// not empty string.
+	l := NewDefaultDepthLadder()
+	got := l.Label(DepthRank(99))
+	if got == "" || !strings.Contains(got, "invalid") {
+		t.Errorf("Label(99) = %q; want a clearly-invalid marker", got)
+	}
+}
+
 func TestRequirement_Validate(t *testing.T) {
-	good := Requirement{ID: "R1", MinDepth: DepthRankShallow}
+	good := Requirement{ID: "R1", MinDepth: DepthRankShallow, Description: "checkout works end-to-end"}
 	if err := good.Validate(); err != nil {
 		t.Errorf("good requirement should validate: %v", err)
 	}
@@ -102,6 +129,9 @@ func TestRequirement_Validate(t *testing.T) {
 		{"whitespace ID", func(r *Requirement) { r.ID = "   " }},
 		{"out-of-range min", func(r *Requirement) { r.MinDepth = DepthRank(99) }},
 		{"negative min", func(r *Requirement) { r.MinDepth = DepthRank(-1) }},
+		{"min-NONE rejected (F12)", func(r *Requirement) { r.MinDepth = DepthRankNone }},
+		{"empty description (F22)", func(r *Requirement) { r.Description = "" }},
+		{"whitespace description", func(r *Requirement) { r.Description = "   " }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -111,6 +141,16 @@ func TestRequirement_Validate(t *testing.T) {
 				t.Errorf("%s: should fail", c.name)
 			}
 		})
+	}
+}
+
+func TestRequirement_Validate_DescriptionTooLong(t *testing.T) {
+	r := Requirement{
+		ID: "R1", MinDepth: DepthRankShallow,
+		Description: string(make([]byte, maxRequirementDescLen+1)),
+	}
+	if err := r.Validate(); err == nil {
+		t.Error("oversized description should fail")
 	}
 }
 

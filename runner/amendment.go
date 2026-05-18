@@ -338,27 +338,5 @@ func FormatAmendmentSummary(r AmendmentRequest) string {
 	return b.String()
 }
 
-// sanitizeOneLine replaces newlines, carriage returns, tabs, and
-// other control characters with escape sequences so a single line
-// of output stays a single line (F43).
-func sanitizeOneLine(s string) string {
-	r := strings.NewReplacer(
-		"\n", "\\n",
-		"\r", "\\r",
-		"\t", "\\t",
-		"\x00", "\\x00",
-	)
-	out := r.Replace(s)
-	// Strip remaining non-printable control chars (< 0x20 except
-	// already-handled, plus 0x7f DEL).
-	var b strings.Builder
-	b.Grow(len(out))
-	for _, ch := range out {
-		if ch < 0x20 || ch == 0x7f {
-			fmt.Fprintf(&b, "\\x%02x", ch)
-			continue
-		}
-		b.WriteRune(ch)
-	}
-	return b.String()
-}
+// sanitizeOneLine is defined in sanitize.go (shared with other
+// evaluators emitting operator-supplied free-text).
