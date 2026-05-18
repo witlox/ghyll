@@ -137,6 +137,17 @@ type Clause struct {
 	// GridVersion is the bump-counter for the engine's grid at the
 	// time of evaluation. Zero when no engine is attached.
 	GridVersion uint64
+
+	// DepthType declares the model-tier requirement per gates.md §6:
+	// depth-robust (any tier) or depth-sensitive (at or above
+	// MinDepthTier). Authoring-time field; the runner's router
+	// reads it at arrow traversal time (see runner/routing.go).
+	DepthType ClauseDepthType
+
+	// MinDepthTier is the minimum depth tier required for a
+	// depth-sensitive clause to be honestly evaluated. Ignored when
+	// DepthType is depth-robust. Uses the DepthRank scale (0..3).
+	MinDepthTier DepthRank
 }
 
 // Evaluator decides one machine clause. Returns the verdict + details
