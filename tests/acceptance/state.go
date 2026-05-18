@@ -80,6 +80,10 @@ type ScenarioState struct {
 	ProposedArgs    map[string]any
 	ModifyArgs      map[string]any
 	ModifyErr       error
+
+	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
+	GridTestDir string
+	GridReadErr error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

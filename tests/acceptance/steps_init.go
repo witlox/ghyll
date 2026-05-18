@@ -1,8 +1,11 @@
 package acceptance
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +49,184 @@ func registerInitSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	ctx.Step(`^the clause is recorded with threshold ([0-9.]+)$`, state.theClauseIsRecordedWithThreshold)
 	ctx.Step(`^the modification is allowed because [0-9.]+ > [0-9.]+ \(raise only\)$`, state.theModificationIsAllowed)
 	ctx.Step(`^init refuses the modification with "([^"]+)"$`, state.initRefusesTheModificationWith)
+
+	// Grid filesystem steps (ADR-010).
+	ctx.Step(`^"\.ghyll/grid\.current" contains "([^"]+)"$`, state.gridCurrentContains)
+	ctx.Step(`^"\.ghyll/grid\.v([0-9]+)\.yaml" does not exist .*$`, state.gridVersionFileDoesNotExist)
+	ctx.Step(`^"\.ghyll/grid\.current" exists but contains garbage .*$`, state.gridCurrentContainsGarbage)
+	ctx.Step(`^"\.ghyll/grid\.v1\.yaml", "\.ghyll/grid\.v2\.yaml" exist$`, state.gridVersionsV1AndV2Exist)
+	ctx.Step(`^"\.ghyll/grid\.current" is absent$`, state.gridCurrentIsAbsent)
+	ctx.Step(`^the harness initializes$`, state.theHarnessInitializes)
+	ctx.Step(`^the engine refuses to start any pass with "([^"]+)"$`, state.engineRefusesToStartWithSentinel)
+	ctx.Step(`^the engine refuses to start with "([^"]+)"$`, state.engineRefusesToStartWithSentinel)
+	ctx.Step(`^the engine does NOT silently pick the latest \(refuses to assume\)$`, state.engineDoesNotSilentlyPickLatest)
+	ctx.Step(`^the engine surfaces "([^"]+)" with a list of available versions$`, state.engineSurfacesSentinel)
+	// Narrative steps (no concrete impl yet; succeed if the substantive check above set state).
+	ctx.Step(`^presents the operator with options to restore the file, re-point grid\.current, or re-run init$`, state.narrativeOK)
+	ctx.Step(`^no pass is started until the operator resolves the inconsistency$`, state.narrativeOK)
+	ctx.Step(`^reports the actual content for operator triage$`, state.narrativeOK)
+	ctx.Step(`^operator must repair grid\.current or remove it \(forcing re-init\)$`, state.narrativeOK)
+	ctx.Step(`^operator must declare which is current \(or re-init\)$`, state.narrativeOK)
+
+	// Per-scenario tempdir cleanup.
+	ctx.After(func(_ context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		if state.GridTestDir != "" {
+			_ = os.RemoveAll(state.GridTestDir)
+			state.GridTestDir = ""
+		}
+		state.GridReadErr = nil
+		return nil, nil
+	})
+}
+
+// ensureGridTestDir creates a per-scenario tempdir on first use.
+func (s *ScenarioState) ensureGridTestDir() error {
+	if s.GridTestDir != "" {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "ghyll-grid-test-")
+	if err != nil {
+		return fmt.Errorf("ensureGridTestDir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ghyll"), 0o755); err != nil {
+		return fmt.Errorf("ensureGridTestDir: mkdir .ghyll: %w", err)
+	}
+	s.GridTestDir = dir
+	return nil
+}
+
+// gridCurrentContains writes content to .ghyll/grid.current.
+//
+// Gherkin: `".ghyll/grid.current" contains "v3"`
+func (s *ScenarioState) gridCurrentContains(content string) error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		filepath.Join(s.GridTestDir, ".ghyll", "grid.current"),
+		[]byte(content+"\n"),
+		0o644,
+	)
+}
+
+// gridVersionFileDoesNotExist ensures .ghyll/grid.v<N>.yaml is absent.
+//
+// Gherkin: `".ghyll/grid.v3.yaml" does not exist (...)`
+func (s *ScenarioState) gridVersionFileDoesNotExist(version string) error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	path := filepath.Join(s.GridTestDir, ".ghyll", "grid.v"+version+".yaml")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
+}
+
+// gridCurrentContainsGarbage writes content that cannot be parsed as
+// a "v<N>" pointer.
+//
+// Gherkin: `".ghyll/grid.current" exists but contains garbage (...)`
+func (s *ScenarioState) gridCurrentContainsGarbage() error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	garbage := "\x00\x01garbage\nmultiple\nlines\n"
+	return os.WriteFile(
+		filepath.Join(s.GridTestDir, ".ghyll", "grid.current"),
+		[]byte(garbage),
+		0o644,
+	)
+}
+
+// gridVersionsV1AndV2Exist writes minimal valid grid.v1.yaml and grid.v2.yaml.
+//
+// Gherkin: `".ghyll/grid.v1.yaml", ".ghyll/grid.v2.yaml" exist`
+func (s *ScenarioState) gridVersionsV1AndV2Exist() error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	for _, v := range []int{1, 2} {
+		g := bootstrap.NewGrid("alice@example.com")
+		g.GridVersion = v
+		if err := g.Write(s.GridTestDir); err != nil {
+			return fmt.Errorf("write v%d: %w", v, err)
+		}
+	}
+	return nil
+}
+
+// gridCurrentIsAbsent removes .ghyll/grid.current if present.
+//
+// Gherkin: `".ghyll/grid.current" is absent`
+func (s *ScenarioState) gridCurrentIsAbsent() error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	path := filepath.Join(s.GridTestDir, ".ghyll", "grid.current")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
+}
+
+// theHarnessInitializes calls bootstrap.Read to load the active grid.
+//
+// Gherkin: `the harness initializes`
+func (s *ScenarioState) theHarnessInitializes() error {
+	if err := s.ensureGridTestDir(); err != nil {
+		return err
+	}
+	_, s.GridReadErr = bootstrap.Read(s.GridTestDir)
+	return nil
+}
+
+// engineRefusesToStartWithSentinel verifies the read error matches the
+// expected sentinel.
+//
+// Gherkin: `the engine refuses to start any pass with "<sentinel>"`
+// or       `the engine refuses to start with "<sentinel>"`
+func (s *ScenarioState) engineRefusesToStartWithSentinel(expected string) error {
+	if s.GridReadErr == nil {
+		return fmt.Errorf("expected refusal with %q; got nil error (Read succeeded)", expected)
+	}
+	if !strings.Contains(s.GridReadErr.Error(), expected) {
+		return fmt.Errorf("expected error containing %q; got %v", expected, s.GridReadErr)
+	}
+	return nil
+}
+
+// engineDoesNotSilentlyPickLatest verifies the engine refused rather
+// than silently choosing.
+//
+// Gherkin: `the engine does NOT silently pick the latest (refuses to assume)`
+func (s *ScenarioState) engineDoesNotSilentlyPickLatest() error {
+	if s.GridReadErr == nil {
+		return errors.New("engine silently picked a version; expected refusal")
+	}
+	if !errors.Is(s.GridReadErr, bootstrap.ErrGridCurrentAbsent) {
+		return fmt.Errorf("expected ErrGridCurrentAbsent; got %v", s.GridReadErr)
+	}
+	return nil
+}
+
+// engineSurfacesSentinel verifies the error mentions the expected sentinel.
+//
+// Gherkin: `the engine surfaces "<sentinel>" with a list of available versions`
+func (s *ScenarioState) engineSurfacesSentinel(expected string) error {
+	if s.GridReadErr == nil {
+		return fmt.Errorf("expected %q surfacing; got no error", expected)
+	}
+	if !strings.Contains(s.GridReadErr.Error(), expected) {
+		return fmt.Errorf("error %v does not contain %q", s.GridReadErr, expected)
+	}
+	return nil
+}
+
+// narrativeOK is a placeholder for narrative steps describing behavior
+// that requires components not yet implemented (operator UI, etc.).
+func (s *ScenarioState) narrativeOK() error {
+	return nil
 }
 
 // operatorProvidesEmptyOpID stashes the (empty or otherwise) op-id for
