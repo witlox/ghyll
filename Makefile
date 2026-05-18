@@ -1,5 +1,5 @@
-.PHONY: all build build-bin test test-unit test-acceptance lint fmt clean \
-       embedder vault verify-scenarios coverage coverage-check install-tools setup \
+.PHONY: all build build-bin test test-unit lint fmt clean \
+       embedder vault coverage coverage-check install-tools setup \
        docs docs-serve
 
 VERSION ?= dev
@@ -13,16 +13,15 @@ build-bin:
 	CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(VERSION)" -o bin/ghyll ./cmd/ghyll
 	CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(VERSION)" -o bin/ghyll-vault ./cmd/ghyll-vault
 
-test: test-unit test-acceptance
+# v1 acceptance suite was removed with the v1 specs deletion.
+# v2 acceptance suite will land alongside v2 implementation.
+test: test-unit
 
 test-unit:
-	go test -count=1 $(shell go list ./... | grep -v tests/acceptance)
-
-test-acceptance:
-	go test -v ./tests/acceptance/ -count=1
+	go test -count=1 ./...
 
 test-race:
-	go test -race -count=1 $(shell go list ./... | grep -v tests/acceptance)
+	go test -race -count=1 ./...
 
 lint:
 	go vet ./...
@@ -33,7 +32,7 @@ fmt:
 	@which goimports > /dev/null 2>&1 && goimports -l -w . || true
 
 coverage:
-	go test -count=1 -coverprofile=coverage.out -coverpkg=./... $(shell go list ./... | grep -v tests/acceptance)
+	go test -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
 	go tool cover -func=coverage.out | tail -1
 
 coverage-check: coverage
@@ -42,9 +41,6 @@ coverage-check: coverage
 	if [ $$(echo "$${COVERAGE} < 50" | bc -l) -eq 1 ]; then \
 		echo "FAIL: coverage below 50%"; exit 1; \
 	fi
-
-verify-scenarios:
-	go run scripts/verify-scenarios.go
 
 clean:
 	rm -rf bin/ coverage.out

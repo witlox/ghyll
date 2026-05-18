@@ -11,22 +11,19 @@ position.
 
 ## Project State
 
-**Phase**: v1 implemented (this repo). v2 designed but not built —
-correctness mechanism is a typed gate system, not drift detection.
+**Phase**: v1 implemented (this repo). v2 design complete (5 operator-
+decision rounds D1–D44; 4 cold-read validation passes; 82 findings
+resolved). v2 implementation about to begin. v1 specs and acceptance
+suite removed — v2 specs/features being written.
 
 - **v1** — dialects, drift-aware memory, streaming, sandbox-only
-  execution. Ships as continuity infrastructure for v2.
+  execution. Continuity infrastructure for v2; will be retired as v2
+  implementation reaches feature parity.
 - **v2** — gate-and-arrow enforcement, fixed role set, integrator
-  feedback cycle, `unevaluated` status. Design lives in
-  [`specs/direction/`](specs/direction/). Cold-validation pass 1
-  flagged load-bearing holes (machine-clause catalogue closed vs.
-  analyst clauses outside it; status-vocabulary divergence;
-  unquantified "weight"/"residue"). Treat the design as a hypothesis
-  (Direction §7). **Do not start building the enforcement spine
-  before the design passes a clean cold-read.**
-
-**Fidelity checkpoint** (last auditor sweep, v1): 75 THOROUGH, 3
-MODERATE, 5 NONE.
+  feedback cycle, typed clause/finding/pass state machines, init
+  with auto-propose, per-arrow adversarial phase. Design in
+  [`specs/direction/`](specs/direction/); implementation specs at
+  `specs/` (root) under active development.
 
 Use the diamond workflow (`.claude/CLAUDE.md`) for v1 bugfixes and any
 non-v2 work. The `.claude/roles/*.md` files are Claude Code's roles for
@@ -76,8 +73,8 @@ context/              unified context manager
   drift.go            cosine similarity drift detection
   injection.go        prompt injection signal detection
 vault/                team memory HTTP server
-tests/acceptance/     godog BDD acceptance tests
-specs/                behavioral specifications + architecture + fidelity
+specs/direction/      v2 design (gate schema, role contracts, component specs, decisions history)
+specs/                v2 implementation specs (domain-model, invariants, features) — being written
 docs/                 mdbook documentation site
 scripts/              scenario verification tooling
 ```
