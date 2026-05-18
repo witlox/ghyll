@@ -63,13 +63,19 @@ Feature: Grid amendment and global lock
 
   # ---- Atomic write (D31: versioned files + grid.current pointer) ----
 
-  Scenario: Successful atomic write of v(N+1)
+  Scenario: Successful atomic write of v(N+1) with fsync ordering
     Given the amendment is ready to write v(N+1)
     When the component writes the grid
-    Then it writes to a temp file ".ghyll/grid.v(N+1).yaml.tmp"
-    And after successful write, renames to ".ghyll/grid.v(N+1).yaml"
-    And updates ".ghyll/grid.current" atomically to point to v(N+1)
-    And only after the pointer update is the change visible to readers
+    Then it writes content to ".ghyll/grid.v(N+1).yaml.tmp"
+    And fsync's the temp file (content durable)
+    And fsync's the containing directory (the new directory entry is
+        durable)
+    And ONLY THEN renames temp → ".ghyll/grid.v(N+1).yaml"
+    And fsync's the directory again (the rename is durable)
+    And ONLY THEN updates ".ghyll/grid.current" atomically
+    And after the .current update, a fresh reader observing
+        grid.current = "v(N+1)" is guaranteed to see grid.v(N+1).yaml
+        intact (no torn read possible due to ordering above)
 
   Scenario: Crash mid-write
     Given the temp file is partially written
@@ -116,3 +122,62 @@ Feature: Grid amendment and global lock
         "(role-pair, stratum, context, v(N+1))"
     And if the same arrow is re-traversed after v(N+2), the new pass
         has a different arrow-id
+
+  # ---- Adversarial additions: liveness and deadlock ----
+
+  Scenario: Amendment lock held by a process that crashed
+    Given an amendment is committing and the harness crashes mid-write
+        with the grid write-lock still held
+    When the harness restarts
+    Then crash recovery detects the orphaned lock (lock file's owner
+        PID is no longer alive)
+    And releases the lock as part of recovery
+    And the half-written grid.v(N+1).yaml.tmp is unlinked
+    And the next amendment may proceed normally
+    And no operator action is required to break the deadlock
+
+  Scenario: Amendment waiting on attestation that is waiting on an aborted pass
+    Given an amendment A1 is queued waiting for the lock
+    And pass P1 is mid-attestation (clause C5 awaiting verdict)
+    And pass P1 has been aborted with reason "invalidated" by a
+        previous amendment
+    When A1 acquires the lock
+    Then A1 does NOT block on P1's pending attestation (P1 is aborted;
+        its attestation requests are cancelled)
+    And A1 commits in bounded time (default: same as a normal commit)
+    And the cancelled attestation requests emit OperatorEvents
+        ("attestation-cancelled-by-abort") so the operator UI clears them
+
+  # ---- Adversarial additions: FIFO under contention ----
+
+  Scenario: FIFO ordering under contention
+    Given 5 amendments A1, A2, A3, A4, A5 arrive in that order over
+        the span of 1 second
+    When all are queued
+    Then they commit in strict order A1 → A2 → A3 → A4 → A5
+    And no amendment is reordered ahead of an earlier one due to
+        scheduling
+    And the commit log records all 5 commits with monotonically
+        increasing grid-versions
+
+  Scenario: Queue growth alert
+    Given the amendment queue grows to a configurable threshold
+        (default 10 pending)
+    When a new amendment enqueues
+    Then an OperatorEvent of type "amendment-queue-growing" is
+        published with the current queue length
+    And the project status' R/C reporting flags the queue depth
+        (operator can see the system is over-amending)
+
+  # ---- Adversarial additions: reader/writer race ----
+
+  Scenario: Reader observes grid.current between updates
+    Given the amendment component is updating from vN to v(N+1)
+    And a reader process opens .ghyll/grid.current at the exact moment
+        of the rename
+    When the rename is atomic (POSIX rename)
+    Then the reader sees either "vN" OR "v(N+1)" — never an empty
+        file, never a torn write
+    And the corresponding grid.v*.yaml file exists at whichever
+        version the reader observed
+    And the reader can proceed without retry / error handling

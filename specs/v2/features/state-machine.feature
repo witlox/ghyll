@@ -13,12 +13,27 @@ Feature: Status state machine engine
     Then the engine validates the transition pending → pass
     And records the new status with a timestamp
 
-  Scenario: Invalid clause transition rejected
-    Given a clause C1 with status "pass" on pass P1
-    When the runner attempts to set status "pending"
+  Scenario Outline: Invalid clause transition rejected (illegal-transition matrix)
+    Given a clause C1 with status "<from>" on pass P1
+    When the runner attempts to set status "<to>"
     Then the engine rejects the transition with
-        "illegal-transition: pass → pending not in clause state machine"
-    And the clause status is unchanged
+        "illegal-transition: <from> → <to> not in clause state machine"
+    And the clause status remains "<from>"
+
+    Examples:
+      | from                 | to                   |
+      | pass                 | pending              |
+      | pass                 | running              |
+      | pass                 | fail                 |
+      | fail                 | pass                 |
+      | fail                 | pending              |
+      | unevaluated          | pass                 |
+      | unevaluated          | pending              |
+      | awaiting-attestation | pending              |
+      | awaiting-attestation | running              |
+      | insufficient-basis   | pending              |
+      | running              | pending              |
+      | running              | awaiting-attestation |
 
   Scenario: Attested clause awaits operator
     Given an attested clause with hint emitted
@@ -146,3 +161,90 @@ Feature: Status state machine engine
     When the engine receives the query
     Then it reads from the checkpoint log
     And returns the historical pass's full state
+
+  # ---- Adversarial additions: illegal-transition matrix for findings ----
+
+  Scenario Outline: Illegal finding-status transitions rejected
+    Given a finding F1 with status "<from>"
+    When a caller attempts to set status "<to>"
+    Then the engine rejects with "illegal-transition" and F1's status
+        remains "<from>"
+
+    Examples:
+      | from          | to            |
+      | resolved      | open          |
+      | resolved      | running       |
+      | accepted-risk | open          |
+      | accepted-risk | resolved      |
+      | accepted-risk | running       |
+      | open          | resolved      |
+      # `resolved` only via re-attack confirmation per gates.md §7.3.
+      # `accepted-risk` only via operator verdict.
+      # `open → resolved` direct is the schema's most dangerous bypass.
+
+  # ---- Adversarial additions: crash recovery boundary cases ----
+
+  Scenario: Crash while clause is awaiting-attestation
+    Given pass P1 has clause C5 with status "awaiting-attestation"
+    And the hint has been published to the operator event bus
+    But the operator has not yet returned a verdict
+    When the harness crashes and restarts
+    Then crash recovery does NOT mark P1 as aborted (the operator can
+        still deliver a verdict)
+    And the attestation request is re-published on the event bus on
+        restart (so a UI client that reconnected sees it again)
+    And C5's status remains "awaiting-attestation" after recovery
+
+  Scenario: Crash between attestation write and clause-status flip
+    Given the operator submitted verdict "pass" for clause C5
+    And the JSONL record was appended successfully
+    But the engine's clause-status transition has not yet committed
+    When the harness crashes and restarts
+    Then crash recovery reads the latest attestation record for C5
+    And reconciles C5's status to match the recorded verdict ("pass")
+    And the reconciliation is recorded as a recovery event for audit
+    And no "split-brain" persists (record says pass, in-memory says
+        awaiting-attestation)
+
+  Scenario: Crash mid checkpoint-log write
+    Given a pass is being finalized
+    And the checkpoint-log record write is partial (last record
+        truncated)
+    When the harness restarts
+    Then crash recovery detects the truncated record (hash mismatch
+        on the Merkle DAG link)
+    And rolls back to the last verified record
+    And the pass whose checkpoint failed is re-marked as
+        "aborted: crash"
+    And no consumer of the checkpoint log observes the truncated record
+
+  Scenario: Grid-current points at missing grid file
+    Given .ghyll/grid.current contains "v3"
+    But .ghyll/grid.v3.yaml does not exist (deletion, partial restore,
+        manual edit)
+    When the harness initializes
+    Then the engine alerts "grid-current-points-to-missing-version"
+    And refuses to accept new pass starts
+    And the operator must restore the missing file or re-point
+        grid.current to an existing version
+
+  # ---- Adversarial additions: residue computation edge cases ----
+
+  Scenario: Residue with undeclared binding
+    Given an undeclared cell whose role exit-gate template includes a
+        clause referencing language "rust"
+    But the project has not declared a `lint-clean.rust` binding
+    When the engine imputes the cell's cost
+    Then the cost computation surfaces the missing binding (cannot
+        compute final cost) and the residue entry carries
+        `imputed-cost: unknown-pending-bindings`
+    And the project-level R reports a count of such pending-binding
+        cells separately from the numeric R
+
+  Scenario: Residue with arithmetic overflow
+    Given a degenerate grid declaration where per-clause costs sum to
+        more than 2^31
+    When the engine computes R
+    Then the engine uses 64-bit arithmetic (no silent wraparound)
+    And R is reported with units operator-action-units, not a wrapped
+        negative number

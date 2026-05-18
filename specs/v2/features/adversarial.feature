@@ -104,11 +104,17 @@ Feature: Per-arrow adversarial phase
     Then the producer signals the orchestrator via a typed
         "producer-fix-signal" message containing pass-id and
         addressed-findings
-    And the orchestrator spawns a fresh adversary R1
-    And R1 receives the same inputs as R0 except it sees the updated
-        upstream artifact
-    And R1 runs ALL three sub-activities over the ENTIRE upstream
-        artifact (NOT scoped to F1's target) per D32
+    And the orchestrator spawns a fresh adversary R1 with NO shared
+        session/context from R0 (verified: R1's input list contains
+        only the upstream artifact, clause definitions, depth ladder,
+        routing config — nothing from R0's stdout/state)
+    And R1's model tier equals R0's model tier (same depth budget)
+    And R1 visibly invokes all three sub-activities
+        (clause-falsification, open-sweep, depth-classification) —
+        each sub-activity emits a phase-entered marker in the
+        audit-trail so a skipped sub-activity is detectable
+    And R1 attacks the ENTIRE upstream artifact (NOT scoped to F1's
+        target) per D32
     And if R1 cannot reproduce F1, F1 transitions to "resolved"
     And if R1 reproduces F1, F1 stays "open" and another round begins
     And any new findings R1 raises are added to the open set
@@ -158,3 +164,47 @@ Feature: Per-arrow adversarial phase
     Then the orchestrator treats F4 and F5 as informational only
     And the phase converges (below-threshold findings do not block)
     And F4, F5 are recorded but visible in the arrow's finding log
+
+  # ---- Adversarial additions: remediation-rounds-max boundary ----
+
+  Scenario Outline: Remediation-rounds-max boundary
+    Given remediation-rounds-max is configured to "<max>"
+    And finding F1 remains "open" through <attempted> remediation rounds
+    Then escalation is "<escalation>"
+
+    Examples:
+      | max | attempted | escalation                |
+      | 5   | 4         | not yet (loop continues)   |
+      | 5   | 5         | yes (loop stops, operator) |
+      | 5   | 6         | impossible: loop stopped at 5 |
+      | 1   | 1         | yes (operator immediately) |
+      | 0   | 0         | rejected at init: max=0 invalid |
+
+  Scenario: Producer signals fix but artifact is unchanged (loop bomb)
+    Given finding F1 status "open" after round R0
+    When the producer emits "producer-fix-signal" but the upstream
+        artifact's content-hash is identical to the version R0 saw
+    Then the orchestrator detects the no-op (compares pre/post hashes)
+    And refuses to spawn R1 against the unchanged artifact
+    And emits an OperatorEvent: "producer-signal-without-change" for
+        the pass-id and the producer role-id
+    And the round counter does NOT advance (this is not a legitimate
+        round; loop bomb prevented)
+
+  # ---- Adversarial additions: concrete depth-tier handling ----
+
+  Scenario: Depth gate with concrete tier values
+    Given the project's routing config maps depth-tier values:
+      | tier | model        |
+      | 1    | fast-model   |
+      | 2    | medium-model |
+      | 3    | deep-model   |
+    And clause C9 has depth-sensitivity requirement "tier 3"
+    When the orchestrator selects the adversary's tier for an arrow
+        carrying C9
+    Then the selected tier is exactly "tier 3" (deep-model)
+    And NOT silently downgraded to a lower tier
+    And if "tier 3" is unavailable in the routing config, the
+        clause is recorded "unevaluated" with reason
+        "depth-below-required" — never elevated to a deeper-than-required
+        tier without that tier being declared in routing config

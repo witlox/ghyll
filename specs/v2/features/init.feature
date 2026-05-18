@@ -172,3 +172,77 @@ Feature: Project initialization
   Scenario: Empty op-id is refused
     Given the operator provides empty op-id ""
     Then session start is refused with "op-id-required"
+
+  # ---- Adversarial additions: grid file inconsistency ----
+
+  Scenario: grid.current points at a missing grid file
+    Given ".ghyll/grid.current" contains "v3"
+    But ".ghyll/grid.v3.yaml" does not exist (deletion, partial restore,
+        operator manually edited grid.current)
+    When the harness initializes
+    Then the engine refuses to start any pass with
+        "grid-current-points-to-missing-version"
+    And presents the operator with options:
+      1. restore .ghyll/grid.v3.yaml from version control
+      2. edit .ghyll/grid.current to point at an existing version
+      3. re-run init (will produce grid.v(N+1).yaml against current
+         state, NOT a v3 reconstruction)
+    And no pass is started until the operator resolves the inconsistency
+
+  Scenario: grid.current is corrupted or empty
+    Given ".ghyll/grid.current" exists but contains garbage (binary,
+        empty, multiple lines, version not matching pattern "v<N>")
+    When the harness initializes
+    Then the engine refuses to start with "grid-current-malformed"
+    And reports the actual content for operator triage
+    And operator must repair grid.current or remove it (forcing re-init)
+
+  Scenario: Multiple grid versions on disk, grid.current missing
+    Given ".ghyll/grid.v1.yaml", ".ghyll/grid.v2.yaml" exist
+    But ".ghyll/grid.current" is absent
+    When the harness initializes
+    Then the engine does NOT silently pick the latest (refuses to assume)
+    And the engine surfaces "grid-current-absent" with a list of
+        available versions
+    And operator must declare which is current (or re-init)
+
+  # ---- Adversarial additions: modify edge cases (raise-only) ----
+
+  Scenario Outline: Modify a non-monotonic argument
+    Given a proposed clause with argument "<arg>"=<original>
+    When the operator returns "modify" with <arg>=<proposed>
+    Then init <action>
+
+    Examples:
+      | arg            | original      | proposed              | action                                                            |
+      | scope          | "src/**"      | "src/main.go"         | accepts (narrower scope is tighter — fewer files allowed to fail) |
+      | scope          | "src/main.go" | "src/**"              | refuses with "cannot-weaken-default: wider scope"                 |
+      | regex          | "^TODO"       | "^TODO|^XXX"          | accepts (more strings caught)                                     |
+      | regex          | "^TODO|^XXX"  | "^TODO"               | refuses with "cannot-weaken-default: fewer markers"               |
+      | severity-threshold | high       | medium                | refuses with "cannot-weaken-default: lower threshold"             |
+      | nonexistent    | (any)         | (any)                 | refuses with "modify-on-unknown-field"                            |
+
+  Scenario: Modify on a clause not in the proposal
+    Given init has not proposed clause "C99"
+    When the operator submits "modify" against "C99"
+    Then init refuses with "modify-on-unknown-clause" and lists the
+        proposed clause IDs for orientation
+
+  # ---- Adversarial additions: op-id at init ----
+
+  Scenario: op-id declared once survives init re-entry
+    Given the operator declared op-id "alice@example.com" at init start
+    And init was suspended for missing-binding and re-entered
+    When init re-enters
+    Then the active op-id is still "alice@example.com" (single
+        declaration per session per attestation.md F-1)
+    And re-init does NOT re-prompt for op-id
+
+  Scenario: op-id mid-session change requires explicit handoff
+    Given operator Alice is active mid-init
+    When Bob attempts to declare op-id "bob@example.com" without
+        Alice closing first
+    Then init refuses with "session-already-active" and lists Alice's
+        op-id
+    And Bob must either ask Alice to close her session OR start a new
+        session (multi-operator handoff per attestation.md F-1)

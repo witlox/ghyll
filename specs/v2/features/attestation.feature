@@ -39,14 +39,22 @@ Feature: Operator attestation flow
     And operator Alice is active
     When Alice inspects the locations and submits verdict "pass" with
         unit "confirm"
-    Then a record is appended to the per-pass attestation file at
+    Then a record is appended (O_APPEND) to the per-pass attestation
+        file at
         "attestations/v<N>/contextA/stratum-<S>/<role-pair>/<pass-id>.jsonl"
         where <role-pair> uses "__" as the separator (e.g.,
-        analyst__architect or analyst__adversary__architect or init__analyst)
+        "analyst__architect", "analyst__adversary__architect",
+        "init__analyst")
+    And the append is atomic up to PIPE_BUF (records are < 4KB so
+        atomic on POSIX)
+    And the file is fsync'd before the verdict is reported as accepted
+        (durability before status flip)
     And the record carries unit "confirm", clause C5, verdict "pass",
-        ts, op-id "alice@example.com"
+        ts (ISO8601 UTC), op-id "alice@example.com"
+    And the JSONL line is valid JSON with newline terminator (no
+        trailing comma, no missing newline)
     And the component signals the state-machine engine to transition
-        C5 to "pass"
+        C5 to "pass" ONLY AFTER the fsync returns successfully
 
   Scenario: Operator returns fail with record-locations
     Given an attestation request for clause C5
@@ -108,6 +116,24 @@ Feature: Operator attestation flow
     Then no escalation is triggered yet (max not reached)
     And the round counter is 4
 
+  Scenario: insufficient-basis-rounds-max escalation actually fires at max
+    Given init declared insufficient-basis-rounds-max=3 for this project
+    And clause C5 has received "insufficient-basis" for the 2nd time
+    When clause C5 receives "insufficient-basis" for the 3rd time
+    Then escalation IS triggered (round counter reached max)
+    And the operator event bus publishes an "escalation-request" for
+        clause C5
+
+  Scenario Outline: Invalid insufficient-basis-rounds-max rejected at init
+    Given init proposes insufficient-basis-rounds-max="<value>"
+    Then init rejects the value with "<error>"
+
+    Examples:
+      | value | error                                   |
+      | 0     | insufficient-basis-rounds-max-must-be-positive |
+      | -1    | insufficient-basis-rounds-max-must-be-positive |
+      | abc   | insufficient-basis-rounds-max-must-be-integer  |
+
   # ---- Accepted-risk for findings ----
 
   Scenario: Producer proposes accepted-risk
@@ -145,3 +171,87 @@ Feature: Operator attestation flow
     When the verifier reads it
     Then the record is flagged as malformed
     And the operator session that produced it is alerted
+
+  # ---- Adversarial additions: op-id adversarial input ----
+
+  Scenario Outline: op-id with dangerous characters is rejected
+    Given the operator attempts to declare op-id "<op-id>"
+    Then session start is refused with "<error>"
+    And no path on disk is ever created using the raw op-id (op-id
+        is recorded in record JSON only, never used as a filesystem
+        component)
+
+    Examples:
+      | op-id                                          | error                    |
+      | ../etc/passwd                                  | op-id-invalid-characters |
+      | alice/bob                                      | op-id-invalid-characters |
+      | alice\x00null                                  | op-id-invalid-characters |
+      | alice\nbob                                     | op-id-invalid-characters |
+      | (string of length 5000)                        | op-id-too-long           |
+      | (unicode RTL override U+202E)                  | op-id-invalid-characters |
+      | (empty after whitespace trim: "   ")           | op-id-required           |
+
+  Scenario: op-id leaks JSON injection are escaped
+    Given the operator declares op-id 'alice","verdict":"pass'
+        (containing JSON-syntactic characters)
+    When a verdict is captured
+    Then the JSONL record properly escapes the op-id value
+    And re-parsing the record yields exactly the original op-id
+        string (no injection succeeded)
+    And the resulting verdict field is the operator's actual verdict,
+        not the injected "pass"
+
+  # ---- Adversarial additions: oversized residue note ----
+
+  Scenario: Oversized residue note rejected
+    Given an escalation prompt requesting a residue note
+    When the operator submits a residue note longer than 16KB
+    Then the component refuses with "residue-note-too-long"
+        (configurable threshold)
+    And re-prompts the operator
+    And no oversized record is appended
+
+  # ---- Adversarial additions: path canonicalization for three-role chain ----
+
+  Scenario: Three-role chain path encoding
+    Given an arrow with role-pair containing the adversary segment
+        (e.g., analyst→adversary→architect)
+    When an attestation record is written
+    Then the path component for the role-pair is
+        "analyst__adversary__architect" (double-underscore separator)
+    And NOT "analyst-adversary-architect" or "analyst→adversary→architect"
+    And the path is filesystem-portable (no Unicode glyphs, no
+        path separators, ≤ 255 bytes per component)
+
+  Scenario: init arrow path encoding
+    Given an attestation record for the init arrow
+    When the path is constructed
+    Then the role-pair component is "init__analyst"
+    And the context and stratum components are empty / "_" (init
+        is project-scoped, not context-scoped — per components/init.md
+        sub-phase A)
+    And the path is consistently chosen (not sometimes
+        "v<N>/_/_/init__analyst/..." and sometimes "v<N>/init__analyst/...")
+
+  # ---- Adversarial additions: multi-operator handoff edge cases ----
+
+  Scenario: Two operators submit verdicts on the same clause near-simultaneously
+    Given Alice's session is active and Bob's session is also active
+    And both submit verdicts on clause C5 within 10ms of each other
+    When the component serializes verdict-capture (per-clause lock from
+        state-machine.md)
+    Then both verdicts are recorded as separate JSONL records in
+        chronological order
+    And the later record's verdict is authoritative for clause status
+    And the audit log shows the conflict (two verdicts; later wins)
+    And neither operator's submission is silently dropped
+
+  Scenario: Operator's session ends mid-attestation
+    Given Alice has read a hint and started typing a residue note
+    When Alice's session is closed (network drop, explicit close,
+        timeout) before she submits the verdict
+    Then the attestation request is preserved on the operator event bus
+    And the next operator session (Bob or Alice rejoining) sees the
+        pending request
+    And the round counter for the clause is NOT incremented (the
+        attempt didn't complete; no insufficient-basis recorded)

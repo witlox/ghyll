@@ -10,13 +10,19 @@ Feature: Machine-clause runner (enforcement spine)
 
   Scenario: Successful machine evaluation
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
-    And the upstream artifact contains no TODO markers in scope
+    And the upstream artifact contains src/foo.go with no TODO markers
+    And the upstream artifact contains src/bar.go with no TODO markers
     When the runner evaluates the clause as part of pass P1
-    Then the evaluator runs to completion
+    Then the evaluator process is spawned with a binding-resolved command
+    And the evaluator's stdin/stdout/stderr are captured for inspection
+    And the evaluator reads the resolved scope (recording which files were read)
+    And the evaluator runs to completion with exit-code 0
     And the clause status transitions: pending → running → pass
-    And an evaluation-run record is appended to the pass log with
-        evaluation-run-id, clause-id, pass-id, started-at,
-        completed-at, and result {pass: true, details: {hits: []}}
+    And the result.details.scanned-files is non-empty (proving real scan)
+    And an evaluation-run record is appended with evaluation-run-id,
+        clause-id, pass-id, started-at, completed-at, result, and the
+        list of files actually scanned (so a stub returning empty hits
+        without scanning is detectable)
 
   Scenario: Machine evaluation fails
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
@@ -105,7 +111,12 @@ Feature: Machine-clause runner (enforcement spine)
     Given arrow A has status "invalidated"
     When a downstream transition is attempted
     Then the runner refuses with kind "transition-refused-invalidated"
-    And signals that A needs re-traversal first
+    And the structured error contains A's arrow-id and its
+        invalidating grid-version
+    And an OperatorEvent of type "pass-aborted" or
+        "transition-refused-invalidated" is published on the operator
+        event bus (observable to the UI / tooling layer, not just
+        returned as a function error)
 
   # ---- Verification phase orchestration ----
 
@@ -128,11 +139,18 @@ Feature: Machine-clause runner (enforcement spine)
   Scenario: Two passes on different contexts run concurrently
     Given pass P1 on (analyst, contextA, stratum-1)
     And pass P2 on (analyst, contextB, stratum-1)
+    And both pass P1 and pass P2 evaluate the same clause-concept
+        (e.g., `no-orphan-symbol`) at the same wall-clock instant
     When both are scheduled
     Then the runner permits both to run concurrently
-    And the single-active-role-instance(analyst, contextA) constraint
-        is satisfied for each
-    And neither's evaluation runs interfere with the other's
+    And both evaluators' start timestamps overlap (proving parallelism,
+        not serialization)
+    And the per-(role, context) lock for (analyst, contextA) is held
+        by P1 only; the lock for (analyst, contextB) is held by P2 only
+    And the state-machine per-clause locks for P1 and P2 are distinct
+        (different pass-ids → different lock keys)
+    And running with `-race` reports no data races on the shared
+        evaluator-output buffer
 
   Scenario: Two passes on same (role, context) are refused
     Given pass P1 on (analyst, contextA) is running
@@ -164,3 +182,58 @@ Feature: Machine-clause runner (enforcement spine)
     When the runner finalizes the aborted pass
     Then the checkpoint records pass-status "aborted" with the abort reason
     And the partial evaluation results are persisted for forensic value
+
+  # ---- Adversarial additions: evaluator process failures ----
+
+  Scenario: Evaluator times out
+    Given a clause with timeout-per-mutation 30s
+    And the evaluator runs past 30s without producing output
+    When the runner detects the timeout
+    Then the runner sends SIGTERM to the evaluator process
+    And after 5s grace, SIGKILL if still running
+    And the clause status is "unevaluated" with reason "evaluator-timeout"
+    And no orphan / zombie evaluator process remains
+    And the timeout duration is recorded in the evaluation-run for
+        operator triage
+
+  Scenario: Evaluator killed by OOM
+    Given the evaluator process is terminated by the OS OOM-killer
+        (exit signal 9, no graceful stop)
+    When the runner observes the abnormal termination
+    Then the clause status is "fail" with details.error
+        "evaluator-killed: oom" (NOT recorded as pass)
+    And a clear distinction is made from "evaluator-timeout"
+
+  Scenario: Evaluator returns malformed JSON
+    Given the evaluator exits 0 but stdout is not valid JSON
+        (truncated, binary, plain text, partial)
+    When the runner parses the output
+    Then parsing fails with a clear error
+    And the clause status is "fail" with details.error
+        "evaluator-output-malformed"
+    And the raw output is preserved in the evaluation-run record
+        for forensic inspection (truncated to ≤ 16KB)
+
+  Scenario: Evaluator writes spurious stderr but exits 0
+    Given the evaluator writes warning lines to stderr but exits 0
+        with valid JSON on stdout
+    When the runner reads stdout for the result
+    Then the result is parsed normally
+    And the stderr content is captured in the evaluation-run record
+        as metadata (not as failure signal)
+
+  Scenario: Evaluator returns oversized output
+    Given the evaluator produces stdout exceeding 100MB
+    When the runner reads the output
+    Then the runner enforces a max-output-bytes limit
+        (configurable; default 16MB)
+    And exceeding the limit fails the evaluation with details.error
+        "evaluator-output-oversized"
+    And the evaluator process is killed once the limit trips
+
+  Scenario: Evaluator leaves zombie children
+    Given the evaluator spawns subprocesses and doesn't wait on them
+    When the evaluator main process exits
+    Then the runner reaps any remaining children belonging to the
+        evaluator's process group within 5s
+    And no zombie processes accumulate across passes
