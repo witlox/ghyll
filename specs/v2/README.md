@@ -20,14 +20,21 @@ will be built and tested against.
 - **[domain-model.md](domain-model.md)** — v2 internal domain
   (entities, value objects, aggregates, the five internal bounded
   contexts, the catalogue, the role identities, on-disk layout).
-- **invariants.md** *(in progress)* — consolidated invariants from
-  schema + component specs.
-- **features/** *(in progress)* — Gherkin scenarios extracted from
-  `specs/direction/components/*.md` into standalone `.feature` files
-  for the v2 acceptance suite.
-- **failure-modes.md** *(planned)* — consolidated failure modes.
-- **ubiquitous-language.md** *(planned)* — v2 glossary.
-- **cross-context.md** *(planned)* — v2 cross-component interactions.
+- **[invariants.md](invariants.md)** — 64 invariants consolidated
+  from gates.md + component specs, sourced and grouped by topic.
+- **[failure-modes.md](failure-modes.md)** — 57 failure modes from
+  the component-spec FM tables, grouped by topic (process, I/O,
+  concurrency, state-machine, adversarial, operator, schema).
+- **[ubiquitous-language.md](ubiquitous-language.md)** — v2 glossary
+  with disambiguation tables for confusable pairs.
+- **[cross-context.md](cross-context.md)** — inter-component
+  interaction graph; per-component interfaces; shared substrates;
+  cross-component invariants; concurrency resolutions.
+- **[features/](features/)** — Gherkin scenarios for the v2
+  acceptance suite (~140 scenarios across 6 components), with the
+  adversarial-pass findings and additions recorded.
+- **[decisions/](decisions/)** — 12 ADRs distilling the 44 operator
+  decisions into structural records.
 
 ## Path forward
 
