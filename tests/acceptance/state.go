@@ -89,6 +89,11 @@ type ScenarioState struct {
 	AllProposals        []*bootstrap.ArrowProposal
 	BoundedContextCount int
 
+	// Project profile (init sub-phase A — greenfield/brownfield).
+	ProjectTestDir string
+	Profile        *bootstrap.ProjectProfile
+	ProfileErr     error
+
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error
