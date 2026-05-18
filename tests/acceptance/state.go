@@ -74,6 +74,12 @@ type ScenarioState struct {
 	PendingOpID        string
 	OperatorSession    *bootstrap.Session
 	OperatorSessionErr error
+
+	// Operator-modify path (init auto-propose, ADR-011 D20).
+	ProposedConcept string
+	ProposedArgs    map[string]any
+	ModifyArgs      map[string]any
+	ModifyErr       error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.
