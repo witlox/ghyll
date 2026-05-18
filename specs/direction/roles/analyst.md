@@ -11,8 +11,9 @@ it. Spec depth is the analyst's responsibility and is not recoverable
 later.
 
 This file declares the analyst role's contract. Gate semantics —
-evaluation types, depth types, `unevaluated`, hints, attestation — are
-defined in `gates.md` and are NOT redefined here.
+evaluation types, depth types, the clause/arrow/finding state machines,
+hints, attestation, the catalogue, strata — are defined in `gates.md`
+and are NOT redefined here.
 
 ---
 
@@ -46,29 +47,22 @@ State the mode in the first line of output.
 
 ---
 
-## Work in layers (advance only when current layer is stable)
+## Work in layers — analyst's projection of the strata
 
-**Layer 1 — Domain Model**: entities, aggregates, bounded contexts,
-ubiquitous language. Define every term precisely.
+The analyst's layers map directly onto the six strata defined in
+`gates.md` §2.1. A layer is stable when its exit-gate clauses for that
+stratum pass — not when it "feels" complete.
 
-**Layer 2 — Invariants**: consistency boundaries, ordering constraints,
-cardinality constraints.
+| Stratum | Analyst's work in this layer |
+|---|---|
+| 1 — Structure | Domain model, entities, aggregates, bounded contexts, ubiquitous language. Define every term precisely. |
+| 2 — Invariants | Consistency boundaries, ordering constraints, cardinality constraints. Each invariant written as an assertable predicate. |
+| 3 — Behavior | Commands, events, queries per context. Gherkin scenarios for happy AND failure paths. |
+| 4 — Composition | Integration points, contracts, behavior when downstream is unavailable / out-of-order / duplicated. |
+| 5 — Failure | How each component fails, blast radius, desired degradation, what is unacceptable even in failure. |
+| 6 — Assumptions / risk | Validated, accepted (acknowledged risk), unknown (needs investigation). Flag architecture-invalidating assumptions. |
 
-**Layer 3 — Behavioral Specification**: commands, events, queries per
-context. Gherkin scenarios for happy AND failure paths.
-
-**Layer 4 — Cross-Context Interactions**: integration points, contracts,
-behavior when downstream is unavailable / out-of-order / duplicated.
-
-**Layer 5 — Failure Modes**: how each component fails, blast radius,
-desired degradation, what is unacceptable even in failure.
-
-**Layer 6 — Assumptions Log**: validated, accepted (acknowledged risk),
-unknown (needs investigation). Flag architecture-invalidating assumptions.
-
-"Stable" is not a feeling. A layer is stable when its exit-gate clauses
-for that layer pass. Advancing past an unstable layer is a gate
-violation.
+Advancing past an unstable layer is a gate violation.
 
 ---
 
@@ -105,62 +99,73 @@ specs/
 ## Arrow output
 
 The analyst does not only produce the `specs/` nodes above. The
-*transition* analyst → architect is an **arrow** (see `gates.md` §1) and
-the analyst must emit the arrow artifact: an explicit **coverage claim**
-asserting that the feature set composes to cover the domain model and the
-invariant set — with the mapping and the **residue** (domain or invariant
-elements not covered by any feature). The coverage claim is the artifact
-the analyst→architect gate evaluates. Nodes without this arrow are an
-implicit, uncheckable chain — which is the defect this workflow exists to
-remove.
+*transition* analyst → architect is an **arrow** (see `gates.md` §1)
+and the analyst must emit the arrow artifact: an explicit **coverage
+claim** asserting that the feature set composes to cover the domain
+model and the invariant set — with the mapping and the **residue**
+(domain or invariant elements not covered by any feature). The coverage
+claim is the artifact the analyst→architect gate evaluates as
+`arrow-artifact-present` (machine) and as the
+honest-residue judgement (attested). Nodes without this arrow are an
+implicit, uncheckable chain — which is the defect this workflow exists
+to remove.
+
+The next arrow's **adversarial phase** (`gates.md` §11) attacks this
+output before the architect role begins; the analyst does not run that
+attack itself.
 
 ---
 
 ## Contract
 
-### Entry precondition
-
-| # | Condition | Evaluation type |
-|---|---|---|
-| E1 | Area under analysis names exactly one bounded context | machine |
-| E2 | Mode (greenfield/brownfield) is determinable from repo state | machine |
-| E3 | No analyst spec for this context is already `DRAFT` / `IN PROGRESS` | machine |
+Per `gates.md` §3, the analyst has a single exit gate. Conditions that
+were previously framed as "entry preconditions" (mode determinable; one
+bounded context; no concurrent draft) are exit clauses of the *upstream*
+(definition-phase → analyst) arrow and are not the analyst's gate to
+emit. The v0 grid (`gates.md` §2.4) ships those clauses on the upstream
+arrow.
 
 ### Exit gate
 
-Each clause carries an evaluation type (`machine` / `attested`) and a
-depth type (`depth-robust` / `depth-sensitive`) per `gates.md`.
+Every clause carries an evaluation type (`machine` / `attested`) and a
+depth type (`depth-robust` / `depth-sensitive`) per `gates.md`. Machine
+clauses reference catalogue concepts (`gates.md` §4.1) by name.
 
-| # | Clause | Eval | Depth |
-|---|---|---|---|
-| G1 | No `TODO` / `TBD` / `???` marker in any `specs/` artifact for this context | machine | depth-robust |
-| G2 | Every `*.feature` file parses as valid Gherkin | machine | depth-robust |
-| G3 | Every term in `ubiquitous-language.md` appears exactly once (no duplicate definitions) | machine | depth-robust |
-| G4 | Every invariant in `invariants.md` is written as an assertable predicate (checkable form, not prose) | machine | depth-robust |
-| G5 | Every bounded context referenced anywhere in `specs/` has a `domain-model.md` entry | machine | depth-robust |
-| G6 | Every exported behaviour in scope traces to a spec clause; orphan behaviours (brownfield: orphan code paths) are listed as residue | machine | depth-robust |
-| G7 | (brownfield) Every entry in `divergences.md` is marked `resolved` or `accepted-risk` — none `open` | machine | depth-robust |
-| G8 | The analyst→architect coverage claim exists and its residue is explicit | machine | depth-robust |
-| G9 | Every feature has Gherkin scenarios for failure paths, not only happy paths | attested | depth-sensitive |
-| G10 | Gherkin scenarios use specific, concrete values — not placeholders | attested | depth-sensitive |
-| G11 | The negative space is specified: what the system must *reject* is stated, not only what it accepts | attested | depth-sensitive |
-| G12 | Assumptions in `assumptions.md` are falsifiable; architecture-invalidating ones are flagged | attested | depth-sensitive |
-| G13 | Failure modes carry severity and intended degradation | attested | depth-sensitive |
-| G14 | The coverage-claim residue is an honest account of what the feature set does not cover | attested | depth-sensitive |
-| G15 | (brownfield) Each divergence resolution reflects a deliberate decision, not a spec edited to match whatever the code happened to do | attested | depth-sensitive |
+Universal-base clauses (`gates.md` §4.2: `compiles`, `lint-clean`,
+`no-todo-marker`, `every-step-bound`) are inherited automatically and
+not listed here — their scope on the analyst arrow is the `specs/`
+artifacts for the context under analysis.
 
-`machine` clauses (G1–G8) defend against absence and malformation.
-`attested` clauses (G9–G15) defend against shallowness, which is not
+| # | Clause | Concept (machine) or attested judgement | Eval | Depth |
+|---|---|---|---|---|
+| G1 | Every term in `ubiquitous-language.md` appears exactly once | `unique-definition`(`ubiquitous-language.md`) | machine | depth-robust |
+| G2 | Every invariant in `invariants.md` is written as an assertable predicate | `predicate-form`(`invariants.md`) | machine | depth-robust |
+| G3 | Every bounded context referenced anywhere in `specs/` has a `domain-model.md` entry | `trace-link-present`(context-references → domain-model) | machine | depth-robust |
+| G4 | Every exported behaviour in scope traces to a spec clause; orphan behaviours (brownfield: orphan code paths) are listed as residue | `no-orphan-symbol`(scope: exported-behaviours, residue-target: coverage-claim) | machine | depth-robust |
+| G5 | (brownfield) Every entry in `divergences.md` is `resolved` or `accepted-risk` — none `open` | `no-open-finding`(`divergences.md`) | machine | depth-robust |
+| G6 | The analyst→architect coverage claim exists at its declared location | `arrow-artifact-present`(analyst→architect coverage-claim) | machine | depth-robust |
+| G7 | Every feature has Gherkin scenarios for failure paths, not only happy paths | (judgement) | attested | depth-sensitive |
+| G8 | Gherkin scenarios use specific, concrete values — not placeholders | (judgement) | attested | depth-sensitive |
+| G9 | The negative space is specified: what the system must *reject* is stated, not only what it accepts | (judgement) | attested | depth-sensitive |
+| G10 | Assumptions in `assumptions.md` are falsifiable; architecture-invalidating ones are flagged | (judgement) | attested | depth-sensitive |
+| G11 | Failure modes carry severity and intended degradation | (judgement) | attested | depth-sensitive |
+| G12 | The coverage-claim residue is an honest account of what the feature set does not cover | (judgement) | attested | depth-sensitive |
+| G13 | (brownfield) Each divergence resolution reflects a deliberate decision, not a spec edited to match whatever the code happened to do | (judgement) | attested | depth-sensitive |
+
+`machine` clauses (G1–G6) defend against absence and malformation.
+`attested` clauses (G7–G13) defend against shallowness, which is not
 machine-detectable. A spec can pass every `machine` clause and still be
 hollow.
 
-G6 is the orphan-code check. The first Kiseki audit walked spec→code
-only and could not see code without a spec; G6 closes that direction.
+G4 is the orphan-code check. The first Kiseki audit walked spec→code
+only and could not see code without a spec; G4 closes that direction.
 
 For each `attested` clause the analyst emits a **hint** per `gates.md`
-§8: rule-selected locations, stated basis, disclosed residue, no verdict.
-If locations cannot be selected by a stated rule, report
-`unable-to-hint`.
+§9: rule-selected locations, stated basis, disclosed residue, no
+verdict. If locations cannot be selected by a stated rule, the clause
+is recorded `unevaluated` with reason `no-rule-selectable-locations`,
+and the analyst raises an `unable-to-hint` finding against itself
+(`gates.md` §6.1, §6.3).
 
 ---
 
@@ -170,11 +175,17 @@ Start: state mode. Read existing specs (and, brownfield, the code).
 Summarize state. Identify the highest-priority gap. Report which gate
 clauses currently pass.
 
-End: update artifacts. Log assumptions. List open questions. Report gate
-status clause-by-clause: each `machine` clause pass/fail; each `attested`
-clause `pass` / `fail` / `insufficient-basis` / `awaiting-attestation` /
-`unevaluated`; the overall propagated arrow status (`complete` /
-`provisional` / `blocked`).
+End: update artifacts. Log assumptions. List open questions. Report
+gate status:
+
+- **Clause-level** (per `gates.md` §6.1): each clause's status —
+  `pending` / `pass` / `fail` / `awaiting-attestation` /
+  `insufficient-basis` / `unevaluated` (with reason if applicable).
+- **Arrow-level** (per `gates.md` §6.2): the propagated arrow status —
+  `complete` / `provisional` / `unevaluated` / `blocked` /
+  `invalidated`.
+- **Findings** (per `gates.md` §6.3): any `unable-to-hint` or other
+  findings raised against the analyst's own output.
 
 ---
 
