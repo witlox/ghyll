@@ -8,8 +8,37 @@ Definitions without enforcement drift; this schema is the enforcement
 layer.
 
 Reconciled to operator decisions in
-`operator-decisions-round-1.md`, `operator-decisions-round-2.md`, and
-the corrections that followed `phase-3-architect-findings.md`.
+`operator-decisions-round-1.md`, `operator-decisions-round-2.md`,
+`operator-decisions-round-3.md`, and the corrections that followed
+`phase-3-architect-findings.md`.
+
+---
+
+## 0. Conceptual frame
+
+This schema describes a **state-transition system over an extensible
+grid**. Read everything below through that lens:
+
+- **Cells** are points in the state space: `(stratum, bounded-context)`
+  pairs, each holding clause statuses, findings, and a derived arrow
+  status.
+- **Arrows** are *operators* that transition the state of one cell to
+  the state of the next.
+- **Passes** are *iterations* of an operator on the project state.
+- **Invalidation** is an operator that resets a subset of cells to an
+  earlier state.
+- **Grid amendment** is an operator that *extends* the state space
+  (adds dimensions) — the integrator→analyst feedback per
+  `direction.md` §3.7 is the canonical case.
+- The **fixed point** is "every cell in grid vN has arrow status
+  `complete`." Convergence is not guaranteed (the grid can keep
+  growing); residue `R` is the visible distance from convergence.
+
+The frame is a Kripke structure over an extensible state space, not a
+vector space proper — there is no linearity, scaling, or addition over
+cells. The discipline it imposes: every operator must be well-defined
+on the state, and every transition must be reproducible from
+`(state, operator)`.
 
 ---
 
@@ -58,14 +87,15 @@ diamond.
 | Output | What it declares |
 |---|---|
 | Arrow grid | The declared arrow set for this project — which arrows exist across (stratum, context) cells (§3) |
-| Per-arrow clause arguments | Concept arguments for machine clauses (e.g., `mutation-score` threshold, scope) |
-| Depth ladder labels | Project's labels for the depth tiers used by the adversarial phase (§11.1); the harness ships generic defaults that the project may override |
-| Language bindings | Per-language instrument bindings for catalogue concepts (e.g., `lint-clean.go = staticcheck && go vet`); see §5 |
+| Per-arrow clause arguments | Concept arguments for machine clauses (e.g., `mutation-score` threshold, scope), typed per the catalogue's per-concept schemas (§5.1) |
+| Depth ladder labels | Project's labels for the depth tiers used by the adversarial phase (§11.1); the harness ships a generic 4-tier default that the project may override |
+| Language bindings | Per-language instrument bindings for catalogue concepts (e.g., `lint-clean.go = staticcheck && go vet`). **The harness ships NO language defaults**; each project declares its own bindings here. If a needed binding is absent at any later point, the harness suspends and re-enters initialization to obtain it. |
 | Severity thresholds | The threshold above which an open finding blocks an arrow (§7.3) |
-| Per-arrow dependency declarations | Which spec artifacts each arrow depends on, for invalidation propagation (§7.2) |
+| Artifact ID conventions | Hybrid: path-based addressing is the default; clauses that other arrows depend on (or that must survive content rewordings) get a manually-assigned `id:` field. The operator decides per clause whether a manual ID is needed. |
+| Per-arrow dependency declarations | Which spec artifacts each arrow depends on, for invalidation propagation (§7.2). Each declaration carries a granularity: `file` \| `section` \| `clause-id`. |
 | Explicit residue | Which `(stratum, context)` cells the operator has chosen NOT to declare, and why |
 
-### 2.2 Authorship
+### 2.2 Authorship — auto-propose, operator confirms
 
 Initialization is **operator-owned, agent-assisted**. The agent helps
 draft; the operator owns the grid. ghyll's role is to *enforce that the
@@ -73,6 +103,24 @@ residue is declared and attested* — not to generate the grid
 unsupervised. (Producing the grid is a large, novel-architecture
 activity, which is the activity class agents are weakest at; leaving it
 agent-driven would need its own gate and start an infinite regress.)
+
+The init flow is **auto-propose, operator confirms**:
+
+1. For each declared bounded-context, the harness **auto-proposes**
+   the full exit-gate clause set for each `(role-pair, context)`
+   arrow, drawing from the role contracts in `roles/*.md`.
+2. The operator confirms, modifies, or extends each proposal:
+   - **Modify** — raise costs (never lower), tighten thresholds,
+     refine arguments.
+   - **Extend** — add per-context clauses beyond the role default.
+   - **Skip** — only with an explicit residue entry recording why
+     the role's clause was dropped for this context.
+3. The grid is recorded **only after every proposed clause has
+   received an operator verdict**.
+
+This makes init the place where the per-project clause set is
+materialized from the harness's role-file templates. Without init,
+ghyll has no grid to gate against.
 
 ### 2.3 Initialization runs as an arrow
 
@@ -172,10 +220,19 @@ initialization runs. The v0 grid contains:
   clauses (§2.3) — these ride on the initialization arrow specifically
   and ship with the harness so the first project has a non-empty gate
   to satisfy.
+- The four **role-file templates** (`roles/analyst.md`,
+  `roles/architect.md`, `roles/implementer.md`,
+  `roles/integrator.md`). These declare each role's exit-gate clause
+  set; initialization auto-proposes them per declared bounded-context
+  (§2.2).
 - The default depth ladder (§11.1).
+- The per-concept argument schemas (§5.1).
 
 The initialization arrow runs as a **normal arrow against the v0
 grid** — there is no special bootstrap. v0 is the floor.
+
+The v0 grid does **not** include language bindings; those are
+project-declared at initialization (§2.1, D18).
 
 ---
 
@@ -210,7 +267,7 @@ How a clause is decided.
 artifact can pass a shallow machine check. The split is about *who can
 decide the clause*, not about reliability.
 
-### 5.1 Machine clauses: concept-named, language-bound
+### 5.1 Machine clauses: concept-named, language-bound, typed
 
 The machine clause catalogue is **closed at the concept layer** and
 **language-agnostic**. Concepts name *what property* is asserted;
@@ -219,7 +276,36 @@ per-language **instrument bindings** decide *what tool runs the check*.
 For example, the concept `lint-clean` has bindings like
 `lint-clean.rust = clippy`, `lint-clean.go = staticcheck && go vet`,
 `lint-clean.typescript = eslint`. Bindings live in per-project config
-(declared at initialization, §2.1), not in the catalogue.
+(declared at initialization, §2.1), not in the catalogue. **The
+harness ships no language bindings**; if a needed binding is missing
+at any later point, the harness suspends and re-enters initialization
+to obtain it.
+
+Each catalogue concept has a **typed schema** declaring its arguments,
+their types, and its evaluator contract. Schemas are introspectable
+and shipped with the harness as `gates/concepts/<concept-name>.yaml`.
+Illustrative shape:
+
+```yaml
+# gates/concepts/mutation-score.yaml
+concept: mutation-score
+description: Mutation testing reports a score above a declared threshold
+arguments:
+  scope:
+    type: path-glob
+    required: true
+  threshold:
+    type: number
+    required: true
+    range: [0.0, 1.0]
+evaluator:
+  contract: machine
+  produces: { pass: boolean, score: number, killed: int, survived: int }
+default-cost: 3
+```
+
+Per-arrow clause instances must validate against the concept's
+schema; initialization (§2) enforces this.
 
 The catalogue concepts ghyll ships:
 
@@ -361,6 +447,37 @@ log, not in the status field.
 `pending`, `pass`, `fail`, `awaiting-attestation`,
 `insufficient-basis`, `unevaluated`.
 
+### 7.1a Arrow and pass identity
+
+In the state-space-iteration frame (§0), arrows are *operators* and
+passes are *iterations* of the operator. They have separate
+identities.
+
+**Arrow identity** = `(role-pair, stratum, bounded-context, grid-version)`.
+Immutable. Re-traversals after `invalidated` are *new passes on the
+same arrow*; arrow identity does not change unless the grid version
+changes.
+
+**Pass identity** = a unique pass-ID (UUID or timestamp-based) with
+attributes:
+
+```
+{ pass-id, arrow-id, started-at, completed-at, pass-status }
+```
+
+Pass status set: `running`, `completed`, `aborted`.
+
+- `running` — the iteration is in progress.
+- `completed` — the iteration concluded; arrow status is whatever the
+  clause/finding state derives.
+- `aborted` — the iteration was terminated mid-phase by an external
+  event (see §7.2 invalidation rule below). Findings discovered
+  before abort are retained; the arrow's status becomes
+  `invalidated`.
+
+An arrow's *current* status is the latest pass's derived status. The
+checkpoint log holds the full pass history.
+
 ### 7.2 Arrow lifecycle
 
 An arrow's status is the **most severe** status of its clauses, plus
@@ -391,7 +508,8 @@ Precedence consequences:
 spec, the harness marks:
 
 - Arrows that **declared dependence** on a changed spec artifact:
-  `invalidated`.
+  `invalidated`. Dependency declarations name the artifact and a
+  granularity — `file` / `section` / `clause-id` (§2.1).
 - Arrows that **declared no dependencies**: `invalidated`
   (conservative fallback — encourages explicit declaration without
   making it mandatory).
@@ -401,6 +519,25 @@ spec, the harness marks:
 The count of conservatively-invalidated arrows on each grid amendment
 is a quality signal; if it stays high, dependency declarations are
 missing.
+
+**Mid-phase invalidation — abort and restart, preserve findings.**
+When invalidation lands while a cell's pass is in progress (in the
+adversarial, remediation, or verification phase, §11):
+
+1. The iteration is **aborted**. The pass record is marked with
+   pass-status `aborted` (§7.1a).
+2. The arrow's status becomes `invalidated` per the precedence table
+   above.
+3. **Findings discovered before abort are retained** on the arrow's
+   finding log. Useful signal is not lost; the producer may treat
+   them as hints when the arrow is re-traversed.
+4. The next pass starts fresh — phases re-run from adversarial. There
+   is no "resume mid-phase."
+
+State-space-frame rationale: invalidation is an operator that resets
+the cell to an earlier point. Partial iteration state at the time of
+reset is incoherent and discarded; only artifacts that survived as
+findings are preserved.
 
 **Arrow status set:**
 `complete`, `provisional`, `unevaluated`, `blocked`, `invalidated`.
@@ -422,12 +559,30 @@ arrow artifact, not on a clause.
 The producer may NOT accept its own risk — only the operator may
 attest `accepted-risk`.
 
-**Verification phase machine check:** any finding above a declared
-severity threshold still `open` → the harness synthesizes a `fail`
-on the arrow's `no-open-finding` clause, which propagates to arrow
-status `blocked` by §7.2 precedence. (The severity threshold is
-declared at initialization, §2.1; the per-finding severity is set by
-the adversarial phase.)
+Every finding carries a required **severity** on the enum:
+
+```
+severity ∈ { info, low, medium, high, critical }
+```
+
+Each finding's severity is assigned by the adversarial phase per a
+stated rule (the rule is the finding's `basis`, analogous to a hint's
+basis per §9). **Severity assignment is `depth-sensitive`** —
+assigning the correct severity is itself a judgement; below required
+depth, the severity assignment is `unevaluated` and the finding
+itself is too.
+
+**Verification phase machine check:** any finding above the declared
+**severity threshold** still `open` → the harness synthesizes a
+`fail` on the arrow's `no-open-finding` clause, which propagates to
+arrow status `blocked` by §7.2 precedence.
+
+- The severity threshold is declared at initialization (§2.1).
+  Harness default is `medium`; init may override (raise only — never
+  lower than `medium`).
+- Per-arrow override is allowed at arrow definition (raise only).
+- Findings below the threshold are recorded and visible but do not
+  block the arrow.
 
 **Finding status set:** `open`, `resolved`, `accepted-risk`.
 
@@ -527,9 +682,8 @@ An arrow with any `attested` clause in `awaiting-attestation` or
 Arrow weight is the **sum of per-clause operator-action costs** of its
 clauses, measured in **operator-action units**.
 
-- Each catalogue concept (§5) ships with a **harness default cost** in
-  operator-action units. Default values are part of the catalogue
-  alongside the concept.
+- Each catalogue concept (§5.1) ships with a **harness default cost**
+  declared in its concept schema (`gates/concepts/<concept>.yaml`).
 - An arrow at definition time may **raise** (never lower) a clause's
   cost for its specific traversal.
 
@@ -541,11 +695,49 @@ The unit set:
 | `record-locations-inspected` | Confirm + record which hinted locations were actually inspected | 3 |
 | `write-residue-note` | Confirm + record + write a residue note for what was not inspected | 5 |
 
-(Exact per-concept default values are phase-3 architect work; the
-unit set is fixed.)
+(Per-concept default values are catalogue tuning work, set in each
+`gates/concepts/<concept>.yaml`. The unit set above is fixed.)
 
 Friction is allocated deliberately: highest where rubber-stamping is
 most dangerous.
+
+### 10.2 Attestation records
+
+Each operator attestation appends one JSONL line to a per-pass file
+at:
+
+```
+attestations/<grid-vN>/<context>/<stratum>/<role-pair>/<pass-id>.jsonl
+```
+
+The path encodes the arrow identity (§7.1a) plus the grid version.
+One line per attestation; the line shape depends on the unit:
+
+```json
+{ "unit": "confirm",
+  "clause": "<id>",
+  "verdict": "pass|fail|insufficient-basis",
+  "ts": "<iso8601>",
+  "op-id": "<operator-identity>" }
+
+{ "unit": "record-locations-inspected",
+  "clause": "<id>",
+  "verdict": "...",
+  "ts": "...", "op-id": "...",
+  "inspected": ["<file:line-range>", ...] }
+
+{ "unit": "write-residue-note",
+  "clause": "<id>",
+  "verdict": "...",
+  "ts": "...", "op-id": "...",
+  "inspected": [...],
+  "residue-note": "<text>" }
+```
+
+The verifier checks **presence of the required fields** for the
+declared unit. Distinguishing genuine inspection from a fast-clicked
+confirm is procedural-only — the schema records the procedure, it
+does not enforce behavior behind it.
 
 ---
 

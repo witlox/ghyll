@@ -12,16 +12,23 @@ unbuilt parts.
 
 - **`direction.md`** — the v2 positioning rationale. Read first.
 - **`gates.md`** — the harness-wide gate schema. The design. Build
-  *from* it. Reconciled to operator-decisions rounds 1 and 2.
-- **`roles/analyst.md`** — the analyst role file, reconciled to
-  `gates.md`. The only role reconciled so far.
+  *from* it. Reconciled to operator-decisions rounds 1, 2, and 3.
+- **`roles/{analyst,architect,implementer,integrator}.md`** — the
+  four role contracts reconciled to `gates.md`.
 - **`validation-pass-1.md`** — cold-read findings against the
   pre-reconciliation `gates.md` + `roles/analyst.md`.
+- **`phase-3-architect-findings.md`** — architect-lens findings on
+  the reconciled schema (15 items).
 - **`operator-decisions-round-1.md`** — D1–D7 (catalogue, strata,
   weight, v0 grid, residue).
 - **`operator-decisions-round-2.md`** — D8–D10 (`unable-to-hint`
   collapses; entry preconditions are upstream exit clauses;
   invalidation is hybrid).
+- **`operator-decisions-round-3.md`** — D11–D20 (artifact IDs,
+  arrow/pass identity, per-concept schemas, state-space framing,
+  severity enum, dependency granularity, mid-phase invalidation,
+  language-binding init policy, attestation records, init
+  auto-propose).
 
 ## Provenance
 
@@ -60,54 +67,62 @@ proofs.
   catalogue, the v0 grid bootstrap.
 - The analyst role contract, reconciled to the schema.
 
-The schema closes 12 of 15 validation-pass-1 findings. The remaining
-three are phase 3 work:
-
-- Severity enum for findings (the threshold that triggers `blocked`).
-- `no-orphan-symbol` language binding mechanism (G4 in `analyst.md`).
-- Per-concept default attestation cost values (the *defaults*
-  themselves — the unit set is fixed in `gates.md` §10.1).
+All 15 validation-pass-1 findings are resolved across rounds 1+2 +
+prior commits. Of the 15 phase-3 architect-lens findings, 13 are
+resolved by round 3 + prior commits; the remaining 2 are
+implementation concurrency primitives (see below), not schema work.
 
 ## What is NOT built — do not confabulate these
 
-- **The other three role files.** `architect.md`, `implementer.md`,
-  `integrator.md` are drafted but have not yet been re-validated after
-  the phase-3 architect pass. They must remain reconciled to the
-  evolving `gates.md`; expect another reconciliation after phase 4.
-
-  (There is NO standalone adversary role and NO standalone auditor
-  role. Adversarial scrutiny and depth classification are *phases* of
-  every depth-sensitive arrow per `gates.md` §11. Do not write
-  `adversary.md` or `auditor.md`.)
 - **The harness enforcement itself.** `gates.md` describes behavior;
-  nothing yet enforces it. The machine clauses are only real once ghyll
-  actually runs the checks (build targets, mutation runs, trace-link
-  checks) and refuses transitions on failure. Until then every clause is
-  self-reported prose — the original Kiseki failure.
-- **The integrator gate.** The forensic root cause of the Kiseki GCP
+  nothing yet enforces it. The machine clauses are only real once
+  ghyll actually runs the checks (build targets, mutation runs,
+  trace-link checks) and refuses transitions on failure. Until then
+  every clause is self-reported prose — the original Kiseki failure.
+- **The integrator gate.** The forensic root cause of the motivating
   failure was the integrator transition being unenforced. The
   non-skippable cross-context integrator gate is the single
-  highest-value enforcement target and is not yet specified.
+  highest-value enforcement target and is not yet specified beyond
+  the role contract.
 - **Project initialization tooling.** `gates.md` §2 describes it;
   no implementation exists. This is the must-have step-one when ghyll
   is invoked on a new project; the schema cannot run without it.
+- **The per-concept schema files** (`gates/concepts/<concept>.yaml`,
+  one per catalogue concept). `gates.md` §5.1 describes the shape;
+  no schema files exist yet. The harness ships these but they are
+  not written.
 - **The catalogue's per-language instrument bindings.** `gates.md`
-  §5.1 names the concept; bindings (`lint-clean.go`, `compiles.rust`,
-  etc.) are per-project config declared at initialization and not yet
-  written.
+  §5.1 names the concept; bindings (`lint-clean.go`,
+  `no-orphan-symbol.rust`, etc.) are per-project config declared at
+  initialization (D18). Harness ships NO defaults; first projects
+  will exercise this path.
+- **Concurrency primitives.** Two architect-pass findings (#9, #11)
+  call for process-level coordination: locking against concurrent
+  traversals on adjacent arrows; the coordinator backing
+  `single-active-role-instance`. These are implementation, not
+  schema, but need to be designed before the spine ships.
 
 ## Build order (recommendation, not instruction)
 
-1. Harness machine-clause runner + transition refusal — the enforcement
-   spine. Without it nothing else is real.
-2. The integrator gate — highest-value, was the GCP root cause.
-3. Reconcile the remaining four role files to `gates.md`.
-4. The definition phase.
-5. On-the-spot arrow creation.
+1. **Per-concept schema files** (`gates/concepts/*.yaml`). Without
+   them the catalogue is unimplementable. Smallest piece; do first.
+2. **Project initialization** (`gates.md` §2). The auto-propose flow
+   that turns v0 + role-file templates into a project's vN grid.
+   Without init, no other arrow can run.
+3. **Harness machine-clause runner + transition refusal.** The
+   enforcement spine. Reads per-concept schemas, runs evaluators,
+   refuses transitions on failure.
+4. **The integrator gate** — highest-value enforcement target; was
+   the motivating-project root cause.
+5. **Per-arrow adversarial phase** including the depth-classification
+   sub-activity (`gates.md` §11).
+6. **On-the-spot arrow creation.**
+7. **Routing** (`gates.md` §8) — can be stubbed at single-tier
+   initially; made real once the spine works.
 
-Routing (§7) and the depth-type model can be stubbed initially — a
-single tier — and made real once the spine works. Do not build routing
-before enforcement; an unenforced router is decoration.
+Do not build routing before enforcement; an unenforced router is
+decoration. Do not build adversarial-phase before the machine-clause
+runner; findings without a way to block arrows are decoration.
 
 ---
 
@@ -143,6 +158,9 @@ before enforcement; an unenforced router is decoration.
    definition phase — surface them, do not smooth them.
 4. This design was produced in a long conversation — the medium whose
    drift motivated the project. Validation pass 1 was a cold read of
-   the original `gates.md` + `roles/analyst.md`; phase 2 reconciled to
-   operator decisions; phase 3 (architect-lens pass on the reconciled
-   schema) is the next checkpoint before any code is written.
+   the original `gates.md` + `roles/analyst.md`; rounds 1–2 reconciled
+   to operator decisions; phase 3 was an architect-lens cold pass;
+   round 3 (phase 4) resolved the architect-found gaps. The schema's
+   contracts are now typed. Before any code: spawn another cold-read
+   pass against the round-3-reconciled `gates.md` to confirm the
+   typing actually holds.

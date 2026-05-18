@@ -30,8 +30,12 @@ Supporting documents:
   D8–D10 (`unable-to-hint`, entry preconditions as upstream exit
   clauses, invalidation hybrid).
 - **[phase-3-architect-findings.md](phase-3-architect-findings.md)** —
-  architect-lens pass findings + phase-3 concrete proposals. Phase 4
-  is still required before any code.
+  architect-lens pass findings + phase-3 concrete proposals.
+- **[operator-decisions-round-3.md](operator-decisions-round-3.md)** —
+  D11–D20 (artifact IDs, arrow/pass identity, per-concept schemas,
+  state-space framing, severity enum, dependency granularity,
+  mid-phase invalidation, language-binding init policy, attestation
+  records, init auto-propose).
 
 ## Scope note
 
