@@ -1,4 +1,7 @@
-# Implementation: v2 (not yet built)
+# Implementation: built (phase 5 — runner/states.go ClauseStatus +
+# runner/arrow.go ArrowStatus + DeriveArrowStatus + runner/findings.go
+# FindingStatus). Step impls land in Phase B1 of v2-final consolidation
+# (see specs/v2-final-plan.md).
 Feature: Status state machine engine
 
   # Maintains and queries the four lifecycles (clause, arrow, finding,

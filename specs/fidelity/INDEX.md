@@ -65,10 +65,30 @@ Confidence for routing/ and config/ remains HIGH after the refactor.
 
 141 unit/integration tests across 10 packages, plus 8 unit tests added in the
 2026-04-16 ADR-007 audit (2 session, 3 config, 3 router).
-84 godog acceptance scenarios wired (9 config with real assertions).
 
-Previous checkpoint: 53 THOROUGH, 8 MODERATE, 23 NONE.
-Current (v1): 75 THOROUGH, 3 MODERATE, 5 NONE. (+22 THOROUGH, -5 MODERATE, -18 NONE)
+**BDD acceptance — current state (audited 2026-05-19, honest count):**
+
+| Layer | Scenarios | THOROUGH | MODERATE | SHALLOW | NONE |
+|-------|-----------|----------|----------|---------|------|
+| v1 INDEX packages (10) | 84 | 65 | 8 | 0 | 11 |
+| v1 remaining (edit, glob, plan-mode, resume, sub-agents, web, workflow) | 109 | 18 | 14 | 75 | 2 |
+| v2 inherited (10 features duplicating v1) | 98 | 30 | — | 68 | 0 |
+| v2 new (adversarial, amendment, attestation, init, runner, runner-step3, state-machine) | 143 | 29 | — | 0 | 114 |
+| **TOTAL** | **350** | **77** | **40** | **114** | **119** |
+
+22% THOROUGH, 11% MODERATE, 33% SHALLOW, 34% NONE. The prior INDEX
+wording "9 config with real assertions" was misleading — 65 v1
+scenarios actually call real code. The honest gap is the 119 NONE
+scenarios (mostly v2-new with no step impls registered) + 114 SHALLOW
+state-theater scenarios in v1 plan-mode / sub-agents / workflow /
+resume features.
+
+The `specs/v2-final-plan.md` consolidation phase plans the lift: B
+wires v2-new (134 scenarios), C lifts v1 SHALLOW (~75 scenarios), F
+audits the final state with a 70% coverage floor / 80% target.
+
+Previous v1-only checkpoint (2026-04-16): 53 THOROUGH, 8 MODERATE, 23 NONE.
+v1-only on the 10 INDEX packages today: 65 THOROUGH, 8 MODERATE, 11 NONE.
 
 ## v2 audit — 2026-05-19 (phases 5-10 + integrator pass)
 

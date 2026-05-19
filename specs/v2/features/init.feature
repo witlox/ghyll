@@ -1,4 +1,7 @@
-# Implementation: v2 (not yet built; await init component per build-notes step 2)
+# Implementation: built (phase 2 — bootstrap/init.go + bootstrap/propose.go
+# + bootstrap/modify.go + bootstrap/orphan.go + bootstrap/risk.go +
+# bootstrap/profile.go). Step impls partially landed; remaining pending
+# bodies lifted in Phase B5 of v2-final consolidation.
 Feature: Project initialization
 
   # Project initialization is step one when ghyll is invoked on a new

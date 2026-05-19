@@ -1,4 +1,5 @@
-# Implementation: v2 (not yet built; await adversarial phase per build-notes step 5)
+# Implementation: built (phase 5 — runner/adversarial.go + runner/findings.go).
+# Step impls land in Phase B4 of v2-final consolidation (see specs/v2-final-plan.md).
 Feature: Per-arrow adversarial phase
 
   # Spawns a fresh adversary instance per round with clean context.

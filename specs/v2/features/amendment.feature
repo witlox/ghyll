@@ -1,4 +1,6 @@
-# Implementation: v2 (not yet built)
+# Implementation: built (phase 5 — runner/amendment.go AmendmentQueue;
+# phase 9 — engine/replay.go LoadDrained dedup across restart).
+# Step impls land in Phase B2 of v2-final consolidation (see specs/v2-final-plan.md).
 Feature: Grid amendment and global lock
 
   # Serializes grid changes through a project-wide write-lock. FIFO

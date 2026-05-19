@@ -1,4 +1,11 @@
-# Implementation: v2 (not yet built; await attestation flow per build-notes)
+# Implementation: PARTIAL.
+#   Built today: §7.1 dispatch-pending response (phase 10), op-id session
+#   start, on-the-spot creation suspension (phase 6). Step impls for the
+#   subset land in Phase B3 of v2-final consolidation. Deferred to phase 11:
+#   full operator event bus, multi-operator handoff, typed JSONL verdict
+#   records, insufficient-basis-rounds-max escalation. Scenarios depending
+#   on the deferred surface are tagged `@phase11` and skipped until that
+#   flow ships.
 Feature: Operator attestation flow
 
   # Coordinates operator verdicts on attested clauses. Owns the operator

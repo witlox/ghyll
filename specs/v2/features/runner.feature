@@ -1,4 +1,8 @@
-# Implementation: v2 (not yet built; await runner component per build-notes step 3)
+# Implementation: built (phase 3 — runner/runner.go Runner.Evaluate +
+# runner/registry.go + runner/subprocess.go BindingEvaluator).
+# F-3 arrow-status derivation step impls are already THOROUGH;
+# subprocess/evaluator coordination scenarios lift in Phase B6 of
+# v2-final consolidation.
 Feature: Machine-clause runner (enforcement spine)
 
   # Invokes evaluators, coordinates with attestation flow for attested
