@@ -157,7 +157,6 @@ Feature: Operator attestation flow
 
   # ---- Verifier-driven verdict replay ----
 
-  @deferred
   Scenario: Verifier reads attestation log
     Given a pass-id and a clause-id
     When the verifier component reads the attestation file

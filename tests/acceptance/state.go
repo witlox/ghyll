@@ -245,6 +245,17 @@ type ScenarioState struct {
 	SubprocCommand string
 	SubprocTimeout time.Duration
 
+	// Attestation-verifier deferred batch (attestation.feature
+	// "Verifier reads attestation log").
+	AVStore        *runner.AttestationStore
+	AVWriter       *runner.AttestationJSONLWriter
+	AVJSONLPath    string
+	AVPassID       string
+	AVClauseID     string
+	AVResult       runner.VerifyResult
+	AVMatching     []runner.AttestationRecord
+	AVVerifyResErr error
+
 	// Runner-pass deferred batch (concurrent / refused / amendment
 	// abort / depth-gate scenarios in runner.feature).
 	RPLockTable   *runner.RoleContextLockTable

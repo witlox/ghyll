@@ -115,6 +115,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// Runner deferred batch — concurrent / refused / amendment
 	// abort / depth-gate scenarios (runner.feature).
 	registerRunnerDeferredSteps(ctx, state)
+
+	// Attestation deferred batch — verifier-reads-attestation-log
+	// scenario (attestation.feature).
+	registerAttestationDeferredSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
