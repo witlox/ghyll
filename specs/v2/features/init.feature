@@ -139,6 +139,12 @@ Feature: Project initialization
     And subsequent ghyll invocations read grid.current to find the active version, then load grid.v<N>.yaml
 
   Scenario: Init crashes mid-write
+    # B5 of v2-final consolidation: the BDD verifies the recovery
+    # path (next bootstrap.Read fails with ErrGridCurrentAbsent and
+    # a fresh write succeeds after manual .tmp cleanup). The harness's
+    # init-startup sweep that auto-cleans stale .tmp files is phase-11
+    # surface; the step manually removes the stale tmp to simulate
+    # that future behavior.
     Given init is partway through writing the grid file
     When the process is killed
     Then the next ghyll invocation observes no partial grid
@@ -147,6 +153,13 @@ Feature: Project initialization
   # ---- op-id session declaration ----
 
   Scenario: Operator session start
+    # B5 of v2-final consolidation: this scenario validates the
+    # bootstrap.StartSession contract directly. The harness's
+    # interactive prompt/response loop (REPL operator UI) is
+    # phase-11 surface; until then the BDD invokes StartSession
+    # programmatically with a fixed op-id. See
+    # specs/architecture/components/init.md for the phase-11 prompt
+    # behavior the runtime will implement.
     Given the operator runs "ghyll init"
     When init first reaches a step that requires attestation
     Then init prompts for op-id

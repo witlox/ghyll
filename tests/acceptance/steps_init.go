@@ -227,7 +227,14 @@ func (s *ScenarioState) engineSurfacesSentinel(expected string) error {
 }
 
 // narrativeOK is a placeholder for narrative steps describing behavior
-// that requires components not yet implemented (operator UI, etc.).
+// that requires components not yet implemented (operator UI prompts,
+// REPL choice surfaces). Per B5 adversarial #1: the wired scenarios
+// using this helper ALWAYS run a real-assertion step BEFORE the
+// narrative tail (e.g., engineRefusesToStartWithSentinel runs before
+// the "presents the operator with options" narrative). The narrative
+// is documentation of the phase-11 operator-UI behavior; the real
+// assertion is the upstream sentinel check. The pattern is reviewed
+// per-scenario when narrativeOK is added to a step.
 func (s *ScenarioState) narrativeOK() error {
 	return nil
 }
@@ -302,6 +309,14 @@ func (s *ScenarioState) theClauseIsRecordedWithThreshold(thresh string) error {
 	cat, err := loadSharedCatalogue()
 	if err != nil {
 		return fmt.Errorf("load catalogue: %w", err)
+	}
+	// Per B5 adversarial #5: verify ProposedConcept is in the
+	// catalogue BEFORE calling CheckModification. Otherwise a typo
+	// in the scenario surfaces as a confusing "modify rejected" error
+	// instead of a clear "concept not found".
+	if _, found := cat.Get(s.ProposedConcept); !found {
+		return fmt.Errorf("concept %q not in catalogue (scenario setup error)",
+			s.ProposedConcept)
 	}
 	if err := bootstrap.CheckModification(s.ProposedConcept, s.ProposedArgs, s.ModifyArgs, cat); err != nil {
 		return fmt.Errorf("expected modify to be allowed, got %v", err)

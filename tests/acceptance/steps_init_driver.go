@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/cucumber/godog"
@@ -124,9 +125,10 @@ func (s *ScenarioState) initWritesTheGrid() error {
 	return nil
 }
 
-// gridVersionFileWrittenAtomically verifies grid.v<N>.yaml exists and
-// has no stale .tmp peer in .ghyll/ (the temp file is removed after
-// atomic rename per ADR-010).
+// gridVersionFileWrittenAtomically verifies grid.v<N>.yaml exists,
+// has no stale .tmp peer in .ghyll/, AND parses as a valid Grid with
+// the expected version (per B5 adversarial #2 — was only checking
+// non-empty size, which a partial YAML stub would pass).
 func (s *ScenarioState) gridVersionFileWrittenAtomically(version string) error {
 	if s.ProjectTestDir == "" {
 		return errors.New("no project dir")
@@ -144,6 +146,23 @@ func (s *ScenarioState) gridVersionFileWrittenAtomically(version string) error {
 	tmpPath := versionPath + ".tmp"
 	if _, err := os.Stat(tmpPath); err == nil {
 		return fmt.Errorf("stale temp file %s should not exist after atomic rename", tmpPath)
+	}
+	// Parse the written file as a Grid and verify the version field
+	// matches. A partial yaml stub (e.g., truncated mid-record) would
+	// fail this even with non-zero file size.
+	wantVer, parseErr := strconv.Atoi(version)
+	if parseErr != nil {
+		return fmt.Errorf("version arg %q not integer: %w", version, parseErr)
+	}
+	g, err := bootstrap.ReadVersion(s.ProjectTestDir, wantVer)
+	if err != nil {
+		return fmt.Errorf("ReadVersion(%d) on the just-written file: %w", wantVer, err)
+	}
+	if g == nil {
+		return fmt.Errorf("ReadVersion(%d) returned nil Grid (partial write?)", wantVer)
+	}
+	if g.GridVersion != wantVer {
+		return fmt.Errorf("GridVersion=%d in file; want %d", g.GridVersion, wantVer)
 	}
 	return nil
 }
