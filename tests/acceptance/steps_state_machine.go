@@ -1,6 +1,6 @@
 // Package acceptance — step definitions for the v2 state-machine feature.
 //
-// Phase B1 of v2-final consolidation. The wirable scenarios call real
+// The wirable scenarios call real
 // runner code:
 //
 //   - clause status transitions (runner.ClauseStatus + CanTransition)
@@ -9,7 +9,7 @@
 //   - finding lifecycle transitions (runner.FindingsStore.Transition*)
 //   - producer-cannot-self-accept rule (transitionImpl role check)
 //
-// Scenarios tagged @phase11 in the .feature are skipped via the godog
+// Scenarios tagged @deferred in the .feature are skipped via the godog
 // tag filter in acceptance_test.go. They depend on code surfaces that
 // have not yet shipped: full attestation flow, Pass entity, checkpoint
 // log, ProjectStatus aggregator, crash recovery.
@@ -35,7 +35,7 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 	// Each scenario starts with fresh state-machine fixtures so prior
 	// findings/runners don't leak across the suite.
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
-		if scenarioHasTag(sc, "@phase11") {
+		if scenarioHasTag(sc, "@deferred") {
 			return c, nil
 		}
 		state.SMRunnerRegistry = runner.NewRegistry()
@@ -60,7 +60,7 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 				// awaiting-attestation / insufficient-basis aren't in the
 				// v1 ClauseStatus enum (the attestation flow runs as a
 				// peer mechanism rather than as additional statuses).
-				// These outline rows are phase-11 surface; mark pending
+				// These outline rows are deferred surface; mark pending
 				// so the runner records them as deferred, not failed.
 				return godog.ErrPending
 			}
@@ -145,7 +145,7 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 	ctx.Step(`^the clause status remains "([^"]*)"$`, func(name string) error {
 		want, err := parseClauseStatus(name)
 		if err != nil {
-			// @phase11 status name — runner state didn't change because
+			// @deferred status name — runner state didn't change because
 			// the attempted transition errored out. Trust the error
 			// presence; we already verified it in the previous step.
 			return nil
@@ -200,8 +200,8 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 			if got != reason {
 				return fmt.Errorf("reason = %q; want %q", got, reason)
 			}
-			// B1 adversarial #6: validate the reason is one of the
-			// gates.md §7.1 named values, not arbitrary free text.
+			// Validate the reason is one of the gates.md §7.1 named
+			// values, not arbitrary free text.
 			if !runner.IsKnownUnevaluatedReason(runner.UnevaluatedReason(got)) {
 				return fmt.Errorf("reason %q not in §7.1 enum (depth-below-required, no-rule-selectable-locations, producer-no-response)",
 					got)
@@ -252,9 +252,9 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 
 	ctx.Step(`^the engine derives the arrow status$`, func() error {
 		// Severity threshold 2 (medium) mirrors gates.md §7.3 default.
-		// Capture the blocking-clauses + blocking-findings counts so the
+		// Capture blocking-clauses + blocking-findings counts so the
 		// assertion below can validate them, not just the wire-form
-		// string (B1 adversarial finding #4).
+		// string.
 		status, bClauses, bFindings := runner.DeriveArrowStatus(
 			state.SMArrowClauses, state.SMArrowFindings, 2)
 		state.SMDerivedStatus = status
@@ -376,10 +376,10 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 
 	ctx.Step(`^the producer proposes accepted-risk$`, func() error {
 		// The producer expresses a proposal; no transition happens
-		// until the operator attests. Per B1 adversarial #5, assert
-		// here that F1's status DID NOT change as a side effect of
-		// the proposal — the runner has no state for "proposal
-		// pending" today; that's a phase-11 surface.
+		// until the operator attests. Assert here that F1's status
+		// DID NOT change as a side effect of the proposal — the
+		// runner has no state for "proposal pending" today; that's
+		// a deferred surface.
 		got, ok := state.SMFindingsStore.Get(state.SMFindingID)
 		if !ok {
 			return fmt.Errorf("finding %s missing after proposal step", state.SMFindingID)
@@ -417,9 +417,9 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 
 	ctx.Step(`^requires the verdict to come from the attestation flow\s+component with operator op-id$`,
 		func() error {
-			// Per B1 adversarial #10: not a no-op. Re-assert the runner
+			// not a no-op. Re-assert the runner
 			// surface that ENFORCES this rule — the exported sentinel
-			// is the contract; the attestation-flow component (phase 11)
+			// is the contract; the attestation-flow component (deferred)
 			// will be the dispatcher that holds the operator op-id.
 			if runner.ErrFindingProducerSelfAccept == nil {
 				return errors.New("runner.ErrFindingProducerSelfAccept sentinel missing — guard contract regressed")
@@ -466,10 +466,10 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 			if err != nil {
 				return err
 			}
-			// Re-query the store TWICE (B1 adversarial #7): once
-			// immediately for the obvious assertion, then again after a
-			// scheduling yield to surface any deferred mutation that a
-			// future buggy fast-path might introduce.
+			// Re-query the store TWICE: once immediately for the
+			// obvious assertion, then again after a scheduling yield
+			// to surface any deferred mutation that a future buggy
+			// fast-path might introduce.
 			got, ok := state.SMFindingsStore.Get(state.SMFindingID)
 			if !ok {
 				return fmt.Errorf("finding %s not found", state.SMFindingID)

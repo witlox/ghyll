@@ -20,32 +20,19 @@ func TestFeatures(t *testing.T) {
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
-			// Strict mode: undefined/pending steps cause failure.
-			//
-			// Currently FALSE because the v1 BDD suite has ~75 SHALLOW
-			// state-theater scenarios that return nil from steps without
-			// calling production code (audited 2026-05-19). Setting
-			// Strict=true would fail them all, drowning out new-scenario
-			// regressions in noise.
-			//
-			// Roadmap: when Phase C (lift v1 SHALLOW → THOROUGH) finishes
-			// and the v1 step files only return nil with explicit
-			// `godog.ErrPending` for known-deferred bodies, flip this to
-			// true so undefined-by-omission surfaces loudly. Phase F
-			// (final tag) requires Strict=true.
+			// Strict mode flag: when true, undefined or pending steps
+			// fail the suite. Kept false until every step body either
+			// drives real production code or returns `godog.ErrPending`
+			// explicitly; the final tag-up flips this on.
 			Strict: false,
-			// Tag filter — skip @phase11-marked scenarios. They depend
-			// on code surfaces not yet shipped (full attestation flow,
-			// Pass entity, checkpoint log, ProjectStatus aggregator,
-			// crash recovery). See specs/v2-final-plan.md D-4.
+			// Tag filter — skip scenarios tagged `@deferred`. They
+			// describe surface that depends on code not yet shipped
+			// (full attestation event bus, Pass entity, ProjectStatus
+			// aggregator, crash recovery).
 			//
-			// godog's tag-expression syntax is cucumber-standard:
-			// `~@tag` negates (skip scenarios with this tag). Verified
-			// in this suite's run output — @phase11 scenarios do NOT
-			// execute. The bare `@phase11` (without the tilde) would
-			// run ONLY phase11 scenarios; the inverse, what we want, is
-			// the tilde form.
-			Tags: "~@phase11",
+			// godog tag-expression syntax: `~@tag` negates (skip
+			// scenarios carrying the tag).
+			Tags: "~@deferred",
 		},
 	}
 
@@ -90,29 +77,25 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 	// Runner step definitions (specs/features/runner.feature).
 	registerRunnerSteps(ctx, state)
-	// Subprocess evaluator scenarios (B6 of v2-final consolidation).
 	registerRunnerSubprocessSteps(ctx, state)
 
 	// State-machine step definitions (specs/features/state-machine.feature).
-	// Phase B1 of v2-final consolidation.
 	registerStateMachineSteps(ctx, state)
 
 	// Amendment step definitions (specs/features/amendment.feature).
-	// Phase B2 of v2-final consolidation.
 	registerAmendmentSteps(ctx, state)
 
 	// Attestation step definitions (specs/features/attestation.feature).
-	// Phase B3 of v2-final consolidation. Most attestation surface is
-	// phase-11 (full operator event bus, JSONL verdict records); B3
-	// wires the surfaces that exist today (op-id validation,
-	// FindingStore operator transitions).
+	// Wires the surfaces that exist today (op-id validation, FindingStore
+	// operator transitions). Deferred surface (full operator event bus,
+	// JSONL verdict records) is tagged @deferred.
 	registerAttestationSteps(ctx, state)
 
 	// Adversarial step definitions (specs/features/adversarial.feature).
-	// Phase B4 of v2-final consolidation. Wires per-round Adversary.Attack
-	// + OpenSweep/Classify hooks + Findings raise/derive. Orchestrator-
-	// level concerns (multi-round remediation, producer-fix-signal,
-	// operator-event-bus) are tagged @phase11.
+	// Wires per-round Adversary.Attack + OpenSweep/Classify hooks +
+	// Findings raise/derive. Orchestrator-level concerns (multi-round
+	// remediation, producer-fix-signal, operator-event-bus) are
+	// tagged @deferred.
 	registerAdversarialSteps(ctx, state)
 }
 

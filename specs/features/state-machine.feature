@@ -1,7 +1,6 @@
-# Implementation: built (phase 5 — runner/states.go ClauseStatus +
+# Implementation: built — runner/states.go ClauseStatus +
 # runner/arrow.go ArrowStatus + DeriveArrowStatus + runner/findings.go
-# FindingStatus). Step impls land in Phase B1 of v2-final consolidation
-# (see specs/v2-final-plan.md).
+# FindingStatus. Step bindings call real runner code.
 Feature: Status state machine engine
 
   # Maintains and queries the four lifecycles (clause, arrow, finding,
@@ -38,7 +37,7 @@ Feature: Status state machine engine
       | running              | pending              |
       | running              | awaiting-attestation |
 
-  @phase11
+  @deferred
   Scenario: Attested clause awaits operator
     Given an attested clause with hint emitted
     Then the engine records status "awaiting-attestation"
@@ -61,14 +60,14 @@ Feature: Status state machine engine
     When the engine derives the arrow status
     Then the result is "blocked" (fail > unevaluated > provisional > complete)
 
-  @phase11
+  @deferred
   Scenario: Invalidation supersedes derived status
     Given arrow A1 with all clauses "pass" (would derive to "complete")
     When the grid amendment component sets A1 to "invalidated"
     Then querying A1's status returns "invalidated"
     And the underlying clause statuses are unchanged in the store
 
-  @phase11
+  @deferred
   Scenario: Re-traversal clears invalidated
     Given arrow A1 has status "invalidated" from grid vN
     When a new pass P2 starts on A1 against grid v(N+1)
@@ -97,13 +96,13 @@ Feature: Status state machine engine
 
   # ---- Pass lifecycle ----
 
-  @phase11
+  @deferred
   Scenario: Pass starts running
     Given the runner starts a new pass P1 on arrow A1
     When the engine records the pass
     Then P1 has status "running" with started-at set and completed-at unset
 
-  @phase11
+  @deferred
   Scenario: Pass completes normally
     Given pass P1 is "running" and the runner has finalized clause results
     When the runner signals completion
@@ -111,14 +110,14 @@ Feature: Status state machine engine
     And completed-at is recorded
     And the pass's full state is flushed to the checkpoint log
 
-  @phase11
+  @deferred
   Scenario: Pass aborted by invalidation
     Given pass P1 is "running" in remediation phase
     When the grid amendment component signals abort with reason "invalidated"
     Then the engine transitions P1 to "aborted" with that reason
     And findings from P1 are tagged with their original grid-version
 
-  @phase11
+  @deferred
   Scenario: Pass aborted by crash recovery
     Given pass P1 was "running" but the runner crashed
     When the engine performs crash recovery on restart
@@ -126,7 +125,7 @@ Feature: Status state machine engine
 
   # ---- Project-level status query ----
 
-  @phase11
+  @deferred
   Scenario: All declared cells complete
     Given a grid vN with every declared arrow at status "complete"
     And the residue list is empty
@@ -134,14 +133,14 @@ Feature: Status state machine engine
     When a project-status query is issued
     Then the result is "(complete-against-grid-vN, R=0, C=0)"
 
-  @phase11
+  @deferred
   Scenario: Some unevaluated cells
     Given a grid vN with 10 arrows: 9 "complete", 1 "unevaluated"
     When the project-status query runs
     Then the result includes "C=1"
     And the result lists the unevaluated arrow's id in detail
 
-  @phase11
+  @deferred
   Scenario: Residue computation
     Given a grid with 5 undeclared (stratum, context) cells
     And the harness computes each undeclared cell's imputed cost as the sum of per-clause default costs from the role's exit-gate template under the project's language bindings
@@ -152,14 +151,14 @@ Feature: Status state machine engine
 
   # ---- Snapshot and replay ----
 
-  @phase11
+  @deferred
   Scenario: Restart from checkpoint log
     Given the harness was running and is restarted
     When the engine initializes
     Then it reads the checkpoint log to reconstruct all "running" passes (treated as "aborted" with reason "crash"), all "completed"/"aborted" passes (kept in log, not in in-memory store), current grid version, and current arrow statuses (per the latest completed pass per arrow)
     And the engine is ready to accept new pass starts
 
-  @phase11
+  @deferred
   Scenario: Query historical pass
     Given a query for pass P5 (completed and flushed)
     When the engine receives the query
@@ -178,7 +177,7 @@ Feature: Status state machine engine
       | resolved      | running       |
       | accepted-risk | resolved      |
       | accepted-risk | running       |
-      # Note (Phase B1 of v2-final consolidation): the original outline
+      # Note (): the original outline
       # also listed `resolved → open`, `accepted-risk → open`, and
       # `open → resolved` direct as illegal. Per the runner's documented
       # contract (runner/findings.go validFindingTransition + lines
@@ -191,12 +190,12 @@ Feature: Status state machine engine
       #     adversarial.go relies on this path.
       # The gates.md §7.3 diagram shows the canonical workflow but the
       # spec does not yet name which of these direct edges are
-      # forbidden. Resolving that ambiguity is a phase-11 spec
+      # forbidden. Resolving that ambiguity is a deferred spec
       # tightening; until then, the runner's contract wins.
 
   # ---- Adversarial additions: crash recovery boundary cases ----
 
-  @phase11
+  @deferred
   Scenario: Crash while clause is awaiting-attestation
     Given pass P1 has clause C5 with status "awaiting-attestation"
     And the hint has been published to the operator event bus
@@ -206,7 +205,7 @@ Feature: Status state machine engine
     And the attestation request is re-published on the event bus on restart (so a UI client that reconnected sees it again)
     And C5's status remains "awaiting-attestation" after recovery
 
-  @phase11
+  @deferred
   Scenario: Crash between attestation write and clause-status flip
     Given the operator submitted verdict "pass" for clause C5
     And the JSONL record was appended successfully
@@ -217,7 +216,7 @@ Feature: Status state machine engine
     And the reconciliation is recorded as a recovery event for audit
     And no "split-brain" persists (record says pass, in-memory says awaiting-attestation)
 
-  @phase11
+  @deferred
   Scenario: Crash mid checkpoint-log write
     Given a pass is being finalized
     And the checkpoint-log record write is partial (last record truncated)
@@ -237,7 +236,7 @@ Feature: Status state machine engine
 
   # ---- Adversarial additions: residue computation edge cases ----
 
-  @phase11
+  @deferred
   Scenario: Residue with undeclared binding
     Given an undeclared cell whose role exit-gate template includes a clause referencing language "rust"
     But the project has not declared a `lint-clean.rust` binding
@@ -245,7 +244,7 @@ Feature: Status state machine engine
     Then the cost computation surfaces the missing binding (cannot compute final cost) and the residue entry carries `imputed-cost: unknown-pending-bindings`
     And the project-level R reports a count of such pending-binding cells separately from the numeric R
 
-  @phase11
+  @deferred
   Scenario: Residue with arithmetic overflow
     Given a degenerate grid declaration where per-clause costs sum to more than 2^31
     When the engine computes R

@@ -42,7 +42,7 @@ Feature: Sub-agents
     And the session lockfile remains held
 
   Scenario: Sub-agent inherits project instructions
-    # ADR-008 / Phase D-1: the original scenario also asserted "but
+    # ADR-008: the original scenario also asserted "but
     # not the analyst role overlay". That clause is moot — v2 has no
     # runtime role-overlay surface; the four roles are embedded Go
     # data, not loadable. The instruction-inheritance contract

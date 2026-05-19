@@ -1,6 +1,6 @@
 // Package acceptance — step definitions for the v2 amendment feature.
 //
-// Phase B2 of v2-final consolidation. Wires the queue mechanics +
+// Wires the queue mechanics +
 // atomic grid.Write surfaces against real package code:
 //
 //   - runner.AmendmentQueue Enqueue / Drain / Pending / Len / Observe
@@ -8,10 +8,10 @@
 //   - bootstrap.Grid.Write fsync-ordered atomic write
 //   - bootstrap.ReadCurrent grid.current pointer resolution
 //
-// Scenarios tagged @phase11 in amendment.feature are skipped via the
+// Scenarios tagged @deferred in amendment.feature are skipped via the
 // godog tag filter in acceptance_test.go. They depend on code surfaces
 // not yet shipped: Pass entity + dep-check, full amendment orchestrator,
-// process-level lock recovery, attestation flow (build-notes phase 11).
+// process-level lock recovery, attestation flow (build-notes deferred).
 package acceptance
 
 import (
@@ -33,7 +33,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Fresh fixtures per scenario so queue + observer state doesn't
 	// leak across runs.
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
-		if scenarioHasTag(sc, "@phase11") {
+		if scenarioHasTag(sc, "@deferred") {
 			return c, nil
 		}
 		state.AmendQueue = runner.NewAmendmentQueue()
@@ -131,7 +131,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		// first element; "committing" means consuming it. Drain
 		// removes ALL pending atomically — we model the head-commit
 		// by Pending-then-clearing the first element via a re-drain
-		// pattern. The real orchestrator (phase-11) holds a finer
+		// pattern. The real orchestrator (deferred) holds a finer
 		// per-amendment lock; in v1 the FIFO ordering is what matters
 		// for the spec, and Drain preserves it.
 		drained := state.AmendQueue.Drain()
@@ -205,7 +205,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// contract: no torn write, no .tmp residue, pointer points at the
 	// new version, and the new version's file is readable.
 	//
-	// Per B2 adversarial #1: each Then step now asserts a specific
+	// each Then step now asserts a specific
 	// observable invariant rather than returning nil. The previous
 	// pattern (return nil between two real assertions) was state
 	// theater — it implied verification that wasn't happening.
@@ -341,7 +341,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 			// amendment lock + v(N+1) then v(N+2)) live in the
 			// commit-trigger sequence, not in Drain count. So we
 			// assert: TWO Enqueue events fired, in the correct order,
-			// with distinct IDs. Per B2 adversarial #4: the prior
+			// with distinct IDs. the prior
 			// assertion ("1 Drain with 2 amendments") confused
 			// orchestrator-lock semantics with batch-Drain semantics.
 			var enqueueIDs []string
@@ -445,7 +445,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 			}
 			close(tokens[0]) // release the first
 			// Wait for ALL goroutines to complete BEFORE the next
-			// step runs. Per B2 adversarial #3: prevents observer
+			// step runs. prevents observer
 			// callbacks from firing into the next scenario's state.
 			wg.Wait()
 			return nil
@@ -505,7 +505,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 
 	ctx.Step(`^a reader process opens \.ghyll/grid\.current at the exact moment of the rename$`,
 		func() error {
-			// Per B2 adversarial #6: actually race a reader against
+			// actually race a reader against
 			// the writer. Spawn a goroutine that performs
 			// bootstrap.Grid.Write (which includes the rename) while
 			// the test loop hammers ReadCurrent + ReadVersion. Every
@@ -623,7 +623,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		// exists (O_EXCL). The "cleanup" semantics in v1 are: a fresh
 		// Write fails until the operator removes the stale tmp.
 		// Simulate the cleanup explicitly here (the real orchestrator
-		// in phase-11 will perform this on restart).
+		// in deferred will perform this on restart).
 		tmpPath := filepath.Join(state.AmendGridDir, ".ghyll", "grid.v2.yaml.tmp")
 		if err := os.Remove(tmpPath); err != nil {
 			return fmt.Errorf("cleanup tmp: %w", err)
@@ -647,7 +647,7 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 
 	ctx.Step(`^the amendment is re-queued \(or marked failed per operator policy\)$`,
 		func() error {
-			// Per B2 adversarial #10: actually verify the re-queue
+			// actually verify the re-queue
 			// path. The runner's contract is: same ID is refused
 			// (seenIDs dedup); a fresh ID succeeds. Both are operator-
 			// policy-driven decisions made above the queue, but the

@@ -1,6 +1,6 @@
 // Package acceptance — step definitions for the v2 attestation feature.
 //
-// Phase B3 of v2-final consolidation. Wires the surfaces that exist
+// Wires the surfaces that exist
 // today (per D-4 of specs/v2-final-plan.md):
 //
 //   - bootstrap.StartSession + ValidateAndNormalizeOpID (op-id contract)
@@ -8,11 +8,11 @@
 //   - runner.FindingsStore.TransitionWithReason with role="operator" /
 //     role="producer" (the producer-cannot-self-accept guard from B1)
 //
-// Scenarios tagged @phase11 in attestation.feature are skipped via the
+// Scenarios tagged @deferred in attestation.feature are skipped via the
 // godog tag filter. They depend on the full operator event bus, typed
 // JSONL verdict records, insufficient-basis-rounds-max escalation, and
 // the verifier-driven verdict replay component — none of which have
-// shipped yet (build-notes phase 11).
+// shipped yet (build-notes deferred).
 package acceptance
 
 import (
@@ -31,7 +31,7 @@ import (
 func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Fresh fixtures per scenario.
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
-		if scenarioHasTag(sc, "@phase11") {
+		if scenarioHasTag(sc, "@deferred") {
 			return c, nil
 		}
 		state.AttRegistry = bootstrap.NewSessionRegistry()
@@ -94,13 +94,13 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			// Simulate the verdict-capture API by closing the active
 			// session and asserting Declare on an empty op-id (the
 			// stated refusal) — the verdict-capture component is
-			// phase-11, but the invariant we can verify today is:
+			// deferred, but the invariant we can verify today is:
 			// "no active session" is observable via the registry.
 			state.AttRegistry.Close()
 			if state.AttRegistry.Active() != nil {
 				return errors.New("session still active after Close")
 			}
-			// The phase-11 verdict-capture API would surface
+			// The deferred verdict-capture API would surface
 			// ErrOpIDRequired / a typed "no-active-session" error.
 			// Verify the underlying invariant: ActiveOpID returns empty.
 			if state.AttRegistry.ActiveOpID() != "" {
@@ -123,7 +123,7 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 	// Attestation-flow-specific phrasing to avoid colliding with the
 	// generic step `session start is refused with ...` registered by
 	// steps_init.go (which reads state.OperatorSessionErr, not
-	// state.AttSessionErr). Per B3 adversarial #H2: cross-check that
+	// state.AttSessionErr). cross-check that
 	// the registry observably has NO active session — proves the
 	// refusal landed on this attestation handler, not the init one.
 	ctx.Step(`^the attestation flow refuses session start with "([^"]*)"$`, func(wantErr string) error {
@@ -172,10 +172,10 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 
 	ctx.Step(`^no path on disk is ever created using the raw op-id \(op-id is recorded in record JSON only, never used as a filesystem component\)$`,
 		func() error {
-			// Per B3 adversarial CRITICAL-1 + HIGH-4: the validation
+			// the validation
 			// layer's rejection is the FIRST line of defense; the
 			// runner's path-construction layer is the SECOND (and is
-			// phase-11 surface — there's no in-process path component
+			// deferred surface — there's no in-process path component
 			// to assert against today). Narrow this step to verify
 			// the rejection landed on a VALIDATION sentinel, not just
 			// any error — a non-validation error (e.g.,
@@ -213,15 +213,15 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		})
 
 	ctx.Step(`^a verdict is captured$`, func() error {
-		// Per B3 adversarial HIGH-1: this scenario verifies a BASELINE
+		// this scenario verifies a BASELINE
 		// — that json.Marshal correctly escapes a string. The actual
 		// contract (the attestation flow writes JSONL via
 		// json.Marshal, not via fmt.Sprintf concatenation) is
-		// enforced by the phase-11 verdict-capture component; this
+		// enforced by the deferred verdict-capture component; this
 		// test is the regression-baseline that flags if someone ever
 		// switches the serializer.
 		//
-		// Per B3 adversarial MEDIUM-4: write the marshal output into
+		// write the marshal output into
 		// AttOperatorPayload (separate field), preserving AttOpIDAttempt
 		// for any subsequent step that wants the raw op-id.
 		payload := map[string]any{
@@ -322,7 +322,7 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 	})
 
 	ctx.Step(`^the adversarial component hands F1 to attestation flow$`, func() error {
-		// Operator-facing presentation is phase-11 surface. Honest
+		// Operator-facing presentation is deferred surface. Honest
 		// invariant we can check today: F1 is still observable and
 		// transitionable.
 		_, ok := state.AttFindings.Get("F1")
@@ -334,7 +334,7 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 
 	ctx.Step(`^this component presents F1's evidence and the producer's rationale to the active operator$`,
 		func() error {
-			// Per B3 adversarial MEDIUM-2: stronger than just "F1
+			// stronger than just "F1
 			// exists". Verify F1 is in a status the operator CAN
 			// attest on (open or running per gates.md §7.3), and
 			// that no operator is yet active — the "presented"
@@ -347,13 +347,13 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 				return fmt.Errorf("F1 status %s does not admit operator verdict (want open/running)",
 					f.Status)
 			}
-			// Presentation surface is phase-11; no further runtime
+			// Presentation surface is deferred; no further runtime
 			// surface to assert against today.
 			return nil
 		})
 
 	ctx.Step(`^captures the operator's verdict$`, func() error {
-		// Per B3 adversarial MEDIUM-1: rename intent — this step
+		// rename intent — this step
 		// ACTIVATES the operator session as a precondition for the
 		// downstream capture call. Verify success explicitly so a
 		// silent Declare failure doesn't confuse subsequent steps.
@@ -493,14 +493,14 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 
 	ctx.Step(`^init proposes insufficient-basis-rounds-max="([^"]*)"$`,
 		func(value string) error {
-			// Parse the value as int; the YAML loader phase-11 surface
+			// Parse the value as int; the YAML loader deferred surface
 			// handles non-integer rejection. For the wirable rows
 			// (0 / -1), the int parse succeeds and the bootstrap
 			// validation surface returns ErrInsufficientBasisRoundsMaxNonPositive.
 			n, parseErr := strconv.Atoi(value)
 			if parseErr != nil {
-				// Phase-11 surface — record a sentinel-shaped error so
-				// the assertion can detect it. The row is @phase11-tagged.
+				// Deferred surface — record a sentinel-shaped error so
+				// the assertion can detect it. The row is @deferred-tagged.
 				state.AttOperatorErr = fmt.Errorf("insufficient-basis-rounds-max-must-be-integer: %s", value)
 				return nil
 			}

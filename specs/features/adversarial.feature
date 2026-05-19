@@ -1,5 +1,5 @@
-# Implementation: built (phase 5 — runner/adversarial.go + runner/findings.go).
-# Step impls land in Phase B4 of v2-final consolidation (see specs/v2-final-plan.md).
+# Implementation: built — runner/adversarial.go + runner/findings.go.
+# Step bindings call real runner code.
 Feature: Per-arrow adversarial phase
 
   # Spawns a fresh adversary instance per round with clean context.
@@ -63,10 +63,10 @@ Feature: Per-arrow adversarial phase
     And for any requirement classified below its declared minimum, R0 raises a finding
 
   Scenario: Requirement below min
-    # B4 of v2-final consolidation: the runner currently raises every
-    # depth-below-min finding at severity HIGH (conservative default,
+    # The runner currently raises every depth-below-min finding at
+    # severity HIGH (conservative default;
     # runner/adversarial.go ~line 389). Per-rule severity assignment
-    # is phase-11 surface; until then the BDD asserts actual behavior.
+    # is deferred surface; until then the BDD asserts actual behavior.
     Given requirement REQ-12 with declared minimum REALISTIC
     And R0 classifies REQ-12 as MOCKED (only mocked tests exist)
     Then R0 raises finding F3 with type "depth-below-min", target-requirement REQ-12, classified MOCKED, declared-min REALISTIC, severity "high", basis "the requirement's tests all use mocks; no realistic-tier test against real dependency was found"
@@ -80,7 +80,7 @@ Feature: Per-arrow adversarial phase
 
   # ---- Remediation loop ----
 
-  @phase11
+  @deferred
   Scenario: Producer fixes a finding with full re-attack
     Given finding F1 status "open" raised by adversary round R0
     When the producer addresses F1 by editing the upstream artifact
@@ -93,7 +93,7 @@ Feature: Per-arrow adversarial phase
     And if R1 reproduces F1, F1 stays "open" and another round begins
     And any new findings R1 raises are added to the open set
 
-  @phase11
+  @deferred
   Scenario: Producer proposes accepted-risk
     Given finding F1 status "open"
     When the producer proposes accepted-risk via a typed "accepted-risk-proposal" message containing pass-id, finding-id, rationale, and inspected-context
@@ -102,7 +102,7 @@ Feature: Per-arrow adversarial phase
     And on accepted-risk: F1 transitions to "accepted-risk"
     And on rejected: F1 stays "open" and remediation continues
 
-  @phase11
+  @deferred
   Scenario: Multiple findings in flight
     Given findings F1, F2, F3 all "open" after R0
     When the producer fixes F1 and F2 but not F3
@@ -111,7 +111,7 @@ Feature: Per-arrow adversarial phase
     And F3 stays "open"
     And remediation continues for F3
 
-  @phase11
+  @deferred
   Scenario: Non-convergence escalates after remediation-rounds-max
     Given finding F1 has been re-attacked through remediation-rounds-max rounds (default 5) and remains "open"
     When the final round completes
@@ -121,7 +121,7 @@ Feature: Per-arrow adversarial phase
 
   # ---- Phase exit to verification ----
 
-  @phase11
+  @deferred
   Scenario: Convergence — all findings disposed
     Given all findings above the severity threshold are "resolved" or "accepted-risk"
     When the remediation loop converges
@@ -138,7 +138,7 @@ Feature: Per-arrow adversarial phase
 
   # ---- Adversarial additions: remediation-rounds-max boundary ----
 
-  @phase11
+  @deferred
   Scenario Outline: Remediation-rounds-max boundary
     Given remediation-rounds-max is configured to "<max>"
     And finding F1 remains "open" through <attempted> remediation rounds
@@ -152,7 +152,7 @@ Feature: Per-arrow adversarial phase
       | 1   | 1         | yes (operator immediately) |
       | 0   | 0         | rejected at init: max=0 invalid |
 
-  @phase11
+  @deferred
   Scenario: Producer signals fix but artifact is unchanged (loop bomb)
     Given finding F1 status "open" after round R0
     When the producer emits "producer-fix-signal" but the upstream artifact's content-hash is identical to the version R0 saw

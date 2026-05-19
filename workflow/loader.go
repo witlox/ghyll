@@ -13,10 +13,10 @@ import (
 // Workflow is the loaded result of scanning .ghyll/ (or fallback .claude/).
 // Budget enforcement is done by cmd/ghyll using dialect.TokenCount.
 //
-// Phase D-1 of v2-final consolidation (ADR-008): runtime free-form
-// workflow roles are deprecated. The Roles map has been removed; v2
-// ships its four roles (analyst / architect / implementer /
-// integrator) as embedded Go data, not loadable files.
+// ADR-008: runtime free-form workflow roles are not loaded; the four
+// diamond roles (analyst / architect / implementer / integrator) are
+// contracts defined in specs/architecture/roles/ and not swappable
+// at runtime.
 type Workflow struct {
 	GlobalInstructions  string            // from ~/.ghyll/instructions.md (raw)
 	ProjectInstructions string            // from <repo>/.ghyll/instructions.md or CLAUDE.md (raw)
@@ -28,11 +28,10 @@ type Workflow struct {
 // globalDir is typically ~/.ghyll/. projectDir is the repo root.
 // fallbackFolders lists alternative folder names to try (e.g., [".claude"]).
 //
-// Phase D-1: loads project instructions and slash commands only.
-// The roles/ subdirectory under .ghyll or .claude is no longer
-// scanned at runtime — those files exist as build-time roles for
-// Claude Code's own agents, NOT as ghyll's runtime roles. ghyll's
-// runtime roles are the four fixed v2 roles, embedded in Go data.
+// Load reads project instructions and slash commands only. The
+// roles/ subdirectory under .ghyll or .claude is intentionally
+// not scanned — those files belong to Claude Code's own build
+// agents, not ghyll's runtime roles (see ADR-008).
 func Load(globalDir, projectDir string, fallbackFolders []string) (*Workflow, error) {
 	wf := &Workflow{
 		Commands: make(map[string]string),

@@ -1,6 +1,6 @@
-# Implementation: built (phase 5 — runner/amendment.go AmendmentQueue;
-# phase 9 — engine/replay.go LoadDrained dedup across restart).
-# Step impls land in Phase B2 of v2-final consolidation (see specs/v2-final-plan.md).
+# Implementation: built — runner/amendment.go AmendmentQueue +
+# engine/replay.go LoadDrained dedup across restart. Step bindings
+# call real runner + engine code.
 Feature: Grid amendment and global lock
 
   # Serializes grid changes through a project-wide write-lock. FIFO
@@ -22,7 +22,7 @@ Feature: Grid amendment and global lock
     Then the new amendment acquires the lock
     And processes against the state produced by the prior amendment
 
-  @phase11
+  @deferred
   Scenario: Amendment commits successfully
     Given an amendment holds the lock
     When the analyst re-runs (re-engaged) and produces the amended spec
@@ -36,7 +36,7 @@ Feature: Grid amendment and global lock
 
   # ---- Dependency-check against in-flight passes ----
 
-  @phase11
+  @deferred
   Scenario: Affected pass aborts
     Given pass P1 on (implementer, contextA) is running
     And P1's arrow declared dependencies [{artifact: "features/contextA/payment.feature", granularity: section, on-change: invalidate}]
@@ -46,7 +46,7 @@ Feature: Grid amendment and global lock
     And the arrow's status becomes "invalidated"
     And P1's findings are preserved with grid-version tag vN
 
-  @phase11
+  @deferred
   Scenario: Unaffected pass continues
     Given pass P2 on (analyst, contextB) is running
     And P2's arrow declared no dependencies on the amended file
@@ -54,7 +54,7 @@ Feature: Grid amendment and global lock
     Then P2 continues running against vN
     And records its completion against vN (not v(N+1))
 
-  @phase11
+  @deferred
   Scenario: Conservative fallback for no-deps arrows
     Given pass P3 on (architect, contextB) is running
     And P3's arrow declared no dependencies at all
@@ -94,7 +94,7 @@ Feature: Grid amendment and global lock
     And A2 commits, producing v(N+2)
     And the audit log shows v(N+1) and v(N+2) as separate commits, not merged
 
-  @phase11
+  @deferred
   Scenario: Two amendments touch the same artifact
     Given A1 changes lines 1-20 of cross-context/A-B.md
     And A2 changes lines 15-30 of the same file
@@ -112,7 +112,7 @@ Feature: Grid amendment and global lock
     Then they read .ghyll/grid.current (or call a get-version API)
     And get the same answer regardless of which they query
 
-  @phase11
+  @deferred
   Scenario: Pass identity uses grid version
     Given a pass P5 is created on arrow A1
     And the current grid version is v(N+1)
@@ -121,7 +121,7 @@ Feature: Grid amendment and global lock
 
   # ---- Adversarial additions: liveness and deadlock ----
 
-  @phase11
+  @deferred
   Scenario: Amendment lock held by a process that crashed
     Given an amendment is committing and the harness crashes mid-write with the grid write-lock still held
     When the harness restarts
@@ -131,7 +131,7 @@ Feature: Grid amendment and global lock
     And the next amendment may proceed normally
     And no operator action is required to break the deadlock
 
-  @phase11
+  @deferred
   Scenario: Amendment waiting on attestation that is waiting on an aborted pass
     Given an amendment A1 is queued waiting for the lock
     And pass P1 is mid-attestation (clause C5 awaiting verdict)
@@ -151,10 +151,10 @@ Feature: Grid amendment and global lock
     And the commit log records all 5 commits with monotonically increasing grid-versions
 
   Scenario: Queue capacity refuses overflow
-    # B2 of v2-final consolidation: the queue's MaxLen cap is wired
-    # today (runner.AmendmentQueue.Enqueue returns ErrAmendmentQueueFull).
+    # The queue's MaxLen cap is wired today
+    # (runner.AmendmentQueue.Enqueue returns ErrAmendmentQueueFull).
     # The full OperatorEvent "amendment-queue-growing" publication +
-    # R/C reporting integration is phase-11 surface; the capacity
+    # R/C reporting integration is deferred surface; the capacity
     # refusal (the underlying signal) is verifiable now.
     Given the amendment queue is configured with capacity 3
     When 3 amendments are enqueued

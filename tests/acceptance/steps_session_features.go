@@ -245,11 +245,11 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt is appended with the analyst role content$`, func() error {
-		// ADR-008: runtime role-overlay surface removed in Phase D-1.
-		// Scenarios reaching this step were dropped from workflow.feature;
-		// the step body remains so godog can match the regex if a
+		// ADR-008: runtime role-overlay surface removed. Scenarios
+		// reaching this step were dropped from workflow.feature; the
+		// step body remains so godog can match the regex if a
 		// regression re-introduces the scenario.
-		return fmt.Errorf("analyst role overlay removed per ADR-008 (Phase D-1)")
+		return fmt.Errorf("analyst role overlay removed per ADR-008")
 	})
 
 	ctx.Step(`^the system prompt no longer contains "([^"]*)"$`, func(text string) error {
@@ -260,7 +260,7 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt contains the implementer role content$`, func() error {
-		return fmt.Errorf("implementer role overlay removed per ADR-008 (Phase D-1)")
+		return fmt.Errorf("implementer role overlay removed per ADR-008")
 	})
 
 	ctx.Step(`^the system prompt contains the dialect's planning instructions$`, func() error {
@@ -584,23 +584,22 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 
 	// ---- Role steps ----
 
-	// ADR-008: runtime role-overlay surface removed in Phase D-1. The
-	// "model activates role X" / "role X is active" steps below return
-	// an error so any scenario that still uses them fails loudly.
-	// Phase D-1 dropped the corresponding scenarios from workflow.feature
-	// (8 role-loading scenarios); these regexes remain for regression
-	// signal.
+	// ADR-008: runtime role-overlay surface removed. The "model
+	// activates role X" / "role X is active" steps below return an
+	// error so any scenario that still uses them fails loudly. The
+	// 8 role-loading scenarios that previously used them were dropped
+	// from workflow.feature; these regexes remain as regression signal.
 
 	ctx.Step(`^the model activates role "([^"]*)"$`, func(role string) error {
-		return fmt.Errorf("model.activateRole(%q) — role-overlay surface removed per ADR-008 (Phase D-1)", role)
+		return fmt.Errorf("model.activateRole(%q) — role-overlay surface removed per ADR-008", role)
 	})
 
 	ctx.Step(`^role "([^"]*)" is active$`, func(role string) error {
-		return fmt.Errorf("role(%q).Active — role-overlay surface removed per ADR-008 (Phase D-1)", role)
+		return fmt.Errorf("role(%q).Active — role-overlay surface removed per ADR-008", role)
 	})
 
 	ctx.Step(`^role "([^"]*)" is active with content "([^"]*)"$`, func(role, _ string) error {
-		return fmt.Errorf("role(%q).WithContent — role-overlay surface removed per ADR-008 (Phase D-1)", role)
+		return fmt.Errorf("role(%q).WithContent — role-overlay surface removed per ADR-008", role)
 	})
 
 	ctx.Step(`^the active role is unchanged$`, func() error {

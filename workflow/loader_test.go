@@ -73,15 +73,14 @@ func TestScenario_Workflow_ConcatGlobalProjectLast(t *testing.T) {
 	}
 }
 
-// Phase D-1 of v2-final consolidation (ADR-008): runtime role loading
-// is deprecated. Tests previously here (LoadRoles,
-// ProjectRolesOverrideGlobal) have been removed — the surface they
-// covered no longer exists. The four v2 roles ship as embedded Go
-// data, not loadable files.
+// ADR-008: runtime role loading is deprecated. Tests previously here
+// (LoadRoles, ProjectRolesOverrideGlobal) have been removed — the
+// surface they covered no longer exists. The four diamond roles are
+// contracts in specs/architecture/roles/, not loadable files.
 
 // TestScenario_Workflow_RolesDirectoryIgnored verifies the Workflow
-// struct does NOT carry a Roles map after the D-1 surgery — a roles/
-// subdirectory under .ghyll or .claude is silently ignored at runtime.
+// struct does NOT carry a Roles map — a roles/ subdirectory under
+// .ghyll or .claude is silently ignored at runtime.
 func TestScenario_Workflow_RolesDirectoryIgnored(t *testing.T) {
 	globalDir, projectDir := setupWorkflowDir(t)
 	writeFile(t, filepath.Join(projectDir, ".ghyll/roles/analyst.md"), "irrelevant; should not load")

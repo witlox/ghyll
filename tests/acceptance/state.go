@@ -144,7 +144,6 @@ type ScenarioState struct {
 	GridReadErr error
 
 	// State-machine step state (specs/features/state-machine.feature).
-	// Phase B1 of v2-final consolidation.
 	SMClauseStatus          runner.ClauseStatus   // current clause status under test
 	SMClauseStatusName      string                // wire-form name as the feature posed it
 	SMClauseRecordedAt      time.Time             // timestamp captured at transition
@@ -162,7 +161,6 @@ type ScenarioState struct {
 	SMFindingError          error                 // last finding-transition error
 
 	// Amendment step state (specs/features/amendment.feature).
-	// Phase B2 of v2-final consolidation.
 	AmendQueue          *runner.AmendmentQueue
 	AmendObservedEvents []runner.AmendmentEvent
 	AmendLastErr        error
@@ -170,13 +168,12 @@ type ScenarioState struct {
 	AmendGridDir        string // tmpdir for grid.Write tests
 	AmendGridVersion    int    // last grid version written
 
-	// State-machine grid-missing scenario (B1 fix-forward via B2).
+	// State-machine grid-missing scenario.
 	SMMissingGridDir     string
 	SMMissingGridVersion int
 	SMMissingGridErr     error
 
 	// Attestation step state (specs/features/attestation.feature).
-	// Phase B3 of v2-final consolidation.
 	AttRegistry        *bootstrap.SessionRegistry
 	AttSession         *bootstrap.Session
 	AttSessionErr      error
@@ -184,10 +181,9 @@ type ScenarioState struct {
 	AttFindings        *runner.FindingsStore
 	AttFindingID       string
 	AttOperatorErr     error
-	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt per B3 #M4)
+	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt)
 
 	// Adversarial step state (specs/features/adversarial.feature).
-	// Phase B4 of v2-final consolidation.
 	AdvAdversary       *runner.Adversary
 	AdvFindings        *runner.FindingsStore
 	AdvClassifications *runner.ClassificationsStore
@@ -201,7 +197,7 @@ type ScenarioState struct {
 	AdvTmpProjectDir   string // freshly-created per scenario; guaranteed empty (no TODO leakage)
 
 	// Subprocess evaluator step state (runner.feature subprocess
-	// scenarios). Phase B6 of v2-final consolidation.
+	// scenarios).
 	SubprocResult  *runner.Result
 	SubprocErr     error
 	SubprocCommand string

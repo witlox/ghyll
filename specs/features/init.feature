@@ -1,7 +1,6 @@
-# Implementation: built (phase 2 — bootstrap/init.go + bootstrap/propose.go
+# Implementation: built — bootstrap/init.go + bootstrap/propose.go
 # + bootstrap/modify.go + bootstrap/orphan.go + bootstrap/risk.go +
-# bootstrap/profile.go). Step impls partially landed; remaining pending
-# bodies lifted in Phase B5 of v2-final consolidation.
+# bootstrap/profile.go. Step bindings call real bootstrap code.
 Feature: Project initialization
 
   # Project initialization is step one when ghyll is invoked on a new
@@ -139,10 +138,10 @@ Feature: Project initialization
     And subsequent ghyll invocations read grid.current to find the active version, then load grid.v<N>.yaml
 
   Scenario: Init crashes mid-write
-    # B5 of v2-final consolidation: the BDD verifies the recovery
-    # path (next bootstrap.Read fails with ErrGridCurrentAbsent and
+    # The BDD verifies the recovery path: the next bootstrap.Read
+    # fails with ErrGridCurrentAbsent and
     # a fresh write succeeds after manual .tmp cleanup). The harness's
-    # init-startup sweep that auto-cleans stale .tmp files is phase-11
+    # init-startup sweep that auto-cleans stale .tmp files is deferred
     # surface; the step manually removes the stale tmp to simulate
     # that future behavior.
     Given init is partway through writing the grid file
@@ -153,12 +152,12 @@ Feature: Project initialization
   # ---- op-id session declaration ----
 
   Scenario: Operator session start
-    # B5 of v2-final consolidation: this scenario validates the
-    # bootstrap.StartSession contract directly. The harness's
+    # This scenario validates the bootstrap.StartSession contract
+    # directly. The harness's
     # interactive prompt/response loop (REPL operator UI) is
-    # phase-11 surface; until then the BDD invokes StartSession
+    # deferred surface; until then the BDD invokes StartSession
     # programmatically with a fixed op-id. See
-    # specs/architecture/components/init.md for the phase-11 prompt
+    # specs/architecture/components/init.md for the deferred prompt
     # behavior the runtime will implement.
     Given the operator runs "ghyll init"
     When init first reaches a step that requires attestation

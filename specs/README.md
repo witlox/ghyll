@@ -1,12 +1,10 @@
 # specs/
 
-Authoritative behavioral specification for ghyll. Post-D-3 consolidation
-the v1↔v2 split is collapsed — there is one tree.
+Authoritative behavioral specification for ghyll. One tree, one suite.
 
 ## Top-level documents
 
-The five canonical narrative docs (v2 framing — v1 originals are preserved
-in `archive/v1-superseded/`):
+The canonical narrative docs:
 
 - [`domain-model.md`](domain-model.md) — entities, aggregates,
   bounded contexts.
@@ -21,12 +19,13 @@ in `archive/v1-superseded/`):
 ## Sub-directories
 
 - [`architecture/`](architecture/) — architectural design docs. Includes
-  `v2-design.md` (the pivot rationale), `gates.md` (gate schema),
-  `roles/` (the four diamond role contracts), `components/` (per-component
-  designs).
-- [`features/`](features/) — Gherkin acceptance scenarios, the BDD layer.
-  v1-inherited surface features plus the v2-only ones (init, runner,
-  state-machine, attestation, amendment, adversarial, runner-step3).
+  `v2-design.md` (the design rationale for the current correctness
+  mechanism), `gates.md` (gate schema), `roles/` (the four diamond
+  role contracts), `components/` (per-component designs).
+- [`features/`](features/) — Gherkin acceptance scenarios, the BDD
+  layer. Covers session, REPL, memory sync, dialect routing, plus
+  the gate-and-arrow surface (init, runner, state-machine, attestation,
+  amendment, adversarial).
 - [`fidelity/`](fidelity/) — fidelity sweep records.
 - [`findings/`](findings/) — audit findings.
 - [`integration/`](integration/) — integration notes.
@@ -35,7 +34,7 @@ in `archive/v1-superseded/`):
   - `validation-passes/` — cold-read validation transcripts.
   - `v1-superseded/` — pre-v2 versions of the top-level narrative docs.
 
-## Working documents
+## Historical
 
-- [`v2-final-plan.md`](v2-final-plan.md) — the six-phase consolidation
-  plan that produced this tree.
+- [`v2-final-plan.md`](v2-final-plan.md) — the consolidation plan that
+  produced this tree. Kept for reference; not authoritative state.

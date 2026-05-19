@@ -1,6 +1,6 @@
 // Package acceptance — step definitions for the v2 adversarial feature.
 //
-// Phase B4 of v2-final consolidation. Wires the per-round Adversary
+// Wires the per-round Adversary
 // surface against real runner code:
 //
 //   - runner.NewAdversary + Attack (single-shot per round)
@@ -11,10 +11,10 @@
 //   - DeriveArrowStatus with severity threshold (below-threshold
 //     findings don't block)
 //
-// Scenarios tagged @phase11 cover the orchestrator-level concerns
+// Scenarios tagged @deferred cover the orchestrator-level concerns
 // (multi-round remediation, producer-fix-signal messaging,
 // operator-event-bus, remediation-rounds-max enforcement); those
-// surfaces ship in phase 11.
+// surfaces ship in deferred.
 package acceptance
 
 import (
@@ -30,7 +30,7 @@ import (
 
 func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
-		if scenarioHasTag(sc, "@phase11") {
+		if scenarioHasTag(sc, "@deferred") {
 			return c, nil
 		}
 		state.AdvFindings = runner.NewFindingsStore()
@@ -48,7 +48,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		state.AdvAttackErr = nil
 		state.AdvOpenSweepFn = nil
 		state.AdvClassifyFn = nil
-		// Per B4 adversarial #9: per-scenario fresh tmpdir for
+		// per-scenario fresh tmpdir for
 		// no-todo-marker so /tmp's external state doesn't poison the
 		// evaluator. Each scenario gets a guaranteed-empty directory.
 		dir, err := os.MkdirTemp("", "adv-scenario-")
@@ -122,7 +122,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		})
 
 	ctx.Step(`^R0 runs the three sub-activities in order$`, func() error {
-		// Per B4 adversarial #2: explicitly verify the three
+		// explicitly verify the three
 		// sub-activity surfaces are populated. Order itself is
 		// enforced by adversarial.go's Attack method body (a
 		// straight-line sequence). We can't observe activity
@@ -186,11 +186,11 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 	})
 
 	ctx.Step(`^the orchestrator does NOT spawn an adversary$`, func() error {
-		// Per B4 adversarial #7: this step tests the RUNNER-layer
+		// this step tests the RUNNER-layer
 		// safe-no-op (empty DepthClauses → no falsifications, no
 		// findings). The full ORCHESTRATOR-layer skip-logic (don't
 		// invoke Attack at all when no depth-sensitive clauses
-		// exist on the arrow) is phase-11 surface. The runner's
+		// exist on the arrow) is deferred surface. The runner's
 		// no-op is the safety valve that this BDD asserts.
 		if state.AdvAttackErr != nil {
 			return fmt.Errorf("attack errored: %w", state.AdvAttackErr)
@@ -262,7 +262,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		if state.AdvAttackErr != nil {
 			return fmt.Errorf("attack errored: %w", state.AdvAttackErr)
 		}
-		// Per B4 adversarial #6: assert per-clause coverage AND
+		// assert per-clause coverage AND
 		// preservation of input order. The Adversary processes
 		// DepthClauses as a slice (per adversarial.go); each
 		// ClauseFalsifications entry should carry the corresponding
@@ -486,7 +486,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			if !seenOpenSweep {
 				return errors.New("no open-sweep finding at severity high observed")
 			}
-			// Per B4 adversarial #5: verify the OpenSweep wrapper
+			// verify the OpenSweep wrapper
 			// (safeInvokeOpenSweep) handles hook errors gracefully.
 			// Inject an error-returning hook on a fresh adversary and
 			// confirm the Attack returns an error or records the
@@ -682,7 +682,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		func() error {
 			// This clause is auto-inserted at verification time per
 			// gates.md §11.3 — the SURFACE for that insertion is
-			// phase-11 orchestrator work. We can verify that, today,
+			// deferred orchestrator work. We can verify that, today,
 			// the adversary has raised at least one Unevaluated entry
 			// — that entry is what the future clause will key on.
 			anyUneval := false
@@ -745,7 +745,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		if state.SMDerivedStatus != runner.ArrowStatusComplete {
 			return fmt.Errorf("not converged: %s", state.SMDerivedStatus)
 		}
-		// Per B4 adversarial #8: ALSO verify the threshold-boundary
+		// ALSO verify the threshold-boundary
 		// case. A finding at EXACTLY the threshold (medium) MUST
 		// block — DeriveArrowStatus uses `>=` so rank-2 (medium) is
 		// inclusive. Re-derive with a synthetic finding at medium
@@ -787,7 +787,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 	// -------- Depth gate with concrete tier values --------
 
 	ctx.Step(`^the project's routing config maps depth-tier values:$`, func(table *godog.Table) error {
-		// Per B4 adversarial #3: the table documents the operator's
+		// the table documents the operator's
 		// tier→model mapping (a dialect-layer concern). Today the
 		// runner doesn't read this; the invariant the Adversary
 		// enforces is that MinDepthTier > Runner's actualTier
@@ -856,7 +856,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 	})
 
 	ctx.Step(`^NOT silently downgraded to a lower tier$`, func() error {
-		// Per B4 adversarial #4: assert the actual EvaluationRun
+		// assert the actual EvaluationRun
 		// recorded the runner's tier. The Adversary's Runner is
 		// configured at REALISTIC; if a downgrade had happened, the
 		// short-circuit logic in runner.Evaluate would set EndStatus

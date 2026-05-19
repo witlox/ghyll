@@ -38,10 +38,9 @@ func TestScenario_SubAgent_ToolCount(t *testing.T) {
 	}
 }
 
-// newSubAgentTestSession returns a *Session for sub-agent testing
-// (Phase C4 of v2-final consolidation). Uses an httptest server that
-// returns a no-op response; RunSubAgent's flow can be exercised
-// without standing up a real model endpoint.
+// newSubAgentTestSession returns a *Session for sub-agent testing.
+// Uses an httptest server that returns a no-op response; RunSubAgent's
+// flow can be exercised without standing up a real model endpoint.
 func newSubAgentTestSession(t *testing.T, subModel string) *Session {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

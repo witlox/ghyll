@@ -69,7 +69,7 @@ Feature: Workflow system
     Then both global and project instructions are included
     And no warning is displayed
 
-  # --- Roles (deprecated per ADR-008 / Phase D-1 of v2-final
+  # --- Roles (deprecated per ADR-008 of v2-final
   # consolidation) ---
   #
   # Runtime free-form workflow roles loaded from .claude/roles/*.md or

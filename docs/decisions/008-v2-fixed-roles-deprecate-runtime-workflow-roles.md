@@ -41,7 +41,7 @@ The two surfaces are now incompatible:
 
 ### 1. Drop runtime free-form role loading
 
-Phase D-1 removed:
+ removed:
 
 - The `Roles` field from `workflow.Workflow`; `workflow.Load()` no
   longer reads `.claude/roles/*.md` or `.ghyll/roles/*.md`.
@@ -152,4 +152,4 @@ build agents, not by ghyll's runtime).
 - ADR-007 — tier-based routing (orthogonal; still applies)
 - specs/architecture/v2-design.md §3.3 — fixed roles
 - specs/architecture/roles/*.md — per-role contracts (source of truth)
-- specs/v2-final-plan.md — Phase D-1 of v2-final consolidation
+- specs/v2-final-plan.md —

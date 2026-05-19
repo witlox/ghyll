@@ -1,8 +1,7 @@
-# Implementation: built (phase 3 — runner/runner.go Runner.Evaluate +
-# runner/registry.go + runner/subprocess.go BindingEvaluator).
-# F-3 arrow-status derivation step impls are already THOROUGH;
-# subprocess/evaluator coordination scenarios lift in Phase B6 of
-# v2-final consolidation.
+# Implementation: built — runner/runner.go Runner.Evaluate +
+# runner/registry.go + runner/subprocess.go BindingEvaluator.
+# Arrow-status derivation, subprocess/evaluator coordination, and
+# F-3 derivation steps all call real runner code.
 Feature: Machine-clause runner (enforcement spine)
 
   # Invokes evaluators, coordinates with attestation flow for attested
@@ -13,7 +12,7 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Single machine clause evaluation ----
 
-  @phase11
+  @deferred
   Scenario: Successful machine evaluation
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
     And the upstream artifact contains src/foo.go with no TODO markers
@@ -27,7 +26,7 @@ Feature: Machine-clause runner (enforcement spine)
     And the result.details.scanned-files is non-empty (proving real scan)
     And an evaluation-run record is appended with evaluation-run-id, clause-id, pass-id, started-at, completed-at, result, and the list of files actually scanned (so a stub returning empty hits without scanning is detectable)
 
-  @phase11
+  @deferred
   Scenario: Machine evaluation fails
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
     And the artifact contains "TODO: implement retries" at src/foo.go:42
@@ -36,13 +35,13 @@ Feature: Machine-clause runner (enforcement spine)
     And the result records the hit location
     And the arrow's derived status becomes "blocked"
 
-  @phase11
+  @deferred
   Scenario: Machine evaluator returns unevaluated due to depth
     # This depth-gate short-circuit is wired in state-machine.feature
     # ("Depth-below-required produces unevaluated") which covers the
     # same runner.WithActualTier vs Clause.MinDepthTier contract. The
-    # @phase11 here marks the SPECIFIC mutation-score-concept fixture
-    # as a phase-11 wiring (runner.feature's flavour differs in clause
+    # @deferred here marks the SPECIFIC mutation-score-concept fixture
+    # as a deferred wiring (runner.feature's flavour differs in clause
     # naming but tests the same invariant).
     Given a clause "mutation-score(...)" with depth-sensitive depth-type
     And the active model tier is below the clause's declared minimum
@@ -52,7 +51,7 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Attested clause coordination ----
 
-  @phase11
+  @deferred
   Scenario: Attested clause requires hint emission
     Given a clause "attested-G7" on arrow A1 with producer role "analyst"
     When the runner reaches this clause during pass P1
@@ -61,14 +60,14 @@ Feature: Machine-clause runner (enforcement spine)
     And the runner forwards the hint to the attestation flow component
     And the clause status transitions: pending → awaiting-attestation
 
-  @phase11
+  @deferred
   Scenario: Operator returns attestation verdict
     Given a clause with status "awaiting-attestation"
     When the attestation flow component records an operator verdict (pass / fail / insufficient-basis)
     Then the runner updates the clause status to match the verdict
     And the arrow's derived status is recomputed
 
-  @phase11
+  @deferred
   Scenario: Producer cannot emit hint
     Given a clause where the producer reports "unable-to-hint"
     Then the runner records the clause "unevaluated" with reason "no-rule-selectable-locations"
@@ -125,7 +124,7 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Verification phase orchestration ----
 
-  @phase11
+  @deferred
   Scenario: Adversarial phase ran verification auto-inserts
     Given an arrow that ran an adversarial phase
     When the runner enters the verification phase
@@ -134,7 +133,7 @@ Feature: Machine-clause runner (enforcement spine)
     And evaluates them alongside the arrow's declared verification clauses
     And these auto-inserted clauses CANNOT be skipped or weakened by the arrow definition
 
-  @phase11
+  @deferred
   Scenario: Pure machine arrow skips adversarial and verification only
     Given an arrow with only machine, depth-robust clauses
     Then the runner skips adversarial and remediation phases
@@ -142,7 +141,7 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Concurrent execution coordination ----
 
-  @phase11
+  @deferred
   Scenario: Two passes on different contexts run concurrently
     Given pass P1 on (analyst, contextA, stratum-1)
     And pass P2 on (analyst, contextB, stratum-1)
@@ -154,14 +153,14 @@ Feature: Machine-clause runner (enforcement spine)
     And the state-machine per-clause locks for P1 and P2 are distinct (different pass-ids → different lock keys)
     And running with `-race` reports no data races on the shared evaluator-output buffer
 
-  @phase11
+  @deferred
   Scenario: Two passes on same (role, context) are refused
     Given pass P1 on (analyst, contextA) is running
     When a second pass P2 on (analyst, contextA) is requested
     Then the runner refuses P2 with kind "single-active-role-violation"
     And P2 is not started until P1 completes or aborts
 
-  @phase11
+  @deferred
   Scenario: Pass aborted due to grid amendment
     Given pass P1 is in remediation phase
     And a grid amendment lands invalidating P1's arrow
@@ -172,14 +171,14 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Per-pass checkpoint emission ----
 
-  @phase11
+  @deferred
   Scenario: Pass completes and emits checkpoint
     Given pass P1 has reached terminal arrow status
     When the runner finalizes the pass
     Then the runner emits a checkpoint with pass-id, arrow-id, grid-version, clause-by-clause status, finding ids raised, pass-status "completed", and timestamps
     And the checkpoint is appended to the project's checkpoint log
 
-  @phase11
+  @deferred
   Scenario: Pass aborted records reason in checkpoint
     Given pass P1 was aborted mid-phase
     When the runner finalizes the aborted pass

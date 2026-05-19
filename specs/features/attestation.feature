@@ -1,11 +1,9 @@
 # Implementation: PARTIAL.
-#   Built today: §7.1 dispatch-pending response (phase 10), op-id session
-#   start, on-the-spot creation suspension (phase 6). Step impls for the
-#   subset land in Phase B3 of v2-final consolidation. Deferred to phase 11:
-#   full operator event bus, multi-operator handoff, typed JSONL verdict
-#   records, insufficient-basis-rounds-max escalation. Scenarios depending
-#   on the deferred surface are tagged `@phase11` and skipped until that
-#   flow ships.
+#   Built today: §7.1 dispatch-pending response, op-id session start,
+#   on-the-spot creation suspension. Deferred surface (full operator
+#   event bus, multi-operator handoff, typed JSONL verdict records,
+#   insufficient-basis-rounds-max escalation) is tagged `@deferred`
+#   and skipped until those flows ship.
 Feature: Operator attestation flow
 
   # Coordinates operator verdicts on attested clauses. Owns the operator
@@ -23,7 +21,7 @@ Feature: Operator attestation flow
     And the session is active for subsequent verdicts
     And verdict-capture API calls without an active session are refused with "no-active-session"
 
-  @phase11
+  @deferred
   Scenario: Multi-operator handoff in one pass
     Given operator Alice is active and attests clause C1
     When Alice ends her session
@@ -38,7 +36,7 @@ Feature: Operator attestation flow
 
   # ---- Hint presentation and verdict capture ----
 
-  @phase11
+  @deferred
   Scenario: Operator returns pass
     Given an attestation request for clause C5 with hint { locations: [features/contextA/payment.feature:42-67], basis: "all failure-path scenarios in this region", residue: "happy-path tests not scanned" }
     And operator Alice is active
@@ -50,7 +48,7 @@ Feature: Operator attestation flow
     And the JSONL line is valid JSON with newline terminator (no trailing comma, no missing newline)
     And the component signals the state-machine engine to transition C5 to "pass" ONLY AFTER the fsync returns successfully
 
-  @phase11
+  @deferred
   Scenario: Operator returns fail with record-locations
     Given an attestation request for clause C5
     When Alice submits verdict "fail" with unit "record-locations-inspected" and inspected list [features/contextA/payment.feature:42-50]
@@ -58,7 +56,7 @@ Feature: Operator attestation flow
     And C5's status becomes "fail"
     And the producer is notified of the failure to remediate
 
-  @phase11
+  @deferred
   Scenario: Operator returns insufficient-basis with residue note
     Given an attestation request for clause C5
     When Alice submits verdict "insufficient-basis" with unit "write-residue-note" and residue-note "feature file is too large to manually inspect; need a deeper artifact"
@@ -69,7 +67,7 @@ Feature: Operator attestation flow
 
   # ---- Insufficient-basis escalation (insufficient-basis-rounds-max) ----
 
-  @phase11
+  @deferred
   Scenario: Three rounds, then escalation
     Given clause C5 has received "insufficient-basis" from rounds 1 and 2
     And the producer has re-emitted the hint at a deeper depth tier each round
@@ -78,7 +76,7 @@ Feature: Operator attestation flow
     And presents the operator with two options: (1) attest "accepted-risk" with "write-residue-note" recording why the basis remains insufficient, OR (2) route the artifact back upstream for deeper rework with rationale "requires-deeper-artifact"
     And neither option is the default — operator must choose
 
-  @phase11
+  @deferred
   Scenario: Operator accepts risk on the third round
     Given the escalation prompt
     When operator chooses option 1 with residue note
@@ -87,7 +85,7 @@ Feature: Operator attestation flow
     And C5's CLAUSE-status transitions to "pass" once all findings on the clause are disposed (resolved or accepted-risk)
     And the round counter resets
 
-  @phase11
+  @deferred
   Scenario: Operator routes upstream
     Given the escalation prompt
     When operator chooses option 2 with rationale
@@ -95,14 +93,14 @@ Feature: Operator attestation flow
     And the arrow's pass is aborted with reason "requires-deeper-artifact"
     And the producer role is re-routed at a deeper tier to produce a richer artifact
 
-  @phase11
+  @deferred
   Scenario: insufficient-basis-rounds-max is configurable
     Given init declared insufficient-basis-rounds-max=5 for this project
     When clause C5 receives "insufficient-basis" for the 4th time
     Then no escalation is triggered yet (max not reached)
     And the round counter is 4
 
-  @phase11
+  @deferred
   Scenario: insufficient-basis-rounds-max escalation actually fires at max
     Given init declared insufficient-basis-rounds-max=3 for this project
     And clause C5 has received "insufficient-basis" for the 2nd time
@@ -122,8 +120,8 @@ Feature: Operator attestation flow
       | 0     | insufficient-basis-rounds-max-must-be-positive |
       | -1    | insufficient-basis-rounds-max-must-be-positive |
 
-  @phase11
-  Scenario Outline: Invalid insufficient-basis-rounds-max — non-integer (phase-11 YAML loader)
+  @deferred
+  Scenario Outline: Invalid insufficient-basis-rounds-max — non-integer (deferred YAML loader)
     # The "abc" row requires a YAML/TOML loader that maps a string-into-
     # int parse failure to the spec's typed sentinel
     # "insufficient-basis-rounds-max-must-be-integer". The GridDefaults
@@ -161,7 +159,7 @@ Feature: Operator attestation flow
 
   # ---- Verifier-driven verdict replay ----
 
-  @phase11
+  @deferred
   Scenario: Verifier reads attestation log
     Given a pass-id and a clause-id
     When the verifier component reads the attestation file
@@ -169,7 +167,7 @@ Feature: Operator attestation flow
     And can reconstruct the operator's decision chain
     And can verify that the required fields per unit are present
 
-  @phase11
+  @deferred
   Scenario: Missing required field is detected
     Given an attestation record with unit "record-locations-inspected" but no "inspected" array
     When the verifier reads it
@@ -190,7 +188,7 @@ Feature: Operator attestation flow
       | alice\x00null  | op-id-invalid-characters |
       | alice\nbob     | op-id-invalid-characters |
 
-  @phase11
+  @deferred
   Scenario Outline: op-id rejection — meta-described inputs
     # The original outline included rows like `(string of length 5000)`
     # and `(unicode RTL override U+202E)` which are META-DESCRIPTORS,
@@ -216,7 +214,7 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: oversized residue note ----
 
-  @phase11
+  @deferred
   Scenario: Oversized residue note rejected
     Given an escalation prompt requesting a residue note
     When the operator submits a residue note longer than 16KB
@@ -226,7 +224,7 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: path canonicalization for three-role chain ----
 
-  @phase11
+  @deferred
   Scenario: Three-role chain path encoding
     Given an arrow with role-pair containing the adversary segment (e.g., analyst→adversary→architect)
     When an attestation record is written
@@ -234,7 +232,7 @@ Feature: Operator attestation flow
     And NOT "analyst-adversary-architect" or "analyst→adversary→architect"
     And the path is filesystem-portable (no Unicode glyphs, no path separators, ≤ 255 bytes per component)
 
-  @phase11
+  @deferred
   Scenario: init arrow path encoding
     Given an attestation record for the init arrow
     When the path is constructed
@@ -244,7 +242,7 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: multi-operator handoff edge cases ----
 
-  @phase11
+  @deferred
   Scenario: Two operators submit verdicts on the same clause near-simultaneously
     Given Alice's session is active and Bob's session is also active
     And both submit verdicts on clause C5 within 10ms of each other
@@ -254,7 +252,7 @@ Feature: Operator attestation flow
     And the audit log shows the conflict (two verdicts; later wins)
     And neither operator's submission is silently dropped
 
-  @phase11
+  @deferred
   Scenario: Operator's session ends mid-attestation
     Given Alice has read a hint and started typing a residue note
     When Alice's session is closed (network drop, explicit close, timeout) before she submits the verdict

@@ -11,26 +11,24 @@ position.
 
 ## Project State
 
-**Phase**: v1 implemented (this repo). v2 designed but not built —
-correctness mechanism is a typed gate system, not drift detection.
+ghyll is one codebase. The correctness mechanism is the gate-and-arrow
+state machine; drift-aware memory, streaming, and sandbox-only
+execution are continuity infrastructure. Major surfaces:
 
-- **v1** — dialects, drift-aware memory, streaming, sandbox-only
-  execution. Ships as continuity infrastructure for v2.
-- **v2** — gate-and-arrow enforcement, fixed role set, integrator
-  feedback cycle, `unevaluated` status. Design lives in
-  [`specs/architecture/`](specs/architecture/). Cold-validation pass 1
-  flagged load-bearing holes (machine-clause catalogue closed vs.
-  analyst clauses outside it; status-vocabulary divergence;
-  unquantified "weight"/"residue"). Treat the design as a hypothesis
-  (Direction §7). **Do not start building the enforcement spine
-  before the design passes a clean cold-read.**
+- **Engine** — sqlite-backed store + Journal observer fanout + Replay.
+  Persists arrows, findings, clauses, classifications, amendments,
+  evaluation runs. Source of truth across sessions.
+- **Runner** — typed clause evaluation, depth routing (§7.1), arrow
+  status derivation, adversarial phase, on-the-spot arrow creation.
+- **Dialect** — context-depth-aware routing across MiniMax M2.5,
+  GLM-5, DeepSeek, Qwen.
+- **Memory** — checkpoint store, ed25519 sign + Merkle DAG, git
+  orphan-branch sync to optional vault.
+- **Diamond roles** — analyst → architect → implementer → integrator,
+  contracts in `specs/architecture/roles/`.
 
-**Fidelity checkpoint** (last auditor sweep, v1): 75 THOROUGH, 3
-MODERATE, 5 NONE.
-
-Use the diamond workflow (`.claude/CLAUDE.md`) for v1 bugfixes and any
-non-v2 work. The `.claude/roles/*.md` files are Claude Code's roles for
-building ghyll; they are NOT the runtime roles ghyll will embed (those
+The `.claude/roles/*.md` files are Claude Code's working role files
+for editing this repo; they are NOT the runtime ghyll roles (those
 live in `specs/architecture/roles/`).
 
 ## Build
@@ -56,7 +54,8 @@ cmd/
 config/               TOML loader + validation
 types/                shared types (Message, ToolCall, ToolResult) — leaf package
 tool/                 direct OS operations (bash, file, git, grep, edit, glob, web)
-workflow/             project instructions, roles, slash commands loader
+workflow/             project instructions + slash commands loader
+ui/                   user-facing terminal output (CLI). slog handles diagnostics.
 stream/               SSE streaming client + terminal renderer
 dialect/              model-specific code + routing decision table
   router.go           context-depth routing
@@ -103,12 +102,15 @@ scripts/              scenario verification tooling
 - [ADR-006: One session per repo](docs/decisions/006-one-session-per-repo.md) — lockfile concurrency
 - [ADR-007: Tier-based routing](docs/decisions/007-tier-based-routing.md) — decouple routing from model names
 
-v2 design intent (not yet ADRs, not yet code):
+- [ADR-008: Fixed v2 roles, no runtime overlay](docs/decisions/008-v2-fixed-roles-deprecate-runtime-workflow-roles.md) — diamond roles are contracts in specs, not swappable system prompts
 
-- [Direction](specs/architecture/direction.md) — pivot rationale, what changes, §7 hypothesis caveat
+Architectural reference (current code, not aspirational):
+
+- [v2 design](specs/architecture/v2-design.md) — gate-and-arrow rationale
 - [Gates schema](specs/architecture/gates.md) — evaluation types, depth types, arrows, routing, attestation
-- [Analyst role contract](specs/architecture/roles/analyst.md) — the one role reconciled to the schema
-- [Build notes](specs/architecture/build-notes.md) — what is designed vs. deliberately not yet built
+- [Role contracts](specs/architecture/roles/) — analyst, architect, implementer, integrator
+- [Component designs](specs/architecture/components/) — per-component breakdowns
+- [v2 ADRs](docs/decisions/v2/) — 13 structural decisions distilled from the operator-decisions rounds
 
 ## Running
 

@@ -127,8 +127,8 @@ func (s *ScenarioState) initWritesTheGrid() error {
 
 // gridVersionFileWrittenAtomically verifies grid.v<N>.yaml exists,
 // has no stale .tmp peer in .ghyll/, AND parses as a valid Grid with
-// the expected version (per B5 adversarial #2 — was only checking
-// non-empty size, which a partial YAML stub would pass).
+// the expected version. A non-empty-size check alone would pass a
+// partial YAML stub; we parse instead.
 func (s *ScenarioState) gridVersionFileWrittenAtomically(version string) error {
 	if s.ProjectTestDir == "" {
 		return errors.New("no project dir")

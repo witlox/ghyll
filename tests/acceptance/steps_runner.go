@@ -254,7 +254,7 @@ func (s *ScenarioState) noPassOnBStarted() error {
 	if s.RunnerTransitionErr == nil {
 		return errors.New("expected transition refused (no pass started)")
 	}
-	// Per B7 adversarial pass: verify the refusal is a structured
+	// verify the refusal is a structured
 	// TransitionRefusal (not some unrelated error) AND that it names
 	// the upstream arrow — proves the refusal is keyed on the right
 	// arrow, not a generic failure.
@@ -277,11 +277,10 @@ func (s *ScenarioState) runnerPermitsTransition() error {
 }
 
 // startsNewPassOnB verifies the runner has permitted the transition
-// AND the upstream arrow was in a status that authorizes it. Per B7
-// adversarial pass: bolstered from a pure "no error" check by also
-// asserting the upstream status precondition (Complete satisfies
-// next role per ArrowStatus.SatisfiesNextRole). Pass execution
-// itself is phase-11 surface.
+// AND the upstream arrow was in a status that authorizes it. The
+// upstream-status precondition matters: Complete satisfies the next
+// role per ArrowStatus.SatisfiesNextRole. Pass execution itself is
+// deferred surface.
 func (s *ScenarioState) startsNewPassOnB() error {
 	if s.RunnerTransitionErr != nil {
 		return fmt.Errorf("expected new pass startable; transition was refused: %v", s.RunnerTransitionErr)
@@ -323,7 +322,7 @@ func (s *ScenarioState) errorContainsArrowAndGridVersion() error {
 }
 
 // operatorEventPublishedNarrative — the operator-event-bus integration
-// is phase-11 surface. Per B7 adversarial pass: bolstered from a pure
+// is deferred surface. bolstered from a pure
 // "refusal present" check by ALSO verifying the refusal kind is one
 // the event bus would emit on (transition-refused* or pass-aborted).
 // If the refusal is a different kind, the future event-bus listener

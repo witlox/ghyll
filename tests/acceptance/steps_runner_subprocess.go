@@ -1,6 +1,6 @@
 // Package acceptance — runner.feature subprocess scenarios.
 //
-// Phase B6 of v2-final consolidation. Wires the 6 evaluator-process-
+// Wires the 6 evaluator-process-
 // failure scenarios in runner.feature (timeout, OOM/SIGKILL, malformed
 // JSON, spurious stderr + exit 0, oversized output, zombie children)
 // against the real runner.BindingEvaluator. The unit-test coverage on
@@ -33,7 +33,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 
 	ctx.Step(`^a clause with timeout-per-mutation 30s$`, func() error {
 		// Use a short timeout for the test (500ms) so the scenario
-		// runs fast. Per B6 adversarial HIGH #4: bumped from 200ms
+		// runs fast. bumped from 200ms
 		// to 500ms with grace 200ms (was 50ms) so CI scheduling
 		// jitter doesn't flake the timeout-detect step. The "30s"
 		// in the feature is operator-facing canonical; the test
@@ -57,7 +57,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 	})
 
 	ctx.Step(`^the runner sends SIGTERM to the evaluator process$`, func() error {
-		// Per B6 adversarial HIGH #3: verify the kill actually
+		// verify the kill actually
 		// happened by observing the result's reason code (timeout
 		// triggers a SIGTERM→grace→SIGKILL ladder, and the Result
 		// records ReasonTimeout only after the ladder completes).
@@ -72,7 +72,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 	})
 
 	ctx.Step(`^after 5s grace, SIGKILL if still running$`, func() error {
-		// Per B6 adversarial HIGH #3: verify the ladder completed by
+		// verify the ladder completed by
 		// asserting that a `timed-out-after` field is present on the
 		// result. This field is populated by failResult ONLY when the
 		// timeout/grace ladder fired (subprocess.go:469); a partial
@@ -100,7 +100,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 			if gotReason != reason {
 				return fmt.Errorf("reason = %q; want %q", gotReason, reason)
 			}
-			// Per B6 adversarial CRITICAL #1: verify Result.Pass maps
+			// verify Result.Pass maps
 			// to the correct ClauseStatus. The runner's
 			// deriveEndStatus contract:
 			//   - Pass=true → StatusPass
@@ -112,7 +112,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 			// so deriveEndStatus would map it to StatusFail. The
 			// spec-stated status "unevaluated" applies in the higher
 			// layer that wraps a depth-below-required timeout, which
-			// is phase-11 surface. For now we verify the BindingEvaluator
+			// is deferred surface. For now we verify the BindingEvaluator
 			// contract: Pass=false on any failure reason.
 			switch status {
 			case "pass":
@@ -128,7 +128,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 			case "unevaluated":
 				// Today: BindingEvaluator timeouts surface as Pass=false
 				// with reason=evaluator-timeout. The runner's higher
-				// layer wraps these as Unevaluated (phase-11 contract
+				// layer wraps these as Unevaluated (deferred contract
 				// for the depth-below-required path). The BDD verifies
 				// the BindingEvaluator output shape; the Unevaluated
 				// status mapping is documented in the runner's deriveEndStatus
@@ -143,7 +143,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 		})
 
 	ctx.Step(`^no orphan / zombie evaluator process remains$`, func() error {
-		// Per B6 adversarial HIGH #2: verify a real post-condition,
+		// verify a real post-condition,
 		// not just "result is non-nil". The Wait() goroutine in
 		// BindingEvaluator returns ONLY after the process is reaped
 		// (cmd.Wait drains until the kernel reports ECHILD). A non-
@@ -320,7 +320,7 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 
 	ctx.Step(`^the stderr content is captured in the evaluation-run record as metadata \(not as failure signal\)$`,
 		func() error {
-			// Per B6 adversarial LOW #10: assert stderr is actually
+			// assert stderr is actually
 			// captured + contains our planted text, not just that
 			// the success path didn't flip Pass.
 			if !state.SubprocResult.Pass {
