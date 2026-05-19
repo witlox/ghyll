@@ -375,6 +375,22 @@ func (s *FindingsStore) ForArrow(arrowID string) []FindingRecord {
 	return out
 }
 
+// ArrowIDs returns the set of arrow IDs that currently have at
+// least one finding. Sorted deterministically for stable iteration
+// in the project status aggregator and test assertions.
+func (s *FindingsStore) ArrowIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.byArrow))
+	for id, fs := range s.byArrow {
+		if len(fs) > 0 {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ForArrowVersioned returns the same snapshot as ForArrow plus the
 // store version at snapshot time (F5). The caller can re-check
 // Version() before acting on the snapshot to detect TOCTOU.

@@ -242,6 +242,14 @@ func (q *AmendmentQueue) Len() int {
 	return len(q.pending)
 }
 
+// DrainedCount returns the total number of amendments that have
+// been drained (deduplicated). Useful for ProjectStatus.
+func (q *AmendmentQueue) DrainedCount() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.seenIDs)
+}
+
 // LoadDrained marks id as previously-drained without enqueueing
 // the amendment. Used by replay-on-startup so re-emission of an
 // already-drained amendment is still refused after process restart.
