@@ -181,7 +181,15 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 		func() error {
 			// Simulate via a command that kills itself with SIGKILL —
 			// the OS sees the same termination shape as an OOM-kill.
-			state.SubprocCommand = `bash -c 'echo before-kill; kill -9 $$'`
+			//
+			// IMPORTANT: do NOT emit anything on stdout before kill.
+			// On slow CI runners the stdout buffer can flush before
+			// kill fires, leaving the runner with non-JSON output
+			// and a signal-kill termination — the runner then
+			// classifies as evaluator-output-malformed rather than
+			// evaluator-killed-by-signal. Killing with no prior
+			// output guarantees the signal path.
+			state.SubprocCommand = `bash -c 'kill -9 $$'`
 			return nil
 		})
 
