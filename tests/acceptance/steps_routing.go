@@ -86,9 +86,11 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^a checkpoint is created before the switch$`, func() error {
-		// In routing context, lastDecision is set by "the next turn begins".
-		// In memory context, "the dialect router decides to switch" creates the checkpoint directly.
-		// Accept both cases.
+		// Routing-scope variant: verify lastDecision is an
+		// escalation. The memory-scope variant in steps_memory.go
+		// checks lastCP != nil. Both registrations stay because
+		// the closure state they read is feature-local; merging
+		// would require shared ScenarioState fields.
 		if lastDecision.Action != "" && lastDecision.Action != "escalate" && lastDecision.Action != "de_escalate" {
 			return fmt.Errorf("expected escalation or de-escalation, got action=%s", lastDecision.Action)
 		}

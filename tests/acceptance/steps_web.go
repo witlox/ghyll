@@ -58,12 +58,9 @@ func registerWebSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return s
 	}
 
-	// NOTE: "a running session with model" is registered in steps_routing.go or
-	// steps_stream.go. If it's not, we register it here.
-	ctx.Step(`^a running session with model "([^"]*)"$`, func(model string) error {
-		state.ActiveModel = model
-		return nil
-	})
+	// "a running session with model" is registered in
+	// steps_session_features.go (canonical: sets sessionModel +
+	// state.ActiveModel). Step regex deduplication.
 
 	ctx.Step(`^the URL "([^"]*)" is reachable$`, func(featureURL string) error {
 		s := newServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

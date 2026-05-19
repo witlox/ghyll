@@ -547,9 +547,8 @@ func registerSyncSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return nil
 	})
 
-	ctx.Step(`^push failure is logged but does not interrupt the session$`, func() error {
-		return nil
-	})
+	// "push failure is logged but does not interrupt the session" is
+	// registered in steps_vault.go. Step regex deduplication.
 
 	ctx.Step(`^git fetch origin ghyll\/memory runs$`, func() error {
 		// Verified by Fetch in previous steps

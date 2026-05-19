@@ -503,9 +503,9 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		return nil // accept — display is a rendering concern
 	})
 
-	ctx.Step(`^a warning is displayed: "([^"]*)"$`, func(msg string) error {
-		return nil // display assertion — accept
-	})
+	// "a warning is displayed" is registered in steps_memory.go
+	// (canonical: pushes onto state.TerminalOutput). Step regex
+	// deduplication.
 
 	ctx.Step(`^no warning is displayed$`, func() error {
 		return nil
@@ -555,10 +555,9 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	// ---- Checkpoint assertions ----
-
-	ctx.Step(`^a checkpoint is created$`, func() error {
-		return nil
-	})
+	// "a checkpoint is created" is registered in steps_sync.go
+	// (canonical: builds a signed checkpoint via
+	// createSignedCheckpoint). Step regex deduplication.
 
 	ctx.Step(`^the checkpoint has plan_mode = true$`, func() error {
 		if !planMode {

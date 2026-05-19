@@ -259,10 +259,8 @@ url = "%s"
 		return nil
 	})
 
-	ctx.Step(`^the active model is "([^"]*)"$`, func(model string) error {
-		state.ActiveModel = model
-		return nil
-	})
+	// "the active model is" is registered in steps_routing.go.
+	// Step regex deduplication.
 
 	ctx.Step(`^routing is disabled for the session$`, func() error {
 		if state.AutoRouting {

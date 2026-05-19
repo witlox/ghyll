@@ -616,7 +616,8 @@ func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return nil
 	})
 
-	ctx.Step(`^the process is killed$`, func() error { return nil })
+	// "the process is killed" is registered in steps_init_driver.go.
+	// Step regex deduplication.
 
 	ctx.Step(`^on restart, the temp file is unlinked \(cleanup\)$`, func() error {
 		// bootstrap.Grid.Write refuses to proceed if a stale .tmp

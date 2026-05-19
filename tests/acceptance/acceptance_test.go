@@ -22,15 +22,23 @@ func TestFeatures(t *testing.T) {
 			TestingT: t,
 			// Strict mode: undefined or pending steps fail the suite.
 			//
-			// Kept false at v1.0.0 because flipping it on surfaces 13
-			// distinct duplicate step-regex registrations across the
-			// step files (e.g., `^a running session with model "([^"]*)"$`
-			// is bound in both steps_web.go and steps_session_features.go).
-			// Godog can't disambiguate and reports them as "ambiguous";
-			// in non-strict mode it runs whichever was registered first.
-			// All 5 previously-pending scenario rows are now tagged
-			// `@deferred` so the pending-step axis is clean; the
-			// ambiguous-step axis remains as post-v1.0.0 polish work.
+			// Kept false because 3 step-regex registrations are
+			// ambiguous in ways that can't be cleanly resolved
+			// without a step-state refactor:
+			//
+			//   - `^a checkpoint is created before the switch$`
+			//     (routing-scope lastDecision vs memory-scope lastCP).
+			//   - `^push failure is logged but does not interrupt
+			//     the session$` (vault-scope real-push vs sync-scope
+			//     no-op — RESOLVED).
+			//   - `^the user types "/deep"$` (routing-scope
+			//     dialect.Evaluate vs session-features-scope generic
+			//     slash handler).
+			//
+			// 10 of 13 original ambiguities were consolidated; the
+			// remaining 3 require moving closure-locals to
+			// ScenarioState — out of scope for v1.x. Flipping Strict
+			// to true is the only follow-up.
 			Strict: false,
 			// Tag filter — skip scenarios tagged `@deferred`. They
 			// describe surface that depends on code not yet shipped
