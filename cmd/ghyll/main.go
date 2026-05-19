@@ -28,6 +28,8 @@ func main() {
 			"       ghyll memory log",
 			"       ghyll engine status [--dir <path>]",
 			"       ghyll engine replay [--dir <path>]",
+			"       ghyll engine verify-attestations [--dir <path>]",
+			"       ghyll arrow show <arrow-id> [--dir <path>]",
 			"       ghyll version",
 		)
 		os.Exit(1)
@@ -58,6 +60,11 @@ func main() {
 		}
 	case "engine":
 		if err := cmdEngineMain(args[1:]); err != nil {
+			ui.Errorf("%v", err)
+			os.Exit(1)
+		}
+	case "arrow":
+		if err := cmdArrowMain(args[1:]); err != nil {
 			ui.Errorf("%v", err)
 			os.Exit(1)
 		}
