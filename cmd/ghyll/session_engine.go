@@ -63,6 +63,7 @@ type engineRuntime struct {
 	passes       *runner.PassRegistry
 	ibTracker    *runner.InsufficientBasisTracker
 	jsonlWriter  *runner.AttestationJSONLWriter
+	treeWriter   *runner.AttestationTreeWriter
 
 	dbPath string
 	// workdir is the resolved project root; needed by the JSONL
@@ -160,6 +161,20 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 		logger.Warn("engine: attestation JSONL writer unavailable",
 			"path", jsonlPath, "err", jerr)
 	}
+
+	// Per-role-pair JSONL tree per the operator-attestation spec.
+	// Subscribed alongside the flat writer in attachJournal.
+	// Failure to open is non-fatal — same contract as the flat
+	// writer.
+	treeRoot := filepath.Join(filepath.Dir(dbPath), "attestations")
+	tw, terr := runner.NewAttestationTreeWriter(treeRoot)
+	if terr == nil {
+		rt.treeWriter = tw.WithBus(rt.bus)
+	} else if logger != nil {
+		logger.Warn("engine: attestation tree writer unavailable",
+			"root", treeRoot, "err", terr)
+	}
+
 	return rt, nil
 }
 
@@ -272,6 +287,15 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		r.attestations.Observe(r.jsonlWriter.Observer())
 	}
 
+	// Per-role-pair tree writer: same post-replay subscription
+	// rule. Tree files complement the flat JSONL — operators can
+	// drill into one pass's verdicts under
+	//   <workdir>/.ghyll/attestations/v<N>/<context>/stratum-<S>/
+	//   <role-pair>/<pass-id>.jsonl
+	if r.treeWriter != nil {
+		r.attestations.Observe(r.treeWriter.Observer())
+	}
+
 	// InsufficientBasisTracker subscribes to attestation events so
 	// every operator verdict pulses the counter. Three consecutive
 	// insufficient-basis verdicts on the same clause (or whatever
@@ -320,6 +344,9 @@ func (r *engineRuntime) closeEngine() {
 	}
 	if r.jsonlWriter != nil {
 		_ = r.jsonlWriter.Close()
+	}
+	if r.treeWriter != nil {
+		_ = r.treeWriter.Close()
 	}
 	if r.store != nil {
 		_ = r.store.Close()

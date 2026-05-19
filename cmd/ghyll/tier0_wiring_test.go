@@ -210,6 +210,40 @@ func TestScenario_Tier0_InsufficientBasisTracker_WiredToAttestationStore(t *test
 	}
 }
 
+func TestScenario_Tier0_TreeWriter_WritesPerPassFile(t *testing.T) {
+	rt, workdir := newTier0Runtime(t)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatal(err)
+	}
+	rec := runner.AttestationRecord{
+		ID:             "att-A1-C1-v1",
+		Kind:           runner.AttestationKindDepthType,
+		ArrowID:        "A1",
+		ClauseID:       "C1",
+		OpID:           "alice",
+		AttestedByRole: "operator",
+		SourceRole:     "analyst",
+		TargetRole:     "architect",
+		Verdict:        runner.AttestationPass,
+		Timestamp:      1747663200_000000000,
+		GridVersion:    1,
+	}
+	if err := rt.AttestationStore().Record(rec); err != nil {
+		t.Fatal(err)
+	}
+	rt.journal.Flush()
+
+	expected := filepath.Join(workdir, ".ghyll", "attestations",
+		"v1", "default", "stratum-default",
+		"analyst__architect", "att-A1-C1-v1.jsonl")
+	if _, err := os.Stat(expected); err != nil {
+		t.Fatalf("per-pass file not created at %s: %v", expected, err)
+	}
+}
+
 func TestScenario_Tier0_RunArrow_DispatcherEndToEnd(t *testing.T) {
 	rt, _ := newTier0Runtime(t)
 	if _, err := rt.replayEngine(context.Background()); err != nil {
