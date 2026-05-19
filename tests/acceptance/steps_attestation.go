@@ -1,18 +1,21 @@
 // Package acceptance — step definitions for the v2 attestation feature.
 //
-// Wires the surfaces that exist
-// today (per D-4 of specs/v2-final-plan.md):
+// Wires the surfaces that exist today:
 //
 //   - bootstrap.StartSession + ValidateAndNormalizeOpID (op-id contract)
 //   - bootstrap.SessionRegistry (single-active-operator invariant)
 //   - runner.FindingsStore.TransitionWithReason with role="operator" /
 //     role="producer" (the producer-cannot-self-accept guard from B1)
+//   - runner.InsufficientBasisTracker (insufficient-basis-rounds-max
+//     escalation) via the wired AttestationStore + OperatorBus.
+//   - runner.AttestationVerifier (verify the JSONL audit trail).
 //
-// Scenarios tagged @deferred in attestation.feature are skipped via the
-// godog tag filter. They depend on the full operator event bus, typed
-// JSONL verdict records, insufficient-basis-rounds-max escalation, and
-// the verifier-driven verdict replay component — none of which have
-// shipped yet (build-notes deferred).
+// Scenarios tagged @deferred in attestation.feature depend on
+// not-yet-shipped surface (multi-operator handoff, fail/insufficient-
+// basis verdict capture, per-pass attestation-flow signaling). The
+// scenarios that the new substrate enables are wired by the steps
+// below; their @deferred tags can be lifted once the bindings
+// stabilize.
 package acceptance
 
 import (
@@ -488,6 +491,88 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		}
 		return nil
 	})
+
+	// -------- Insufficient-basis-rounds-max escalation (Tier-1
+	//          wired via InsufficientBasisTracker + OperatorBus).
+
+	ctx.Step(`^init declared insufficient-basis-rounds-max=(\d+) for this project$`,
+		func(max int) error {
+			state.IBBus = runner.NewOperatorBus()
+			state.IBEscalationEvents = nil
+			state.IBBus.Subscribe(func(e runner.OperatorEvent) {
+				if e.Kind == runner.OpEventInsufficientBasisRoundsExceeded {
+					state.IBEscalationEvents = append(state.IBEscalationEvents, e)
+				}
+			})
+			state.IBTracker = runner.NewInsufficientBasisTracker(max, state.IBBus)
+			return nil
+		})
+
+	ctx.Step(`^clause C5 has received "insufficient-basis" from rounds 1 and 2$`,
+		func() error {
+			if state.IBTracker == nil {
+				return errors.New("init declared step must run first")
+			}
+			state.IBTracker.Record("A-test", "C5", runner.AttestationInsufficientBasis)
+			state.IBTracker.Record("A-test", "C5", runner.AttestationInsufficientBasis)
+			return nil
+		})
+
+	ctx.Step(`^clause C5 has received "insufficient-basis" for the (\d+)(?:st|nd|rd|th) time$`,
+		func(times int) error {
+			if state.IBTracker == nil {
+				return errors.New("init declared step must run first")
+			}
+			for i := 1; i <= times; i++ {
+				state.IBTracker.Record("A-test", "C5", runner.AttestationInsufficientBasis)
+			}
+			return nil
+		})
+
+	ctx.Step(`^clause C5 receives "insufficient-basis" for the (\d+)(?:st|nd|rd|th) time$`,
+		func(times int) error {
+			if state.IBTracker == nil {
+				return errors.New("init declared step must run first")
+			}
+			current := state.IBTracker.Rounds("C5")
+			for i := current + 1; i <= times; i++ {
+				state.IBTracker.Record("A-test", "C5", runner.AttestationInsufficientBasis)
+			}
+			return nil
+		})
+
+	ctx.Step(`^no escalation is triggered yet \(max not reached\)$`, func() error {
+		if len(state.IBEscalationEvents) != 0 {
+			return fmt.Errorf("expected no escalation events; got %d", len(state.IBEscalationEvents))
+		}
+		return nil
+	})
+
+	ctx.Step(`^the round counter is (\d+)$`, func(want int) error {
+		got := state.IBTracker.Rounds("C5")
+		if got != want {
+			return fmt.Errorf("Rounds(C5) = %d; want %d", got, want)
+		}
+		return nil
+	})
+
+	ctx.Step(`^escalation IS triggered \(round counter reached max\)$`, func() error {
+		if len(state.IBEscalationEvents) != 1 {
+			return fmt.Errorf("expected exactly 1 escalation event; got %d",
+				len(state.IBEscalationEvents))
+		}
+		return nil
+	})
+
+	ctx.Step(`^the operator event bus publishes an "escalation-request" for clause C5$`,
+		func() error {
+			for _, e := range state.IBEscalationEvents {
+				if e.ClauseID == "C5" {
+					return nil
+				}
+			}
+			return errors.New("no escalation event for clause C5")
+		})
 
 	// -------- Invalid insufficient-basis-rounds-max --------
 

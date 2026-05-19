@@ -192,6 +192,12 @@ type ScenarioState struct {
 	AttOperatorErr     error
 	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt)
 
+	// IB tracker + bus for the insufficient-basis-rounds-max
+	// scenarios. Constructed lazily by the relevant step bindings.
+	IBBus              *runner.OperatorBus
+	IBTracker          *runner.InsufficientBasisTracker
+	IBEscalationEvents []runner.OperatorEvent
+
 	// Adversarial step state (specs/features/adversarial.feature).
 	AdvAdversary       *runner.Adversary
 	AdvFindings        *runner.FindingsStore

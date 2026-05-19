@@ -93,14 +93,12 @@ Feature: Operator attestation flow
     And the arrow's pass is aborted with reason "requires-deeper-artifact"
     And the producer role is re-routed at a deeper tier to produce a richer artifact
 
-  @deferred
   Scenario: insufficient-basis-rounds-max is configurable
     Given init declared insufficient-basis-rounds-max=5 for this project
     When clause C5 receives "insufficient-basis" for the 4th time
     Then no escalation is triggered yet (max not reached)
     And the round counter is 4
 
-  @deferred
   Scenario: insufficient-basis-rounds-max escalation actually fires at max
     Given init declared insufficient-basis-rounds-max=3 for this project
     And clause C5 has received "insufficient-basis" for the 2nd time
