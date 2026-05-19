@@ -14,6 +14,7 @@ import (
 	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/dialect"
 	"github.com/witlox/ghyll/memory"
+	"github.com/witlox/ghyll/runner"
 	"github.com/witlox/ghyll/stream"
 	"github.com/witlox/ghyll/tool"
 	"github.com/witlox/ghyll/types"
@@ -67,6 +68,11 @@ type Session struct {
 	// at NewSession so handoff commits (Phase-10 slice 2) carry it
 	// as Ghyll-Version trailer without re-reading the global var.
 	version string
+
+	// opID is the operator identity for attestation flow.
+	// Set via /op-id <identity>; cleared by /op-id with no arg.
+	// Attest commands require a non-empty opID.
+	opID string
 
 	// warnedEmptyWorkdir gates the one-shot empty-workdir warning
 	// from flushStagedBeforeModelSwitch (validation-pass-10 H10).
@@ -1065,13 +1071,29 @@ type SlashCommandResult struct {
 }
 
 // DispatchSlashCommand handles the built-in slash commands /deep,
-// /plan, /fast, /status, /exit. Returns Handled=false when the line
-// is not a built-in (callers route to workflow-defined commands or
-// model dispatch).
+// /plan, /fast, /status, /exit, /op-id, /attest, /attestations,
+// /passes. Returns Handled=false when the line is not a built-in
+// (callers route to workflow-defined commands or model dispatch).
 //
 // The REPL uses this method so the BDD layer can exercise the same
 // dispatch logic without standing up the full input loop.
 func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
+	// Operator commands take leading-word dispatch; the rest of
+	// the line is the argument. Empty-arg variants fall through
+	// to the no-arg branch and surface usage.
+	if strings.HasPrefix(line, "/op-id") {
+		return s.handleOpIDCommand(strings.TrimSpace(strings.TrimPrefix(line, "/op-id")))
+	}
+	if strings.HasPrefix(line, "/attest ") || line == "/attest" {
+		return s.handleAttestCommand(strings.TrimSpace(strings.TrimPrefix(line, "/attest")))
+	}
+	if line == "/attestations" || strings.HasPrefix(line, "/attestations ") {
+		return s.handleAttestationsCommand(strings.TrimSpace(strings.TrimPrefix(line, "/attestations")))
+	}
+	if line == "/passes" {
+		return s.handlePassesCommand()
+	}
+
 	switch line {
 	case "/exit":
 		return SlashCommandResult{Handled: true, ExitRequested: true}
@@ -1133,4 +1155,269 @@ func (s *Session) ActiveModel() string {
 // Prompt returns the terminal prompt string.
 func (s *Session) Prompt() string {
 	return fmt.Sprintf("ghyll [%s] %s ▸ ", s.activeModel, s.workdir)
+}
+
+// --- Operator command handlers (Tier-1) ------------------------------
+//
+// These wire the operator-facing surface for gate-and-arrow flow:
+//   /op-id <id>           declare operator identity for the session
+//   /op-id                show the current op-id; clear with /op-id none
+//   /attest <ref> <verdict> [reason]
+//                         record an attestation verdict for the given
+//                         depth-type-attestation-ref. verdict ∈
+//                         {pass, fail, insufficient-basis}.
+//   /attestations [arrow] list recorded attestations (optionally
+//                         filtered by arrow id).
+//   /passes               list currently-open passes.
+//
+// Each handler returns a SlashCommandResult with ContinueLoop=true
+// so the REPL stays interactive.
+
+func (s *Session) handleOpIDCommand(arg string) SlashCommandResult {
+	if arg == "" {
+		if s.opID == "" {
+			return SlashCommandResult{
+				Handled: true, ContinueLoop: true,
+				Output: "ℹ no op-id set; use /op-id <identity> to declare",
+			}
+		}
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("op-id: %s", s.opID),
+		}
+	}
+	if arg == "none" || arg == "clear" {
+		s.opID = ""
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "op-id cleared",
+		}
+	}
+	if strings.ContainsAny(arg, " \t\n\r") {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ op-id must not contain whitespace",
+		}
+	}
+	s.opID = arg
+	return SlashCommandResult{
+		Handled: true, ContinueLoop: true,
+		Output: fmt.Sprintf("op-id set: %s", arg),
+	}
+}
+
+// handleAttestCommand parses `/attest <ref> <verdict> [reason]` and
+// records an AttestationRecord through the runtime AttestationStore.
+// Per ADR-009 the SourceRole/TargetRole on the record drive §12.2
+// enforcement; we look them up from the grid arrow the ref points at.
+func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
+	if s.engine == nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ engine not initialized; /attest unavailable",
+		}
+	}
+	if s.opID == "" {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ /op-id required before /attest",
+		}
+	}
+	parts := strings.SplitN(arg, " ", 3)
+	if len(parts) < 2 {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "usage: /attest <attestation-id> <pass|fail|insufficient-basis> [reason]",
+		}
+	}
+	ref := strings.TrimSpace(parts[0])
+	verdictStr := strings.TrimSpace(parts[1])
+	reason := ""
+	if len(parts) == 3 {
+		reason = strings.TrimSpace(parts[2])
+	}
+
+	verdict, err := parseOperatorVerdict(verdictStr)
+	if err != nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ %s", err.Error()),
+		}
+	}
+
+	// Decode the ref to extract arrow + clause + version.
+	parsed, err := parseAttestationRef(ref)
+	if err != nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ invalid attestation-id %q: %v", ref, err),
+		}
+	}
+
+	// Look up the arrow so we can record source/target roles for
+	// the §12.2 self-cert audit.
+	gridArrow, ok := s.engine.Grid().Lookup(parsed.arrowID)
+	if !ok {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ arrow %q not in grid", parsed.arrowID),
+		}
+	}
+
+	// AttestedByRole defaults to "operator" — the operator's
+	// claimed identity is captured in OpID. AttestedByRole MUST
+	// NOT match source or target per §12.2; "operator" is the
+	// safe synthetic role that bypasses both diamond roles.
+	rec := runner.AttestationRecord{
+		ID:             ref,
+		Kind:           parsed.kind,
+		ArrowID:        parsed.arrowID,
+		ClauseID:       parsed.clauseID,
+		OpID:           s.opID,
+		AttestedByRole: "operator",
+		SourceRole:     gridArrow.SourceRole,
+		TargetRole:     gridArrow.TargetRole,
+		Verdict:        verdict,
+		Reason:         reason,
+		Timestamp:      time.Now().UnixNano(),
+		GridVersion:    parsed.gridVersion,
+	}
+	if err := s.engine.AttestationStore().Record(rec); err != nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ Record: %v", err),
+		}
+	}
+	return SlashCommandResult{
+		Handled: true, ContinueLoop: true,
+		Output: fmt.Sprintf("✓ attestation %s recorded: verdict=%s by op-id=%s",
+			ref, verdict, s.opID),
+	}
+}
+
+// handleAttestationsCommand lists recorded attestations. With no
+// arg, lists every attestation in the store. With an arrow-id
+// arg, filters to that arrow.
+func (s *Session) handleAttestationsCommand(arrowArg string) SlashCommandResult {
+	if s.engine == nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ engine not initialized; /attestations unavailable",
+		}
+	}
+	var recs []runner.AttestationRecord
+	if arrowArg == "" {
+		recs = s.engine.AttestationStore().All()
+	} else {
+		recs = s.engine.AttestationStore().ForArrow(arrowArg)
+	}
+	if len(recs) == 0 {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "no attestations recorded",
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "attestations (%d):\n", len(recs))
+	for _, r := range recs {
+		clause := r.ClauseID
+		if clause == "" {
+			clause = "<arrow-scope>"
+		}
+		fmt.Fprintf(&b, "  %s  arrow=%s clause=%s verdict=%s op=%s\n",
+			r.ID, r.ArrowID, clause, r.Verdict, r.OpID)
+	}
+	return SlashCommandResult{
+		Handled: true, ContinueLoop: true,
+		Output: strings.TrimRight(b.String(), "\n"),
+	}
+}
+
+// handlePassesCommand lists currently-open passes from the
+// PassRegistry.
+func (s *Session) handlePassesCommand() SlashCommandResult {
+	if s.engine == nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ engine not initialized; /passes unavailable",
+		}
+	}
+	passes := s.engine.Passes().All()
+	if len(passes) == 0 {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "no open passes",
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "open passes (%d):\n", len(passes))
+	for _, p := range passes {
+		fmt.Fprintf(&b, "  %s  role=%s context=%s arrow=%s state=%s\n",
+			p.ID(), p.Role(), p.Context(), p.ArrowID(), p.State())
+	}
+	return SlashCommandResult{
+		Handled: true, ContinueLoop: true,
+		Output: strings.TrimRight(b.String(), "\n"),
+	}
+}
+
+// parseOperatorVerdict accepts the canonical names + a couple of
+// operator-friendly aliases.
+func parseOperatorVerdict(s string) (runner.AttestationVerdict, error) {
+	switch strings.ToLower(s) {
+	case "pass", "p", "ok":
+		return runner.AttestationPass, nil
+	case "fail", "f", "no":
+		return runner.AttestationFail, nil
+	case "insufficient-basis", "insufficient", "ib":
+		return runner.AttestationInsufficientBasis, nil
+	default:
+		return "", fmt.Errorf("verdict %q not in {pass, fail, insufficient-basis}", s)
+	}
+}
+
+// parseAttestationRef decodes an ID produced by
+// runner.ComputeAttestationID. Two shapes:
+//
+//	att-<arrowID>-<clauseID>-v<gridVersion>   (depth-type, with clause)
+//	att-<arrowID>-v<gridVersion>              (on-the-spot, no clause)
+type parsedAttestationRef struct {
+	kind        runner.AttestationKind
+	arrowID     string
+	clauseID    string
+	gridVersion uint64
+}
+
+func parseAttestationRef(ref string) (parsedAttestationRef, error) {
+	if !strings.HasPrefix(ref, "att-") {
+		return parsedAttestationRef{}, fmt.Errorf("missing 'att-' prefix")
+	}
+	body := strings.TrimPrefix(ref, "att-")
+	parts := strings.Split(body, "-v")
+	if len(parts) != 2 {
+		return parsedAttestationRef{}, fmt.Errorf("expected '<ids>-v<version>' shape")
+	}
+	idPart, verPart := parts[0], parts[1]
+	var ver uint64
+	if _, err := fmt.Sscanf(verPart, "%d", &ver); err != nil {
+		return parsedAttestationRef{}, fmt.Errorf("invalid version %q", verPart)
+	}
+	// idPart is either "<arrow>" (on-the-spot) or "<arrow>-<clause>"
+	// (depth-type). Arrow / clause IDs themselves can contain
+	// dashes; we conservatively split on the LAST dash so the
+	// arrow ID may include dashes too. If no dash, it's on-the-spot.
+	idx := strings.LastIndex(idPart, "-")
+	if idx < 0 {
+		return parsedAttestationRef{
+			kind:        runner.AttestationKindOnTheSpot,
+			arrowID:     idPart,
+			gridVersion: ver,
+		}, nil
+	}
+	return parsedAttestationRef{
+		kind:        runner.AttestationKindDepthType,
+		arrowID:     idPart[:idx],
+		clauseID:    idPart[idx+1:],
+		gridVersion: ver,
+	}, nil
 }
