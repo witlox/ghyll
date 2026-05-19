@@ -105,13 +105,11 @@ Feature: Status state machine engine
 
   # ---- Pass lifecycle ----
 
-  @deferred
   Scenario: Pass starts running
     Given the runner starts a new pass P1 on arrow A1
     When the engine records the pass
     Then P1 has status "running" with started-at set and completed-at unset
 
-  @deferred
   Scenario: Pass completes normally
     Given pass P1 is "running" and the runner has finalized clause results
     When the runner signals completion
@@ -119,7 +117,6 @@ Feature: Status state machine engine
     And completed-at is recorded
     And the pass's full state is flushed to the checkpoint log
 
-  @deferred
   Scenario: Pass aborted by invalidation
     Given pass P1 is "running" in remediation phase
     When the grid amendment component signals abort with reason "invalidated"

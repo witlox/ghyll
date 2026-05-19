@@ -97,6 +97,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// remediation, producer-fix-signal, operator-event-bus) are
 	// tagged @deferred.
 	registerAdversarialSteps(ctx, state)
+
+	// Pass-lifecycle step definitions (state-machine.feature +
+	// runner.feature scenarios that exercise Pass / PassRegistry
+	// / AmendmentCommitter).
+	registerPassLifecycleSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

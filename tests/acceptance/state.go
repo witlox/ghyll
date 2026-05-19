@@ -198,6 +198,16 @@ type ScenarioState struct {
 	IBTracker          *runner.InsufficientBasisTracker
 	IBEscalationEvents []runner.OperatorEvent
 
+	// Pass-lifecycle scenarios (state-machine.feature + runner.feature).
+	PLLockTable  *runner.RoleContextLockTable
+	PLPasses     *runner.PassRegistry
+	PLBus        *runner.OperatorBus
+	PLPass       *runner.Pass
+	PLPassErr    error
+	PLCommitter  *runner.AmendmentCommitter
+	PLAmendQueue *runner.AmendmentQueue
+	PLGrid       *runner.Grid
+
 	// Adversarial step state (specs/features/adversarial.feature).
 	AdvAdversary       *runner.Adversary
 	AdvFindings        *runner.FindingsStore
