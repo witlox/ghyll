@@ -188,6 +188,16 @@ func cmdRun(args []string) error {
 	// etc.) keep the stderr handler installed by initLogger.
 	redirectSlogToFile(absDir)
 
+	// 2b. Sandbox policy: warn (or refuse to start, if
+	// GHYLL_REQUIRE_SANDBOX is set) when no sandbox is detected.
+	// ghyll executes tool calls from the model directly; running
+	// unsandboxed exposes the user to a compromised endpoint.
+	// Operators with custom sandbox setups can set
+	// GHYLL_SANDBOX_ASSUME_SAFE=<reason> to bypass.
+	if err := EnforceSandboxPolicy(func(msg string) { ui.Info("%s", msg) }); err != nil {
+		return err
+	}
+
 	// 3. Load or generate device key (invariant 29)
 	keysDir := filepath.Join(os.Getenv("HOME"), ".ghyll", "keys")
 	hostname, _ := os.Hostname()
