@@ -376,6 +376,7 @@ func (s *Store) ListEvaluationRuns(ctx context.Context, f RunFilter) ([]Evaluati
 		whereSQL = " WHERE " + strings.Join(where, " AND ")
 	}
 	args = append(args, limit, offset)
+	// #nosec G202 -- closed in-package WHERE fragment.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, clause_id, pass_id, arrow_id, grid_version,
 		       depth_type_attestation_ref, actual_tier, min_depth_tier,
@@ -405,4 +406,60 @@ func (s *Store) ListEvaluationRuns(ctx context.Context, f RunFilter) ([]Evaluati
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// CountFindings returns the total finding-row count via SELECT
+// COUNT(*) so callers that need an accurate total don't have to
+// page through every row (validation-pass-10 C1).
+func (s *Store) CountFindings(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "findings")
+}
+
+// CountArrows returns total arrow rows (one per (id, grid_version)).
+func (s *Store) CountArrows(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "grid_arrows")
+}
+
+// CountRequirements returns total requirement rows.
+func (s *Store) CountRequirements(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "requirements")
+}
+
+// CountClassifications returns total classification rows.
+func (s *Store) CountClassifications(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "classifications")
+}
+
+// CountAmendments returns (pending, drained) counts in two queries.
+// Used by `ghyll engine status` so the 1000-row truncation issue
+// (validation-pass-10 C1) cannot misreport a heavy queue.
+func (s *Store) CountAmendments(ctx context.Context) (pending, drained int, err error) {
+	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM amendments WHERE drained_at IS NULL`)
+	if err := row.Scan(&pending); err != nil {
+		return 0, 0, fmt.Errorf("CountAmendments pending: %w", err)
+	}
+	row = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM amendments WHERE drained_at IS NOT NULL`)
+	if err := row.Scan(&drained); err != nil {
+		return 0, 0, fmt.Errorf("CountAmendments drained: %w", err)
+	}
+	return pending, drained, nil
+}
+
+// CountEvaluationRuns returns total evaluation_run rows.
+func (s *Store) CountEvaluationRuns(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "evaluation_runs")
+}
+
+// countSimple runs SELECT COUNT(*) FROM <table>. The table parameter
+// is a hard-coded internal value from CountX wrappers — never
+// operator input.
+func (s *Store) countSimple(ctx context.Context, table string) (int, error) {
+	// #nosec G202 -- table is a hard-coded internal value, never
+	// operator-supplied SQL.
+	q := "SELECT COUNT(*) FROM " + table
+	var n int
+	if err := s.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count %s: %w", table, err)
+	}
+	return n, nil
 }

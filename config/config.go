@@ -47,6 +47,14 @@ type ModelConfig struct {
 	Endpoint   string `toml:"endpoint"`
 	Dialect    string `toml:"dialect"`
 	MaxContext int    `toml:"max_context"`
+
+	// StampLabel overrides what gets written to the Ghyll-Model
+	// commit trailer (validation-pass-10 H6). Defaults to the bare
+	// model name when empty — endpoint URLs are NOT included so
+	// internal infrastructure DNS doesn't leak into git log on a
+	// public mirror. Operators with multiple endpoints for the same
+	// model can set this explicitly (e.g., "qwen-coder@gpu1").
+	StampLabel string `toml:"stamp_label"`
 }
 
 type RoutingConfig struct {
@@ -99,6 +107,12 @@ type ToolsConfig struct {
 	WebMaxResponseTokens int    `toml:"web_max_response_tokens"`
 	WebSearchBackend     string `toml:"web_search_backend"`
 	PreferRipgrep        bool   `toml:"prefer_ripgrep"`
+
+	// Validation-pass-10 H15: per-tool git timeouts. Default 5s for
+	// status checks, 30s for commits — independent contexts so a
+	// slow CheckPending doesn't starve the subsequent commit.
+	GitCheckTimeoutSeconds  int `toml:"git_check_timeout_seconds"`
+	GitCommitTimeoutSeconds int `toml:"git_commit_timeout_seconds"`
 }
 
 type SubAgentConfig struct {
@@ -195,6 +209,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Tools.WebMaxResponseTokens == 0 {
 		cfg.Tools.WebMaxResponseTokens = 10000
+	}
+	if cfg.Tools.GitCheckTimeoutSeconds == 0 {
+		cfg.Tools.GitCheckTimeoutSeconds = 5
+	}
+	if cfg.Tools.GitCommitTimeoutSeconds == 0 {
+		cfg.Tools.GitCommitTimeoutSeconds = 30
 	}
 	if cfg.SubAgent.MaxTurns == 0 {
 		cfg.SubAgent.MaxTurns = 20

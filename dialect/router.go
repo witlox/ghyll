@@ -32,6 +32,12 @@ type RoutingDecision struct {
 	TargetModel    string
 	NeedCompaction bool
 	Reason         RoutingReason // validation-pass-8 R6
+
+	// RejectedFloor records the GateFloor input that drove an
+	// ActionInvalid / ActionGateUnsatisfiable / ActionGateLockedConflict
+	// outcome (validation-pass-10 H11). Zero for normal actions —
+	// callers should only consult it for the §7.1 branches.
+	RejectedFloor int
 }
 
 // Action constants. ActionGateUnsatisfiable and ActionGateLockedConflict
@@ -103,9 +109,10 @@ func Evaluate(inputs RouterInputs) RoutingDecision {
 	// disable.
 	if inputs.GateFloor < gateRankMin || inputs.GateFloor > gateRankMax {
 		return RoutingDecision{
-			Action:      ActionInvalid,
-			TargetModel: inputs.ActiveModel,
-			Reason:      ReasonInvalidInput,
+			Action:        ActionInvalid,
+			TargetModel:   inputs.ActiveModel,
+			Reason:        ReasonInvalidInput,
+			RejectedFloor: inputs.GateFloor,
 		}
 	}
 
@@ -120,9 +127,10 @@ func Evaluate(inputs RouterInputs) RoutingDecision {
 	// Row 1a: Locked + active gate floor → §7.1 conflict.
 	if inputs.ModelLocked && gateFloorActive {
 		return RoutingDecision{
-			Action:      ActionGateLockedConflict,
-			TargetModel: inputs.ActiveModel,
-			Reason:      ReasonGateLockedConflict,
+			Action:        ActionGateLockedConflict,
+			TargetModel:   inputs.ActiveModel,
+			Reason:        ReasonGateLockedConflict,
+			RejectedFloor: inputs.GateFloor,
 		}
 	}
 
@@ -140,9 +148,10 @@ func Evaluate(inputs RouterInputs) RoutingDecision {
 	// dispatch on the insufficient tier.
 	if gateFloorActive && !canEscalate {
 		return RoutingDecision{
-			Action:      ActionGateUnsatisfiable,
-			TargetModel: inputs.ActiveModel,
-			Reason:      ReasonGateUnsatisfiable,
+			Action:        ActionGateUnsatisfiable,
+			TargetModel:   inputs.ActiveModel,
+			Reason:        ReasonGateUnsatisfiable,
+			RejectedFloor: inputs.GateFloor,
 		}
 	}
 

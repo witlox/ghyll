@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,21 +46,50 @@ type Store struct {
 // PRAGMAs only affect one connection, which under load silently
 // disables FK cascades). WAL mode + busy_timeout reduce reader
 // contention under concurrent writes.
+//
+// Validation-pass-10 C7: a schema_version row in `engine_meta` is
+// upserted to the current schemaVersion; an existing higher value
+// (future binary wrote this DB) causes Open to fail with a typed
+// error so the operator gets a clean upgrade message rather than
+// internal sqlite column names.
 func OpenStore(path string) (*Store, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)",
 		path,
 	)
+	return openStoreDSN(dsn, false)
+}
+
+// OpenStoreReadOnly opens an existing sqlite store WITHOUT running
+// the schema DDL (validation-pass-10 W5). Used by `ghyll engine
+// status` and `ghyll engine replay` so a CLI invocation against a
+// live session does not race CREATE TABLE / CREATE INDEX against
+// concurrent writes. Returns an error if path does not exist.
+func OpenStoreReadOnly(path string) (*Store, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?mode=ro&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
+		path,
+	)
+	return openStoreDSN(dsn, true)
+}
+
+func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("engine: open: %w", err)
+	}
+	if readOnly {
+		s := &Store{db: db}
+		if err := s.verifySchemaVersion(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		return s, nil
 	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("engine: schema: %w", err)
 	}
-	// Add composite index for the common ListFindings sort path
-	// (E8). Sqlite supports DESC in index column lists.
 	if _, err := db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_findings_sort
 		ON findings(arrow_id ASC, severity DESC, id ASC);
@@ -67,7 +97,90 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("engine: sort index: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	if err := s.ensureSchemaVersion(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// schemaVersion is the engine's current schema generation. Bumped
+// when a migration that can't be expressed by `CREATE ... IF NOT
+// EXISTS` ships. Validation-pass-10 C7.
+const schemaVersion = 1
+
+// ErrEngineSchemaMismatch is returned when a DB written by a newer
+// ghyll binary is opened by an older one. The operator-friendly
+// message names the expected/actual versions and suggests upgrading.
+var ErrEngineSchemaMismatch = errors.New("engine: schema version mismatch")
+
+// ensureSchemaVersion creates the engine_meta table if missing and
+// records the current schemaVersion. If a higher version already
+// exists (future binary), returns ErrEngineSchemaMismatch.
+func (s *Store) ensureSchemaVersion() error {
+	if _, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS engine_meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("engine_meta create: %w", err)
+	}
+	var existing string
+	err := s.db.QueryRow(`SELECT value FROM engine_meta WHERE key = ?`, "schema_version").Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("engine_meta read: %w", err)
+	}
+	if existing != "" {
+		var existingVer int
+		if _, scanErr := fmt.Sscanf(existing, "%d", &existingVer); scanErr != nil {
+			return fmt.Errorf("engine_meta schema_version unreadable: %q", existing)
+		}
+		if existingVer > schemaVersion {
+			return fmt.Errorf("%w: db schema_version=%d > binary schema_version=%d (upgrade ghyll)",
+				ErrEngineSchemaMismatch, existingVer, schemaVersion)
+		}
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO engine_meta(key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+		WHERE CAST(excluded.value AS INTEGER) > CAST(engine_meta.value AS INTEGER)
+	`, "schema_version", fmt.Sprintf("%d", schemaVersion))
+	if err != nil {
+		return fmt.Errorf("engine_meta write: %w", err)
+	}
+	return nil
+}
+
+// verifySchemaVersion is the read-only counterpart: it expects the
+// engine_meta row to exist (writer created it) and rejects future
+// versions.
+func (s *Store) verifySchemaVersion() error {
+	var existing string
+	err := s.db.QueryRow(`SELECT value FROM engine_meta WHERE key = ?`, "schema_version").Scan(&existing)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Pre-schema_version DB or empty engine_meta — accept it for
+		// backwards compatibility with phase-9 stores.
+		return nil
+	}
+	if err != nil {
+		// Read-only opens often hit "no such table" on a pre-C7 db;
+		// don't treat that as fatal.
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return fmt.Errorf("engine_meta read: %w", err)
+	}
+	var existingVer int
+	if _, scanErr := fmt.Sscanf(existing, "%d", &existingVer); scanErr != nil {
+		return fmt.Errorf("engine_meta schema_version unreadable: %q", existing)
+	}
+	if existingVer > schemaVersion {
+		return fmt.Errorf("%w: db schema_version=%d > binary schema_version=%d (upgrade ghyll)",
+			ErrEngineSchemaMismatch, existingVer, schemaVersion)
+	}
+	return nil
 }
 
 // Close releases the database connection.
