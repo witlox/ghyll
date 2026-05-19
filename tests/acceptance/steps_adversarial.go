@@ -603,7 +603,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		return nil
 	})
 
-	ctx.Step(`^R0 raises finding F3 with type "depth-below-min", target-requirement REQ-12, classified MOCKED, declared-min REALISTIC, severity "medium", basis "the requirement's tests all use mocks; no realistic-tier test against real dependency was found"$`,
+	ctx.Step(`^R0 raises finding F3 with type "depth-below-min", target-requirement REQ-12, classified MOCKED, declared-min REALISTIC, severity "high", basis "the requirement's tests all use mocks; no realistic-tier test against real dependency was found"$`,
 		func() error {
 			if state.AdvAttackErr != nil {
 				return fmt.Errorf("attack errored: %w", state.AdvAttackErr)

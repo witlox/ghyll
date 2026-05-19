@@ -18,6 +18,7 @@ func TestFeatures(t *testing.T) {
 			Paths: []string{
 				"../../specs/features",
 				"../../specs/v2/features/init.feature",
+				"../../specs/v2/features/runner.feature",
 				"../../specs/v2/features/runner-step3.feature",
 				"../../specs/v2/features/state-machine.feature",
 				"../../specs/v2/features/amendment.feature",
@@ -96,6 +97,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 	// Runner step definitions (specs/v2/features/runner.feature).
 	registerRunnerSteps(ctx, state)
+	// Subprocess evaluator scenarios (B6 of v2-final consolidation).
+	registerRunnerSubprocessSteps(ctx, state)
 
 	// State-machine step definitions (specs/v2/features/state-machine.feature).
 	// Phase B1 of v2-final consolidation.

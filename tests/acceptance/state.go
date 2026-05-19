@@ -199,6 +199,13 @@ type ScenarioState struct {
 	AdvOpenSweepFn     runner.OpenSweepFn
 	AdvClassifyFn      runner.DepthClassifyFn
 	AdvTmpProjectDir   string // freshly-created per scenario; guaranteed empty (no TODO leakage)
+
+	// Subprocess evaluator step state (runner.feature subprocess
+	// scenarios). Phase B6 of v2-final consolidation.
+	SubprocResult  *runner.Result
+	SubprocErr     error
+	SubprocCommand string
+	SubprocTimeout time.Duration
 }
 
 // AddTerminal records a terminal output message for assertion in steps.
