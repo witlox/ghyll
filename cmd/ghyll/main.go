@@ -21,6 +21,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ghyll config show")
 		fmt.Fprintln(os.Stderr, "       ghyll memory search <query>")
 		fmt.Fprintln(os.Stderr, "       ghyll memory log")
+		fmt.Fprintln(os.Stderr, "       ghyll engine status [--dir <path>]")
+		fmt.Fprintln(os.Stderr, "       ghyll engine replay [--dir <path>]")
 		fmt.Fprintln(os.Stderr, "       ghyll version")
 		os.Exit(1)
 	}
@@ -45,6 +47,11 @@ func main() {
 		}
 	case "memory":
 		if err := cmdMemoryMain(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
+			os.Exit(1)
+		}
+	case "engine":
+		if err := cmdEngineMain(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "ghyll: %v\n", err)
 			os.Exit(1)
 		}
@@ -194,10 +201,12 @@ func cmdRun(args []string) error {
 		Workdir:     absDir,
 		SessionID:   sessionID,
 		Output:      output,
+		Version:     version,
 	})
 	if err != nil {
 		return err
 	}
+	defer sess.Close()
 
 	fmt.Printf("ghyll [%s] %s\n", sess.ActiveModel(), absDir)
 

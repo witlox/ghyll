@@ -57,6 +57,16 @@ type Session struct {
 	// Resume
 	resumeRef *memory.ResumeRef // set if this session was resumed
 
+	// Phase-10: v2 persistence engine + in-memory caches. nil if
+	// engine init failed; the session degrades gracefully (the v1
+	// chat-style turn loop doesn't depend on v2 state).
+	engine *engineRuntime
+
+	// version is the running ghyll binary's version stamp. Captured
+	// at NewSession so handoff commits (Phase-10 slice 2) carry it
+	// as Ghyll-Version trailer without re-reading the global var.
+	version string
+
 	// Terminal rendering
 	renderer *stream.Renderer
 	output   func(string)
@@ -78,10 +88,23 @@ type SessionConfig struct {
 	SessionID   string
 	Renderer    *stream.Renderer
 	Output      func(string)
+
+	// Version is the binary's version stamp (cmd/ghyll's `version`
+	// var). Surfaces as the Ghyll-Version trailer on tool-driven
+	// commits. Empty string yields "dev".
+	Version string
+
+	// DisableEngine skips v2 engine wiring (used in tests that
+	// don't want a sqlite file on disk).
+	DisableEngine bool
 }
 
 // NewSession creates and initializes a session.
 func NewSession(sc SessionConfig) (*Session, error) {
+	v := sc.Version
+	if v == "" {
+		v = "dev"
+	}
 	s := &Session{
 		cfg:         sc.Cfg,
 		store:       sc.Store,
@@ -93,6 +116,7 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		sessionID:   sc.SessionID,
 		renderer:    sc.Renderer,
 		output:      sc.Output,
+		version:     v,
 	}
 
 	if s.renderer == nil {
@@ -192,8 +216,100 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		}
 	}
 
+	// Phase-10: v2 engine wiring. Open the project-local sqlite
+	// store, replay persisted state into fresh in-memory caches,
+	// then attach the journal. Failure is non-fatal — the chat
+	// loop continues without v2 persistence.
+	if !sc.DisableEngine {
+		if rt, err := openEngine(sc.Workdir, nil); err != nil {
+			s.output(fmt.Sprintf("⚠ engine open failed (continuing without persistence): %v", err))
+		} else {
+			counts, err := rt.replayEngine(gocontext.Background())
+			if err != nil {
+				s.output(fmt.Sprintf("⚠ engine replay failed: %v (continuing)", err))
+				rt.closeEngine()
+			} else {
+				rt.attachJournal(nil)
+				s.engine = rt
+				if total := counts.Arrows + counts.Findings + counts.Requirements +
+					counts.AmendmentsActive + counts.AmendmentsDrained; total > 0 {
+					s.output(fmt.Sprintf("ℹ engine replayed: %d arrows, %d findings, %d requirements, %d amendments (%d drained)",
+						counts.Arrows, counts.Findings, counts.Requirements,
+						counts.AmendmentsActive, counts.AmendmentsDrained))
+				}
+				if len(counts.Errors) > 0 {
+					s.output(fmt.Sprintf("⚠ engine replay had %d per-row errors (continuing)", len(counts.Errors)))
+				}
+			}
+		}
+	}
+
 	return s, nil
 }
+
+// Close releases session resources. Idempotent; safe to call from
+// multiple defer chains.
+func (s *Session) Close() {
+	if s == nil {
+		return
+	}
+	s.engine.closeEngine()
+}
+
+// flushStagedBeforeModelSwitch implements the phase-8 F /
+// phase-10 slice-2 invariant: every git commit attributed to a
+// specific model. If staged changes exist at model-switch time,
+// commit them with the OLD model's stamp BEFORE the dialect
+// resolves to the new one.
+//
+// Untracked-only changes are NOT flushed — `tool.HasPendingChanges`
+// (validation-pass-9 S8 split) returns true only for staged or
+// unstaged changes, and we only commit staged ones here.
+func (s *Session) flushStagedBeforeModelSwitch(prevModel string, decision dialect.RoutingDecision) error {
+	if s.workdir == "" {
+		return nil
+	}
+	ctx, cancel := gocontext.WithTimeout(gocontext.Background(), gitCheckTimeout)
+	defer cancel()
+	status, err := tool.CheckPending(ctx, s.workdir, gitCheckTimeout)
+	if err != nil {
+		return fmt.Errorf("check pending: %w", err)
+	}
+	if status != tool.PendingStaged {
+		// No staged changes → nothing to flush.
+		return nil
+	}
+	modelStamp := buildModelStamp(prevModel, s.cfg.Models[prevModel].Endpoint)
+	commitMsg := fmt.Sprintf("chore: flush before model switch (%s → %s, reason: %s)",
+		prevModel, decision.TargetModel, decision.Reason)
+	res := tool.GitCommit(ctx, s.workdir, tool.CommitOptions{
+		Message:      commitMsg,
+		GhyllVersion: s.version,
+		GhyllModel:   modelStamp,
+	}, gitCommitTimeout)
+	if res.Error != "" {
+		return fmt.Errorf("commit: %s", res.Error)
+	}
+	s.output(fmt.Sprintf("ℹ flushed staged changes under %s before handoff to %s", modelStamp, decision.TargetModel))
+	return nil
+}
+
+// buildModelStamp constructs the Ghyll-Model trailer value:
+// `<model-name>@<endpoint>` so the stamp identifies both the
+// configured model identity AND the backend serving it (e.g.,
+// `qwen-coder-q4@http://localhost:11434/v1`). Falls back to the
+// model name alone if endpoint is empty.
+func buildModelStamp(name, endpoint string) string {
+	if endpoint == "" {
+		return name
+	}
+	return fmt.Sprintf("%s@%s", name, endpoint)
+}
+
+const (
+	gitCheckTimeout  = 5 * time.Second
+	gitCommitTimeout = 30 * time.Second
+)
 
 func (s *Session) resolveDialect() error {
 	d := s.cfg.Models[s.activeModel].Dialect
@@ -292,10 +408,23 @@ func (s *Session) Turn(userInput string) (string, error) {
 		Config:       s.cfg.Routing,
 	})
 
-	if decision.Action == "escalate" || decision.Action == "de_escalate" {
+	switch decision.Action {
+	case dialect.ActionEscalate, dialect.ActionDeEscalate:
 		if err := s.handleHandoff(decision); err != nil {
 			s.output(fmt.Sprintf("⚠ handoff failed: %v", err))
 		}
+	case dialect.ActionGateUnsatisfiable:
+		// §7.1: a depth-sensitive gate's MinTier exceeds every
+		// available model tier. No silent dispatch.
+		s.output(fmt.Sprintf("⚠ gate-unsatisfiable: arrow needs tier higher than DeepModel; route to operator attestation (active model unchanged: %s)",
+			s.activeModel))
+	case dialect.ActionGateLockedConflict:
+		// §7.1: ModelLocked vs active gate floor — operator's
+		// --model lock conflicts with the gate's depth demand.
+		s.output(fmt.Sprintf("⚠ gate-locked-conflict: --model lock on %s prevents escalation a gate requires; route to operator attestation",
+			s.activeModel))
+	case dialect.ActionInvalid:
+		s.output("⚠ routing: invalid GateFloor input; check engine wiring")
 	}
 
 	// Send to model
@@ -466,6 +595,16 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 // Finding 2: handoff now creates checkpoint, uses HandoffSummary, preserves context
 func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	prevModel := s.activeModel
+
+	// Phase-10 slice 2: commit-per-model-change. Before switching
+	// dialect, flush any staged changes with the OLD model's stamp
+	// so the per-model attribution invariant holds. Untracked-only
+	// changes are NOT flushed (CheckPending filters them out).
+	if err := s.flushStagedBeforeModelSwitch(prevModel, decision); err != nil {
+		// Surface but don't abort the switch — losing the stamp is
+		// a lesser harm than blocking the session.
+		s.output(fmt.Sprintf("⚠ flush before handoff: %v", err))
+	}
 
 	// Create handoff checkpoint on current model (invariant 10)
 	_ = s.createCheckpoint(ghyllcontext.CheckpointRequest{
