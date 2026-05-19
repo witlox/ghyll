@@ -971,9 +971,12 @@ on-the-spot arrow definition:
    dependency declarations, per-requirement minimum depth.
 2. This definition is **itself gated by operator attestation** —
    neither the source role nor the target role may attest the
-   definition, because both have conflict-of-interest as co-authors
-   of the contract (ADR-009). The attestation must come from a third
-   role.
+   definition, because both have conflict-of-interest as immediate
+   stakeholders in the contract (ADR-009). The attestation must come
+   from a role outside the (source, target) pair. If no such role
+   exists in the current workflow, the on-the-spot definition fails
+   with `ErrSelfCertImpossible` and the operator must amend the
+   workflow before retry.
 3. Because depth-type assignment is `depth-sensitive`, on-the-spot
    creation **escalates the model tier for the duration of the
    definition act**, then routes the actual traversal per the
