@@ -22,7 +22,6 @@ Feature: Grid amendment and global lock
     Then the new amendment acquires the lock
     And processes against the state produced by the prior amendment
 
-  @deferred
   Scenario: Amendment commits successfully
     Given an amendment holds the lock
     When the analyst re-runs (re-engaged) and produces the amended spec
@@ -112,7 +111,6 @@ Feature: Grid amendment and global lock
     Then they read .ghyll/grid.current (or call a get-version API)
     And get the same answer regardless of which they query
 
-  @deferred
   Scenario: Pass identity uses grid version
     Given a pass P5 is created on arrow A1
     And the current grid version is v(N+1)

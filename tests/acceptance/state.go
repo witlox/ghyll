@@ -208,6 +208,23 @@ type ScenarioState struct {
 	PLAmendQueue *runner.AmendmentQueue
 	PLGrid       *runner.Grid
 
+	// Amendment-commit scenarios (amendment.feature deferred batch).
+	ADLockTable     *runner.RoleContextLockTable
+	ADGrid          *runner.Grid
+	ADPasses        *runner.PassRegistry
+	ADQueue         *runner.AmendmentQueue
+	ADBus           *runner.OperatorBus
+	ADBusEvents     []runner.OperatorEvent
+	ADCommitter     *runner.AmendmentCommitter
+	ADAffectedPass  *runner.Pass
+	ADResult        *runner.CommitResult
+	ADCommitErr     error
+	ADP5            *runner.Pass
+	ADP5Successor   *runner.Pass
+	ADAmendment     runner.AmendmentRequest
+	ADNewArrowID    string
+	ADNextAmendment runner.AmendmentRequest
+
 	// Adversarial step state (specs/features/adversarial.feature).
 	AdvAdversary       *runner.Adversary
 	AdvFindings        *runner.FindingsStore

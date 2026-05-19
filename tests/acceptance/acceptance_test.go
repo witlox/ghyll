@@ -102,6 +102,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// runner.feature scenarios that exercise Pass / PassRegistry
 	// / AmendmentCommitter).
 	registerPassLifecycleSteps(ctx, state)
+
+	// Amendment-commit + pass-identity scenarios that exercise the
+	// AmendmentCommitter end-to-end (amendment.feature).
+	registerAmendmentDeferredSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
