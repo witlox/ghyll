@@ -50,9 +50,8 @@ type Session struct {
 	tokenCount       func([]types.Message) int
 	handoffSummary   func(memory.Checkpoint, []types.Message) []types.Message
 
-	// Workflow
-	wf         *workflow.Workflow
-	activeRole string // currently active role name, empty if none
+	// Workflow (project instructions + slash commands only per ADR-008).
+	wf *workflow.Workflow
 
 	// Resume
 	resumeRef *memory.ResumeRef // set if this session was resumed
@@ -956,20 +955,16 @@ func (s *Session) composedSystemPrompt() string {
 		budget := s.cfg.Workflow.InstructionBudgetTokens
 		global := s.wf.GlobalInstructions
 		project := s.wf.ProjectInstructions
-		role := ""
-		if s.activeRole != "" {
-			if content, ok := s.wf.Roles[s.activeRole]; ok {
-				role = content
-			}
-		}
 
-		// Combine and check budget
-		combined := joinNonEmpty("\n\n", global, project, role)
+		// Combine and check budget. ADR-008: roles are fixed v2 data,
+		// not runtime-loaded; only global + project instructions
+		// participate in the prompt-budget calculation.
+		combined := joinNonEmpty("\n\n", global, project)
 		if budget > 0 && s.tokenCount != nil && combined != "" {
 			tokens := s.tokenCount([]types.Message{{Role: "system", Content: combined}})
 			if tokens > budget {
 				// Phase 1: try dropping global
-				withoutGlobal := joinNonEmpty("\n\n", project, role)
+				withoutGlobal := project
 				tokensWithout := s.tokenCount([]types.Message{{Role: "system", Content: withoutGlobal}})
 				if tokensWithout <= budget {
 					combined = withoutGlobal
@@ -982,7 +977,7 @@ func (s *Session) composedSystemPrompt() string {
 					if maxChars > 0 && maxChars < len(project) {
 						project = project[:maxChars]
 					}
-					combined = joinNonEmpty("\n\n", project, role)
+					combined = project
 					s.output("⚠ instructions truncated to fit budget")
 				}
 			}
@@ -1010,19 +1005,6 @@ func joinNonEmpty(sep string, parts ...string) string {
 		}
 	}
 	return strings.Join(nonEmpty, sep)
-}
-
-// SwitchRole changes the active role overlay.
-// Invariant 50: non-destructive — no compaction, no checkpoint.
-func (s *Session) SwitchRole(name string) error {
-	if s.wf == nil {
-		return fmt.Errorf("role not found: %s (no workflow loaded)", name)
-	}
-	if _, ok := s.wf.Roles[name]; !ok {
-		return fmt.Errorf("role not found: %s", name)
-	}
-	s.activeRole = name
-	return nil
 }
 
 // PlanMode returns whether plan mode is active.

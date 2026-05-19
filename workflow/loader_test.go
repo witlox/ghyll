@@ -73,37 +73,30 @@ func TestScenario_Workflow_ConcatGlobalProjectLast(t *testing.T) {
 	}
 }
 
-// TestScenario_Workflow_LoadRoles maps to:
-// Scenario: Load and activate role
-func TestScenario_Workflow_LoadRoles(t *testing.T) {
+// Phase D-1 of v2-final consolidation (ADR-008): runtime role loading
+// is deprecated. Tests previously here (LoadRoles,
+// ProjectRolesOverrideGlobal) have been removed — the surface they
+// covered no longer exists. The four v2 roles ship as embedded Go
+// data, not loadable files.
+
+// TestScenario_Workflow_RolesDirectoryIgnored verifies the Workflow
+// struct does NOT carry a Roles map after the D-1 surgery — a roles/
+// subdirectory under .ghyll or .claude is silently ignored at runtime.
+func TestScenario_Workflow_RolesDirectoryIgnored(t *testing.T) {
 	globalDir, projectDir := setupWorkflowDir(t)
-	writeFile(t, filepath.Join(projectDir, ".ghyll/roles/analyst.md"), "Do not write code. Produce specs only.\n")
+	writeFile(t, filepath.Join(projectDir, ".ghyll/roles/analyst.md"), "irrelevant; should not load")
+	writeFile(t, filepath.Join(projectDir, ".ghyll/instructions.md"), "real instructions")
 
 	wf, err := Load(globalDir, projectDir, []string{".claude"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if content, ok := wf.Roles["analyst"]; !ok {
-		t.Error("analyst role not loaded")
-	} else if !strings.Contains(content, "Do not write code") {
-		t.Errorf("analyst content = %q", content)
+	// Instructions still load — that's the surviving surface.
+	if !strings.Contains(wf.ProjectInstructions, "real instructions") {
+		t.Error("instructions did not load")
 	}
-}
-
-// TestScenario_Workflow_ProjectRolesOverrideGlobal maps to:
-// Scenario: Project roles override global roles
-func TestScenario_Workflow_ProjectRolesOverrideGlobal(t *testing.T) {
-	globalDir, projectDir := setupWorkflowDir(t)
-	writeFile(t, filepath.Join(globalDir, "roles/reviewer.md"), "Be lenient.")
-	writeFile(t, filepath.Join(projectDir, ".ghyll/roles/reviewer.md"), "Be strict.")
-
-	wf, err := Load(globalDir, projectDir, []string{".claude"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if wf.Roles["reviewer"] != "Be strict." {
-		t.Errorf("role content = %q, want 'Be strict.'", wf.Roles["reviewer"])
-	}
+	// The Workflow struct no longer carries a Roles map (compile-time
+	// guarantee — this test exists to document the contract change).
 }
 
 // TestScenario_Workflow_LoadCommands maps to:
@@ -138,21 +131,6 @@ func TestScenario_Workflow_FallbackClaude(t *testing.T) {
 	}
 	if wf.Source != "claude" {
 		t.Errorf("source = %q, want 'claude'", wf.Source)
-	}
-}
-
-// TestScenario_Workflow_FallbackClaudeRoles maps to:
-// Scenario: Fallback to .claude/ — roles loaded from roles/
-func TestScenario_Workflow_FallbackClaudeRoles(t *testing.T) {
-	globalDir, projectDir := setupWorkflowDir(t)
-	writeFile(t, filepath.Join(projectDir, ".claude/roles/analyst.md"), "Do not write code.\n")
-
-	wf, err := Load(globalDir, projectDir, []string{".claude"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := wf.Roles["analyst"]; !ok {
-		t.Error("analyst role not loaded from .claude/ fallback")
 	}
 }
 

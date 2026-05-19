@@ -1,54 +1,41 @@
 # specs/
 
-Three distinct bodies of spec live here.
+Authoritative behavioral specification for ghyll. Post-D-3 consolidation
+the v1↔v2 split is collapsed — there is one tree.
 
-## v1 — current code (continuity infrastructure)
+## Top-level documents
 
-Describes the ghyll v1 codebase that ships today: dialects, drift-aware
-memory, streaming, Merkle DAG checkpoints, team memory. Per the v2
-pivot, v1 is **continuity infrastructure** rather than the
-correctness mechanism, but the code still does what these files
-describe.
-
-Top-level v1 files (each carries a one-line banner):
+The five canonical narrative docs (v2 framing — v1 originals are preserved
+in `archive/v1-superseded/`):
 
 - [`domain-model.md`](domain-model.md) — entities, aggregates,
-  bounded contexts for v1.
-- [`ubiquitous-language.md`](ubiquitous-language.md) — v1 vocabulary.
-- [`invariants.md`](invariants.md) — what must always be true in v1.
-- [`assumptions.md`](assumptions.md) — explicit assumptions v1 rests on.
-- [`failure-modes.md`](failure-modes.md) — how v1 components fail.
+  bounded contexts.
+- [`ubiquitous-language.md`](ubiquitous-language.md) — shared vocabulary.
+- [`invariants.md`](invariants.md) — what must always hold.
+- [`assumptions.md`](assumptions.md) — assumptions the design rests on.
+- [`failure-modes.md`](failure-modes.md) — how components fail and how
+  the system absorbs those failures.
+- [`cross-context.md`](cross-context.md) — interactions across bounded
+  contexts.
 
-Sub-directories:
+## Sub-directories
 
-- [`architecture/`](architecture/) — v1 architecture documents
-- [`cross-context/`](cross-context/) — v1 cross-context interactions
-- [`features/`](features/) — v1 BDD scenarios (Gherkin)
-- [`fidelity/`](fidelity/) — v1 fidelity sweep records
-- [`findings/`](findings/) — v1 audit findings
-- [`integration/`](integration/) — v1 integration notes
+- [`architecture/`](architecture/) — architectural design docs. Includes
+  `v2-design.md` (the pivot rationale), `gates.md` (gate schema),
+  `roles/` (the four diamond role contracts), `components/` (per-component
+  designs).
+- [`features/`](features/) — Gherkin acceptance scenarios, the BDD layer.
+  v1-inherited surface features plus the v2-only ones (init, runner,
+  state-machine, attestation, amendment, adversarial, runner-step3).
+- [`fidelity/`](fidelity/) — fidelity sweep records.
+- [`findings/`](findings/) — audit findings.
+- [`integration/`](integration/) — integration notes.
+- [`archive/`](archive/) — historical artifacts preserved for context:
+  - `direction/` — earlier draft round-decisions and architect findings.
+  - `validation-passes/` — cold-read validation transcripts.
+  - `v1-superseded/` — pre-v2 versions of the top-level narrative docs.
 
-## v2 — design history (the *why*)
+## Working documents
 
-The v2 pivot's design history is in [`direction/`](direction/). v2 is
-not yet built; this directory records how the design was reached.
-
-Read order in `direction/`:
-
-1. `direction.md` — the v2 positioning rationale.
-2. `gates.md` — the harness-wide gate schema (the meta-design).
-3. `roles/{analyst,architect,implementer,integrator}.md` — the four
-   role contracts.
-4. `components/*.md` — the seven component-level designs.
-5. `build-notes.md` — what is designed vs. not yet built.
-
-Supporting docs (validation passes 1–3 + operator-decision rounds
-1–5) are listed in [`direction/README.md`](direction/README.md).
-
-## v2 — implementation specs (the *what*)
-
-v2 implementation specs are in [`v2/`](v2/). These are the
-analyst-role outputs the v2 code will be built against: domain
-model, invariants, features (Gherkin), failure modes, glossary.
-
-In progress; see [`v2/README.md`](v2/README.md).
+- [`v2-final-plan.md`](v2-final-plan.md) — the six-phase consolidation
+  plan that produced this tree.

@@ -17,13 +17,6 @@ func TestFeatures(t *testing.T) {
 			Format: "pretty",
 			Paths: []string{
 				"../../specs/features",
-				"../../specs/v2/features/init.feature",
-				"../../specs/v2/features/runner.feature",
-				"../../specs/v2/features/runner-step3.feature",
-				"../../specs/v2/features/state-machine.feature",
-				"../../specs/v2/features/amendment.feature",
-				"../../specs/v2/features/attestation.feature",
-				"../../specs/v2/features/adversarial.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
@@ -84,7 +77,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerKeySteps(ctx, state)
 	registerSessionFeatureSteps(ctx, state)
 
-	// Init step definitions (specs/v2/features/init.feature).
+	// Init step definitions (specs/features/init.feature).
 	registerInitSteps(ctx, state)
 	registerProposeSteps(ctx, state)
 	registerProfileSteps(ctx, state)
@@ -95,27 +88,27 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerModifyNonMonotonicSteps(ctx, state)
 	registerOrphanSteps(ctx, state)
 
-	// Runner step definitions (specs/v2/features/runner.feature).
+	// Runner step definitions (specs/features/runner.feature).
 	registerRunnerSteps(ctx, state)
 	// Subprocess evaluator scenarios (B6 of v2-final consolidation).
 	registerRunnerSubprocessSteps(ctx, state)
 
-	// State-machine step definitions (specs/v2/features/state-machine.feature).
+	// State-machine step definitions (specs/features/state-machine.feature).
 	// Phase B1 of v2-final consolidation.
 	registerStateMachineSteps(ctx, state)
 
-	// Amendment step definitions (specs/v2/features/amendment.feature).
+	// Amendment step definitions (specs/features/amendment.feature).
 	// Phase B2 of v2-final consolidation.
 	registerAmendmentSteps(ctx, state)
 
-	// Attestation step definitions (specs/v2/features/attestation.feature).
+	// Attestation step definitions (specs/features/attestation.feature).
 	// Phase B3 of v2-final consolidation. Most attestation surface is
 	// phase-11 (full operator event bus, JSONL verdict records); B3
 	// wires the surfaces that exist today (op-id validation,
 	// FindingStore operator transitions).
 	registerAttestationSteps(ctx, state)
 
-	// Adversarial step definitions (specs/v2/features/adversarial.feature).
+	// Adversarial step definitions (specs/features/adversarial.feature).
 	// Phase B4 of v2-final consolidation. Wires per-round Adversary.Attack
 	// + OpenSweep/Classify hooks + Findings raise/derive. Orchestrator-
 	// level concerns (multi-round remediation, producer-fix-signal,

@@ -33,7 +33,7 @@ func loadSharedCatalogue() (*catalogue.Catalogue, error) {
 }
 
 // registerInitSteps wires step definitions for project-initialization
-// scenarios (specs/v2/features/init.feature).
+// scenarios (specs/features/init.feature).
 //
 // This file grows incrementally as init component pieces land. Only
 // scenarios whose every step has a definition will actually run; others

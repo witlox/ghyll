@@ -13,7 +13,7 @@ import (
 )
 
 // registerModifyNonMonotonicSteps wires step definitions for the
-// modify-non-monotonic scenario outline at specs/v2/features/init.feature:184.
+// modify-non-monotonic scenario outline at specs/features/init.feature:184.
 //
 // The outline tests CheckModification's directional rules per
 // argument type:

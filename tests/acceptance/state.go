@@ -127,7 +127,7 @@ type ScenarioState struct {
 	ExtractedSymbols []bootstrap.ExportedSymbol
 	ExtractedOrphans []bootstrap.OrphanCandidate
 
-	// Runner (specs/v2/features/runner.feature).
+	// Runner (specs/features/runner.feature).
 	RunnerClauses           []runner.ClauseDeriveInput
 	RunnerFindings          []runner.Finding
 	RunnerSeverityThresh    int
@@ -143,7 +143,7 @@ type ScenarioState struct {
 	GridTestDir string
 	GridReadErr error
 
-	// State-machine step state (specs/v2/features/state-machine.feature).
+	// State-machine step state (specs/features/state-machine.feature).
 	// Phase B1 of v2-final consolidation.
 	SMClauseStatus          runner.ClauseStatus   // current clause status under test
 	SMClauseStatusName      string                // wire-form name as the feature posed it
@@ -161,7 +161,7 @@ type ScenarioState struct {
 	SMFindingID             string                // current finding under test
 	SMFindingError          error                 // last finding-transition error
 
-	// Amendment step state (specs/v2/features/amendment.feature).
+	// Amendment step state (specs/features/amendment.feature).
 	// Phase B2 of v2-final consolidation.
 	AmendQueue          *runner.AmendmentQueue
 	AmendObservedEvents []runner.AmendmentEvent
@@ -175,7 +175,7 @@ type ScenarioState struct {
 	SMMissingGridVersion int
 	SMMissingGridErr     error
 
-	// Attestation step state (specs/v2/features/attestation.feature).
+	// Attestation step state (specs/features/attestation.feature).
 	// Phase B3 of v2-final consolidation.
 	AttRegistry        *bootstrap.SessionRegistry
 	AttSession         *bootstrap.Session
@@ -186,7 +186,7 @@ type ScenarioState struct {
 	AttOperatorErr     error
 	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt per B3 #M4)
 
-	// Adversarial step state (specs/v2/features/adversarial.feature).
+	// Adversarial step state (specs/features/adversarial.feature).
 	// Phase B4 of v2-final consolidation.
 	AdvAdversary       *runner.Adversary
 	AdvFindings        *runner.FindingsStore

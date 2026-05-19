@@ -13,7 +13,7 @@ import (
 )
 
 // registerBindingSteps wires step definitions for the re-init-on-
-// missing-binding scenarios in specs/v2/features/init.feature (49, 59).
+// missing-binding scenarios in specs/features/init.feature (49, 59).
 //
 // The flow under test: the runner asks the grid whether every binding
 // some pending evaluation requires is declared. If any is missing,

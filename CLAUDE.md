@@ -18,7 +18,7 @@ correctness mechanism is a typed gate system, not drift detection.
   execution. Ships as continuity infrastructure for v2.
 - **v2** — gate-and-arrow enforcement, fixed role set, integrator
   feedback cycle, `unevaluated` status. Design lives in
-  [`specs/direction/`](specs/direction/). Cold-validation pass 1
+  [`specs/architecture/`](specs/architecture/). Cold-validation pass 1
   flagged load-bearing holes (machine-clause catalogue closed vs.
   analyst clauses outside it; status-vocabulary divergence;
   unquantified "weight"/"residue"). Treat the design as a hypothesis
@@ -31,7 +31,7 @@ MODERATE, 5 NONE.
 Use the diamond workflow (`.claude/CLAUDE.md`) for v1 bugfixes and any
 non-v2 work. The `.claude/roles/*.md` files are Claude Code's roles for
 building ghyll; they are NOT the runtime roles ghyll will embed (those
-live in `specs/direction/roles/`).
+live in `specs/architecture/roles/`).
 
 ## Build
 
@@ -105,10 +105,10 @@ scripts/              scenario verification tooling
 
 v2 design intent (not yet ADRs, not yet code):
 
-- [Direction](specs/direction/direction.md) — pivot rationale, what changes, §7 hypothesis caveat
-- [Gates schema](specs/direction/gates.md) — evaluation types, depth types, arrows, routing, attestation
-- [Analyst role contract](specs/direction/roles/analyst.md) — the one role reconciled to the schema
-- [Build notes](specs/direction/build-notes.md) — what is designed vs. deliberately not yet built
+- [Direction](specs/architecture/direction.md) — pivot rationale, what changes, §7 hypothesis caveat
+- [Gates schema](specs/architecture/gates.md) — evaluation types, depth types, arrows, routing, attestation
+- [Analyst role contract](specs/architecture/roles/analyst.md) — the one role reconciled to the schema
+- [Build notes](specs/architecture/build-notes.md) — what is designed vs. deliberately not yet built
 
 ## Running
 

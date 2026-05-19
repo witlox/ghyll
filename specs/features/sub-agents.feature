@@ -41,12 +41,15 @@ Feature: Sub-agents
     Then no additional lockfile is created
     And the session lockfile remains held
 
-  Scenario: Sub-agent inherits project instructions but not role
+  Scenario: Sub-agent inherits project instructions
+    # ADR-008 / Phase D-1: the original scenario also asserted "but
+    # not the analyst role overlay". That clause is moot — v2 has no
+    # runtime role-overlay surface; the four roles are embedded Go
+    # data, not loadable. The instruction-inheritance contract
+    # survives.
     Given project instructions exist at "/tmp/ghyll-test-agents/.ghyll/instructions.md"
-    And the parent session has role "analyst" active
     When the model calls agent with task "Review the code"
     Then the sub-agent's system prompt includes the project instructions
-    And the sub-agent's system prompt does not include the analyst role overlay
 
   Scenario: Sub-agent failure returns error to parent
     Given model "m25" endpoint is unreachable

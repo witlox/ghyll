@@ -19,7 +19,7 @@ func loadTestCatalogue(t *testing.T) *catalogue.Catalogue {
 }
 
 func TestBuildProposal_Analyst(t *testing.T) {
-	rf, err := ParseRoleFile("../specs/direction/roles/analyst.md")
+	rf, err := ParseRoleFile("../specs/architecture/roles/analyst.md")
 	if err != nil {
 		t.Fatalf("ParseRoleFile: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestBuildProposal_AllRoles(t *testing.T) {
 	roles := []string{"analyst", "architect", "implementer", "integrator"}
 	for _, role := range roles {
 		t.Run(role, func(t *testing.T) {
-			rf, err := ParseRoleFile("../specs/direction/roles/" + role + ".md")
+			rf, err := ParseRoleFile("../specs/architecture/roles/" + role + ".md")
 			if err != nil {
 				t.Fatalf("ParseRoleFile(%s): %v", role, err)
 			}

@@ -11,7 +11,7 @@ Operators define their roles as freeform markdown in `.claude/roles/*.md`
 or `.ghyll/roles/*.md`; the session caches them in `Session.wf.Roles`
 and `Session.SwitchRole(name)` lets the runtime switch between them.
 
-v2's correctness mechanism (`specs/direction/direction.md` §3.3) is the
+v2's correctness mechanism (`specs/architecture/v2-design.md` §3.3) is the
 gate system, and the gate system requires roles to have fixed
 contracts:
 
@@ -39,31 +39,29 @@ The two surfaces are now incompatible:
 
 ## Decision
 
-**Note on tense**: this ADR is accepted now; the code changes it
-describes execute during Phase D-1 of v2-final consolidation (see
-`specs/v2-final-plan.md`). Wording is in the future tense for changes
-that are not yet committed.
-
 ### 1. Drop runtime free-form role loading
 
-At Phase D-1 commit:
+Phase D-1 removed:
 
-- `workflow.Load()` will no longer read `.claude/roles/*.md` or
-  `.ghyll/roles/*.md`.
-- `Session.wf.Roles` will be removed from the struct.
-- `Session.activeRole` will be removed.
-- `Session.SwitchRole()` will be removed.
+- The `Roles` field from `workflow.Workflow`; `workflow.Load()` no
+  longer reads `.claude/roles/*.md` or `.ghyll/roles/*.md`.
+- `Session.wf.Roles`, `Session.activeRole`, and `Session.SwitchRole()`
+  from `cmd/ghyll/session.go`.
+- The role-overlay branch in `composedSystemPrompt`.
 
-These surfaces still exist today in `cmd/ghyll/session.go` lines 55,
-960-961, 1015-1024 and `workflow/workflow.go` — they remain functional
-until Phase D-1 ships.
+### 2. Four fixed roles, defined in specs as source-of-truth
 
-### 2. Embed the four v2 roles as Go data
+The four diamond role contracts live at
+`specs/architecture/roles/{analyst,architect,implementer,integrator}.md`
+and are the canonical definition. The runtime does not load these from
+disk for system-prompt construction — v2's correctness mechanism is the
+gate-and-arrow state machine, not a swappable system-prompt overlay.
 
-The four diamond roles will ship as compiled-in role specs (entry
-precondition, exit gate, prompt content). The operator cannot redefine
-them at runtime. Per `specs/direction/roles/*.md`, each role is
-reconciled to `gates.md` and the embedded form will mirror those specs.
+Bootstrap's auto-propose pass (`bootstrap.ParseRoleFile`) does read
+these markdowns to extract role clauses for grid construction, but that
+is a build-time/init concern: the parsed output flows into the typed
+grid (`.ghyll/grid.vN.yaml`), not into a runtime overlay. Operators
+cannot redefine the role contracts; the spec files are the contracts.
 
 ### 3. Workflow.Load() retains the other v1 responsibilities
 
@@ -82,7 +80,7 @@ What goes away: the `Roles` map on the returned `*Workflow`.
 
 ### 4. Adversarial and auditor functions reframe as arrow phases
 
-Per `specs/direction/direction.md` §3.5, every arrow carrying a
+Per `specs/architecture/v2-design.md` §3.5, every arrow carrying a
 depth-sensitive clause runs three phases:
 
 1. Adversarial — separate instance attacks the upstream artifact.
@@ -152,6 +150,6 @@ build agents, not by ghyll's runtime).
 ## Related decisions
 
 - ADR-007 — tier-based routing (orthogonal; still applies)
-- specs/direction/direction.md §3.3 — fixed roles
-- specs/direction/roles/*.md — per-role contracts
+- specs/architecture/v2-design.md §3.3 — fixed roles
+- specs/architecture/roles/*.md — per-role contracts (source of truth)
 - specs/v2-final-plan.md — Phase D-1 of v2-final consolidation

@@ -12,7 +12,7 @@ import (
 )
 
 // registerProposeSteps wires step definitions for the auto-propose +
-// operator-confirm loop scenarios in specs/v2/features/init.feature
+// operator-confirm loop scenarios in specs/features/init.feature
 // (scenarios 89..121, per ADR-011 §B.2).
 //
 // Existing "modify" steps in steps_init.go (raise-only against the
@@ -90,7 +90,7 @@ func (s *ScenarioState) initEntersAutoProposeFlow() error {
 	}
 	var all []*bootstrap.ArrowProposal
 	for _, rp := range pairs {
-		rf, err := bootstrap.ParseRoleFile("../../specs/direction/roles/" + rp.upstream + ".md")
+		rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/" + rp.upstream + ".md")
 		if err != nil {
 			return fmt.Errorf("ParseRoleFile(%s): %w", rp.upstream, err)
 		}
@@ -177,7 +177,7 @@ func (s *ScenarioState) aProposedClauseFromRoleFile(role, clauseID, concept stri
 	if err != nil {
 		return fmt.Errorf("load catalogue: %w", err)
 	}
-	rf, err := bootstrap.ParseRoleFile("../../specs/direction/roles/" + role + ".md")
+	rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/" + role + ".md")
 	if err != nil {
 		return fmt.Errorf("ParseRoleFile(%s): %w", role, err)
 	}

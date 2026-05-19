@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseRoleFile_Analyst(t *testing.T) {
-	rf, err := ParseRoleFile("../specs/direction/roles/analyst.md")
+	rf, err := ParseRoleFile("../specs/architecture/roles/analyst.md")
 	if err != nil {
 		t.Fatalf("ParseRoleFile(analyst.md): %v", err)
 	}
@@ -71,7 +71,7 @@ func TestParseRoleFile_AllRoles(t *testing.T) {
 	roles := []string{"analyst", "architect", "implementer", "integrator"}
 	for _, role := range roles {
 		t.Run(role, func(t *testing.T) {
-			path := "../specs/direction/roles/" + role + ".md"
+			path := "../specs/architecture/roles/" + role + ".md"
 			rf, err := ParseRoleFile(path)
 			if err != nil {
 				t.Fatalf("ParseRoleFile(%s): %v", role, err)

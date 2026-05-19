@@ -25,7 +25,6 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		globalDir     string
 		wf            *workflow.Workflow
 		planMode      bool
-		activeRole    string
 		systemPrompt  string
 		defaultPrompt string
 		store         *memory.Store
@@ -38,7 +37,6 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		globalDir = ""
 		wf = nil
 		planMode = false
-		activeRole = ""
 		systemPrompt = ""
 		defaultPrompt = ""
 		// store reset handled below
@@ -97,11 +95,6 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 				prompt += "\n\n" + wf.ProjectInstructions
 			}
 		}
-		if activeRole != "" && wf != nil {
-			if content, ok := wf.Roles[activeRole]; ok {
-				prompt += "\n\n" + content
-			}
-		}
 		if planMode {
 			if sessionModel == "glm5" {
 				prompt += "\n\n" + dialect.GLMPlanModePrompt()
@@ -125,7 +118,7 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		var err error
 		wf, err = workflow.Load(globalDir, baseDir, []string{".claude"})
 		if err != nil {
-			wf = &workflow.Workflow{Source: "none", Roles: map[string]string{}, Commands: map[string]string{}}
+			wf = &workflow.Workflow{Source: "none", Commands: map[string]string{}}
 		}
 		buildPrompt()
 	}
@@ -252,16 +245,11 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt is appended with the analyst role content$`, func() error {
-		if wf == nil {
-			return fmt.Errorf("no workflow loaded")
-		}
-		if content, ok := wf.Roles["analyst"]; ok {
-			if !strings.Contains(systemPrompt, content) {
-				return fmt.Errorf("analyst role not in system prompt")
-			}
-			return nil
-		}
-		return fmt.Errorf("analyst role not defined")
+		// ADR-008: runtime role-overlay surface removed in Phase D-1.
+		// Scenarios reaching this step were dropped from workflow.feature;
+		// the step body remains so godog can match the regex if a
+		// regression re-introduces the scenario.
+		return fmt.Errorf("analyst role overlay removed per ADR-008 (Phase D-1)")
 	})
 
 	ctx.Step(`^the system prompt no longer contains "([^"]*)"$`, func(text string) error {
@@ -272,15 +260,7 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt contains the implementer role content$`, func() error {
-		if wf == nil || activeRole != "implementer" {
-			return fmt.Errorf("implementer role not active")
-		}
-		if content, ok := wf.Roles["implementer"]; ok {
-			if !strings.Contains(systemPrompt, content) {
-				return fmt.Errorf("implementer role content not in prompt")
-			}
-		}
-		return nil
+		return fmt.Errorf("implementer role overlay removed per ADR-008 (Phase D-1)")
 	})
 
 	ctx.Step(`^the system prompt contains the dialect's planning instructions$`, func() error {
@@ -309,8 +289,8 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 	})
 
 	ctx.Step(`^the system prompt reverts to the default$`, func() error {
-		if planMode || activeRole != "" {
-			return fmt.Errorf("expected bare prompt but plan=%v role=%s", planMode, activeRole)
+		if planMode {
+			return fmt.Errorf("expected bare prompt but plan mode is active")
 		}
 		buildPrompt()
 		if systemPrompt != defaultPrompt {
@@ -467,7 +447,6 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		case "/fast":
 			planMode = false
 			state.DeepOverride = false
-			activeRole = ""
 			buildPrompt()
 		case "/deep":
 			state.DeepOverride = true
@@ -605,41 +584,27 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 
 	// ---- Role steps ----
 
+	// ADR-008: runtime role-overlay surface removed in Phase D-1. The
+	// "model activates role X" / "role X is active" steps below return
+	// an error so any scenario that still uses them fails loudly.
+	// Phase D-1 dropped the corresponding scenarios from workflow.feature
+	// (8 role-loading scenarios); these regexes remain for regression
+	// signal.
+
 	ctx.Step(`^the model activates role "([^"]*)"$`, func(role string) error {
-		if wf == nil {
-			loadWorkflow()
-		}
-		if _, ok := wf.Roles[role]; !ok {
-			state.AddTerminal(fmt.Sprintf("role not found: %s", role))
-			return nil
-		}
-		activeRole = role // replace previous role entirely (invariant 50)
-		buildPrompt()
-		return nil
+		return fmt.Errorf("model.activateRole(%q) — role-overlay surface removed per ADR-008 (Phase D-1)", role)
 	})
 
 	ctx.Step(`^role "([^"]*)" is active$`, func(role string) error {
-		activeRole = role
-		buildPrompt()
-		return nil
+		return fmt.Errorf("role(%q).Active — role-overlay surface removed per ADR-008 (Phase D-1)", role)
 	})
 
-	ctx.Step(`^role "([^"]*)" is active with content "([^"]*)"$`, func(role, content string) error {
-		if wf == nil {
-			wf = &workflow.Workflow{Source: "test", Roles: map[string]string{}, Commands: map[string]string{}}
-		}
-		wf.Roles[role] = content
-		// Also ensure other common test roles exist
-		if _, ok := wf.Roles["implementer"]; !ok {
-			wf.Roles["implementer"] = "Implement features. Write code."
-		}
-		activeRole = role
-		buildPrompt()
-		return nil
+	ctx.Step(`^role "([^"]*)" is active with content "([^"]*)"$`, func(role, _ string) error {
+		return fmt.Errorf("role(%q).WithContent — role-overlay surface removed per ADR-008 (Phase D-1)", role)
 	})
 
 	ctx.Step(`^the active role is unchanged$`, func() error {
-		return nil
+		return nil // No active role concept in v2; trivially unchanged.
 	})
 
 	ctx.Step(`^the context is at (\d+)% capacity$`, func(pct int) error {
@@ -1062,17 +1027,8 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		return nil // invariant 38 + project instructions
 	})
 
-	ctx.Step(`^the sub-agent's system prompt does not include the analyst role overlay$`, func() error {
-		return nil // invariant 38: role-free
-	})
-
 	ctx.Step(`^the sub-agent's system prompt does not include planning instructions$`, func() error {
 		return nil // sub-agents don't inherit plan mode
-	})
-
-	ctx.Step(`^the parent session has role "([^"]*)" active$`, func(role string) error {
-		activeRole = role
-		return nil
 	})
 
 	ctx.Step(`^the parent session continues normally$`, func() error {

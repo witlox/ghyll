@@ -116,7 +116,7 @@ completed after phase-10 (session-loop wiring + engine CLI) landed.
 
 ### v2 decision enforcement
 
-| Invariant (specs/direction/gates.md) | Test | Status |
+| Invariant (specs/architecture/gates.md) | Test | Status |
 |---|---|---|
 | §6 depth-types declared per clause | runner/routing_test.go:67–93 | ENFORCED |
 | §7.1 unevaluated never laundered (chat-loop) | cmd/ghyll/session.go:H3 path + attestation-pending response | ENFORCED |

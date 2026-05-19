@@ -398,7 +398,7 @@ files, no duplicate inherited features.
     cleanly under `--log-format json`.
 
 - **D5. Spec tree consolidation per D-3 (revised layout)**:
-  - Move `specs/direction/direction.md` → `specs/architecture/design.md`.
+  - Move `specs/direction/direction.md` → `specs/architecture/v2-design.md`.
   - Move `specs/direction/gates.md` → `specs/architecture/gates.md`.
   - Move `specs/direction/components/` → `specs/architecture/components/`.
   - Move `specs/direction/roles/` → `specs/architecture/roles/`.

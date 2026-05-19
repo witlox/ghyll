@@ -15,7 +15,7 @@ import (
 // registerProfileSteps wires step definitions for init sub-phase A:
 // project profile + greenfield/brownfield detection + operator context
 // declaration. Covers scenarios 11, 19, 33 in
-// specs/v2/features/init.feature.
+// specs/features/init.feature.
 func registerProfileSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Scenario 11 — empty repository / greenfield.
 	ctx.Step(`^a project directory with no source files and no prior grid$`, state.aProjectDirWithNoSourceAndNoPriorGrid)
@@ -191,7 +191,7 @@ func (s *ScenarioState) initAutoProposesPerArrow() error {
 	if err != nil {
 		return fmt.Errorf("load catalogue: %w", err)
 	}
-	rf, err := bootstrap.ParseRoleFile("../../specs/direction/roles/analyst.md")
+	rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/analyst.md")
 	if err != nil {
 		return fmt.Errorf("ParseRoleFile(analyst): %w", err)
 	}

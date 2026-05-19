@@ -28,7 +28,7 @@ import (
 )
 
 // registerAmendmentSteps wires every step regex in
-// specs/v2/features/amendment.feature to a real package call.
+// specs/features/amendment.feature to a real package call.
 func registerAmendmentSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Fresh fixtures per scenario so queue + observer state doesn't
 	// leak across runs.

@@ -69,46 +69,16 @@ Feature: Workflow system
     Then both global and project instructions are included
     And no warning is displayed
 
-  # --- Roles ---
-
-  Scenario: Load and activate role
-    Given a file "/tmp/ghyll-test-workflow/.ghyll/roles/analyst.md" with content:
-      """
-      Extract and formalize specifications through interrogation.
-      Do not write code. Produce specs only.
-      """
-    When the model activates role "analyst"
-    Then the system prompt is appended with the analyst role content
-    And the system prompt contains "Do not write code"
-
-  Scenario: Role switch replaces previous role
-    Given role "analyst" is active with content "Produce specs only."
-    When the model activates role "implementer"
-    Then the system prompt no longer contains "Produce specs only."
-    And the system prompt contains the implementer role content
-
-  Scenario: Role switch does not create checkpoint
-    Given role "analyst" is active
-    When the model activates role "implementer"
-    Then no checkpoint is created for the role switch
-
-  Scenario: Role switch does not trigger compaction
-    Given role "analyst" is active
-    And the context is at 50% capacity
-    When the model activates role "implementer"
-    Then compaction is not triggered
-
-  Scenario: Project roles override global roles
-    Given a file "~/.ghyll/roles/reviewer.md" with content "Be lenient."
-    And a file "/tmp/ghyll-test-workflow/.ghyll/roles/reviewer.md" with content "Be strict."
-    When the model activates role "reviewer"
-    Then the system prompt contains "Be strict."
-    And the system prompt does not contain "Be lenient."
-
-  Scenario: No roles defined — bare dialect prompt
-    Given no roles directory exists in ".ghyll/" or "~/.ghyll/"
-    When I start a session in "/tmp/ghyll-test-workflow"
-    Then the system prompt is the bare dialect system prompt only
+  # --- Roles (deprecated per ADR-008 / Phase D-1 of v2-final
+  # consolidation) ---
+  #
+  # Runtime free-form workflow roles loaded from .claude/roles/*.md or
+  # .ghyll/roles/*.md are no longer scanned at runtime. The four v2
+  # roles (analyst / architect / implementer / integrator) ship as
+  # embedded Go data; operators can no longer redefine them at runtime.
+  # The 8 role-loading scenarios that previously lived here have been
+  # removed. Project instructions and slash commands remain runtime-
+  # loadable; see below.
 
   # --- Slash Commands ---
 
@@ -129,7 +99,6 @@ Feature: Workflow system
     Given a file "/tmp/ghyll-test-workflow/.ghyll/commands/review.md" exists
     When the user types "/review"
     Then plan mode is unchanged
-    And the active role is unchanged
     And no checkpoint is created
 
   Scenario: Built-in REPL commands take precedence
@@ -148,16 +117,6 @@ Feature: Workflow system
       """
     When I start a session in "/tmp/ghyll-test-workflow"
     Then the system prompt contains "Use diamond workflow for features"
-
-  Scenario: Fallback to .claude/ — roles loaded from roles/
-    Given no ".ghyll/" directory exists in "/tmp/ghyll-test-workflow"
-    And a file "/tmp/ghyll-test-workflow/.claude/roles/analyst.md" with content:
-      """
-      Do not write code. Produce specs only.
-      """
-    When I start a session in "/tmp/ghyll-test-workflow"
-    And the model activates role "analyst"
-    Then the system prompt contains "Do not write code"
 
   Scenario: Fallback to .claude/ — commands loaded from commands/
     Given no ".ghyll/" directory exists in "/tmp/ghyll-test-workflow"
@@ -186,11 +145,6 @@ Feature: Workflow system
     Given a file "/tmp/ghyll-test-workflow/.ghyll/instructions.md" with content ""
     When I start a session in "/tmp/ghyll-test-workflow"
     Then the system prompt is the bare dialect system prompt only
-
-  Scenario: Role not found shows error
-    When the model activates role "nonexistent"
-    Then an error is displayed: "role not found: nonexistent"
-    And the active role is unchanged
 
   Scenario: Global and project commands merged
     Given a file "~/.ghyll/commands/lint.md" with content "Run the linter."

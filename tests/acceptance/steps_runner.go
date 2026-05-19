@@ -14,7 +14,7 @@ import (
 
 // registerRunnerSteps wires step definitions for the F-3
 // (arrow-status derivation) and transition-refusal scenarios in
-// specs/v2/features/runner.feature.
+// specs/features/runner.feature.
 //
 // Out of scope for this slice (will surface as undefined): the
 // subprocess-process-lifecycle scenarios (timeout, OOM, malformed

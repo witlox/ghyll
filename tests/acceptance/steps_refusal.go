@@ -13,7 +13,7 @@ import (
 )
 
 // registerRefusalSteps wires step definitions for the refusal-flow
-// scenarios in specs/v2/features/init.feature (25, 66, 77).
+// scenarios in specs/features/init.feature (25, 66, 77).
 //
 // The refusal flow is the project's correctness-via-friction lever:
 // init refuses to run on projects ghyll is wrong for.

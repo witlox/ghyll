@@ -12,10 +12,14 @@ import (
 
 // Workflow is the loaded result of scanning .ghyll/ (or fallback .claude/).
 // Budget enforcement is done by cmd/ghyll using dialect.TokenCount.
+//
+// Phase D-1 of v2-final consolidation (ADR-008): runtime free-form
+// workflow roles are deprecated. The Roles map has been removed; v2
+// ships its four roles (analyst / architect / implementer /
+// integrator) as embedded Go data, not loadable files.
 type Workflow struct {
 	GlobalInstructions  string            // from ~/.ghyll/instructions.md (raw)
 	ProjectInstructions string            // from <repo>/.ghyll/instructions.md or CLAUDE.md (raw)
-	Roles               map[string]string // role name → content
 	Commands            map[string]string // command name → content
 	Source              string            // "ghyll", "claude", "none"
 }
@@ -23,16 +27,20 @@ type Workflow struct {
 // Load reads workflow files from global and project directories.
 // globalDir is typically ~/.ghyll/. projectDir is the repo root.
 // fallbackFolders lists alternative folder names to try (e.g., [".claude"]).
+//
+// Phase D-1: loads project instructions and slash commands only.
+// The roles/ subdirectory under .ghyll or .claude is no longer
+// scanned at runtime — those files exist as build-time roles for
+// Claude Code's own agents, NOT as ghyll's runtime roles. ghyll's
+// runtime roles are the four fixed v2 roles, embedded in Go data.
 func Load(globalDir, projectDir string, fallbackFolders []string) (*Workflow, error) {
 	wf := &Workflow{
-		Roles:    make(map[string]string),
 		Commands: make(map[string]string),
 		Source:   "none",
 	}
 
-	// Load global instructions, roles, commands
+	// Load global instructions + commands
 	wf.GlobalInstructions = readFileIfExists(filepath.Join(globalDir, "instructions.md"))
-	loadDir(filepath.Join(globalDir, "roles"), wf.Roles)
 	loadDir(filepath.Join(globalDir, "commands"), wf.Commands)
 
 	// Try project .ghyll/ first
@@ -40,7 +48,6 @@ func Load(globalDir, projectDir string, fallbackFolders []string) (*Workflow, er
 	if dirExists(ghyllDir) {
 		wf.Source = "ghyll"
 		wf.ProjectInstructions = readFileIfExists(filepath.Join(ghyllDir, "instructions.md"))
-		loadDirOverride(filepath.Join(ghyllDir, "roles"), wf.Roles)
 		loadDirOverride(filepath.Join(ghyllDir, "commands"), wf.Commands)
 		return wf, nil
 	}
@@ -61,7 +68,6 @@ func Load(globalDir, projectDir string, fallbackFolders []string) (*Workflow, er
 		}
 		wf.ProjectInstructions = instructions
 
-		loadDirOverride(filepath.Join(fallbackDir, "roles"), wf.Roles)
 		loadDirOverride(filepath.Join(fallbackDir, "commands"), wf.Commands)
 		return wf, nil
 	}

@@ -20,8 +20,8 @@ is the position.
 > continuity infrastructure. The correctness mechanism — typed gate
 > clauses, role transitions as first-class arrows, the integrator
 > feedback cycle — is **designed but not yet built**. See
-> [`specs/direction/`](specs/direction/) for the design and
-> [`specs/direction/direction.md` §7](specs/direction/direction.md) for
+> [`specs/architecture/`](specs/architecture/) for the design and
+> [`specs/architecture/direction.md` §7](specs/architecture/direction.md) for
 > the hypothesis caveat.
 
 > ## :warning: SANDBOX REQUIRED
@@ -104,7 +104,7 @@ correctness mechanism is a gate system, not drift detection.
 - **ghyll can refuse.** The definition phase detects projects where
   ghyll's friction is pure cost and recommends a fast agent instead.
 
-Full design and the hypothesis caveat: [`specs/direction/`](specs/direction/).
+Full design and the hypothesis caveat: [`specs/architecture/`](specs/architecture/).
 
 ## v1 (this repo) — continuity infrastructure
 
@@ -129,7 +129,7 @@ not what catches shallow work.
 **[witlox.github.io/ghyll](https://witlox.github.io/ghyll)**
 
 Docs describe the v1 implementation. The v2 design lives in
-[`specs/direction/`](specs/direction/) until it is built.
+[`specs/architecture/`](specs/architecture/) until it is built.
 
 ## Development
 

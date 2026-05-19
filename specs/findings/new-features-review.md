@@ -1,7 +1,7 @@
 # Adversarial Review: New Feature Specs (2026-04-14)
 
 Scope: Architecture-mode review of 7 new features (edit, glob, plan mode, sub-agents, resume, web, workflow).
-Reviewed: domain-model.md, invariants.md, assumptions.md, failure-modes.md, cross-context/interactions.md, all 7 .feature files, ubiquitous-language.md.
+Reviewed: domain-model.md, invariants.md, assumptions.md, failure-modes.md, cross-context.md, all 7 .feature files, ubiquitous-language.md. (Originals at review time lived under `specs/`; post-D-3 the v1 versions reviewed here live in `specs/archive/v1-superseded/`.)
 
 ---
 
@@ -63,7 +63,7 @@ Suggested resolution: Add a configurable max_response_tokens for web_fetch (defa
 ## Finding: Plan mode + routing interaction unspecified
 Severity: Medium
 Category: Correctness > Implicit coupling
-Location: specs/features/plan-mode.feature (scenario: "Plan mode persists across model switch"), specs/cross-context/interactions.md
+Location: specs/features/plan-mode.feature (scenario: "Plan mode persists across model switch"), specs/archive/v1-superseded/cross-context-interactions.md
 Spec reference: Invariant 37 says plan mode survives compaction; scenario says it persists across model switch
 Description: Plan mode appends dialect-specific planning instructions to the system prompt. When routing switches from M2.5 to GLM-5, the planning instructions need to change (each dialect has its own). The scenario says "GLM-5 system prompt contains GLM-5's planning instructions" but the interaction flow for this isn't mapped. Is it the dialect's responsibility to check the plan mode flag? The session's? Where does the flag live during handoff?
 Evidence: Plan mode active on M2.5. Context depth triggers escalation. Handoff creates checkpoint, switches to GLM-5. Who rebuilds the system prompt with GLM-5's planning instructions + the active role?
@@ -118,7 +118,7 @@ Suggested resolution: Add scenario: "Edit with empty new_string deletes the matc
 ## Finding: Sub-agent checkpointing — sub-agent turns not checkpointed
 Severity: Low
 Category: Correctness > Observability gaps
-Location: specs/features/sub-agents.feature, specs/cross-context/interactions.md (Flow 9)
+Location: specs/features/sub-agents.feature, specs/archive/v1-superseded/cross-context-interactions.md (Flow 9)
 Spec reference: None — sub-agent checkpoint behavior unspecified
 Description: The parent session creates checkpoints at intervals. Sub-agent execution is a single tool call from the parent's perspective. The sub-agent's internal turn-loop (potentially 20 turns with tool calls) is not checkpointed. If the sub-agent crashes or is killed mid-execution, all its work is lost with no recovery point.
 Evidence: Sub-agent runs 15 turns of file exploration, crashes on turn 16. No checkpoint exists for turns 1-15. Parent receives an error. Work is completely lost.

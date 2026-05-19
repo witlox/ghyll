@@ -30,7 +30,7 @@ import (
 )
 
 // registerStateMachineSteps wires every step regex used by
-// specs/v2/features/state-machine.feature to a real runner-package call.
+// specs/features/state-machine.feature to a real runner-package call.
 func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Each scenario starts with fresh state-machine fixtures so prior
 	// findings/runners don't leak across the suite.

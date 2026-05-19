@@ -1,5 +1,5 @@
 // Package bootstrap implements v2 project initialization
-// (gates.md §2, ADR-011, specs/direction/components/init.md).
+// (gates.md §2, ADR-011, specs/architecture/components/init.md).
 //
 // Project initialization is the mandatory step-one when ghyll is
 // invoked on a new project. It turns the harness's v0 baseline into

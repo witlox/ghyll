@@ -14,7 +14,7 @@ import (
 // registerSessionRegistrySteps wires step definitions for scenarios
 // 198 (modify on unknown clause), 205 (op-id survives init re-entry),
 // and 212 (mid-session change requires explicit handoff) in
-// specs/v2/features/init.feature.
+// specs/features/init.feature.
 func registerSessionRegistrySteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	// Scenario 198 — modify on a clause not in the proposal.
 	ctx.Step(`^init has not proposed clause "([^"]+)"$`, state.initHasNotProposedClause)

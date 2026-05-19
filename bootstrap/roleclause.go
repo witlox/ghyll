@@ -11,7 +11,7 @@ import (
 
 // Role file parsing.
 //
-// A role file (specs/direction/roles/<role>.md) declares the role's
+// A role file (specs/architecture/roles/<role>.md) declares the role's
 // exit-gate clauses in a markdown table whose header is:
 //
 //   | # | Clause | Concept (machine) or attested judgement | Eval | Depth |
