@@ -179,17 +179,24 @@ func registerRunnerSubprocessSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 
 	ctx.Step(`^the evaluator process is terminated by the OS OOM-killer \(exit signal 9, no graceful stop\)$`,
 		func() error {
-			// Simulate via a command that kills itself with SIGKILL —
-			// the OS sees the same termination shape as an OOM-kill.
+			// Simulate via a command that kills the DIRECT child of
+			// the Go runner with SIGKILL. The runner spawns its
+			// commands with `sh -c <Command>` (see
+			// runner/subprocess.go), so the Command must kill the sh
+			// process itself — not a nested bash subshell.
 			//
-			// IMPORTANT: do NOT emit anything on stdout before kill.
-			// On slow CI runners the stdout buffer can flush before
-			// kill fires, leaving the runner with non-JSON output
-			// and a signal-kill termination — the runner then
-			// classifies as evaluator-output-malformed rather than
-			// evaluator-killed-by-signal. Killing with no prior
-			// output guarantees the signal path.
-			state.SubprocCommand = `bash -c 'kill -9 $$'`
+			// Earlier fixtures used `bash -c 'kill -9 $$'`, which
+			// expands to `sh -c "bash -c 'kill -9 $$'"`. The inner
+			// bash dies via signal 9, but sh observes that as a
+			// normal exit with status 137 and reports exited (not
+			// signaled) to the runner's WaitStatus check — so the
+			// runner falls through to the malformed-output path
+			// rather than ReasonKilledBySignal.
+			//
+			// Plain `kill -9 $$` evaluates $$ to sh's PID and kills
+			// sh directly. The runner's `ws.Signaled()` check now
+			// sees the true signal-9 termination.
+			state.SubprocCommand = `kill -9 $$`
 			return nil
 		})
 
