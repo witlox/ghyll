@@ -19,10 +19,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
+	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/runner"
 )
 
@@ -486,17 +489,103 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 		})
 
 	// -------- Grid-current points at missing grid file --------
+	//
+	// Real wiring against bootstrap.ErrGridCurrentPointsToMissing.
+	// Setup writes .ghyll/grid.current containing "v3" with NO
+	// matching grid.v3.yaml. The "When the harness initializes" step
+	// calls bootstrap.Read (the canonical init read path) which
+	// returns the typed sentinel; subsequent steps assert on it.
 
-	ctx.Step(`^\.ghyll/grid\.current contains "([^"]*)"$`, func(version string) error {
-		// Wired in steps_init.go's grid-current scenarios; reuse the
-		// existing fixture if present, otherwise this step is satisfied
-		// by the bootstrap.ReadGridCurrent path which exists today.
-		// Returning nil is honest here — the actual grid-current
-		// resolution test lives in init.feature and runs against real
-		// bootstrap code.
-		_ = version
+	ctx.Step(`^\.ghyll/grid\.current contains "v(\d+)"$`, func(version int) error {
+		dir, err := os.MkdirTemp("", "sm-missing-grid-")
+		if err != nil {
+			return fmt.Errorf("mkdir tmp: %w", err)
+		}
+		ghyllDir := filepath.Join(dir, ".ghyll")
+		if err := os.MkdirAll(ghyllDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir .ghyll: %w", err)
+		}
+		// Plant grid.current = vN without the matching grid.vN.yaml.
+		if err := os.WriteFile(
+			filepath.Join(ghyllDir, "grid.current"),
+			[]byte(fmt.Sprintf("v%d\n", version)),
+			0o644,
+		); err != nil {
+			return fmt.Errorf("write grid.current: %w", err)
+		}
+		state.SMMissingGridDir = dir
+		state.SMMissingGridVersion = version
 		return nil
 	})
+
+	ctx.Step(`^\.ghyll/grid\.v(\d+)\.yaml does not exist \(deletion, partial restore, manual edit\)$`,
+		func(version int) error {
+			// The setup step deliberately did NOT write this file;
+			// assert it's truly absent so a future setup change is
+			// caught.
+			path := filepath.Join(state.SMMissingGridDir, ".ghyll",
+				fmt.Sprintf("grid.v%d.yaml", version))
+			if _, err := os.Stat(path); err == nil {
+				return fmt.Errorf("grid.v%d.yaml unexpectedly present", version)
+			}
+			return nil
+		})
+
+	ctx.Step(`^the engine performs grid resolution$`, func() error {
+		// bootstrap.Read resolves grid.current and returns the typed
+		// sentinel when the pointed-at version is missing. A more
+		// specific phrase than "the harness initializes" to avoid
+		// shadowing steps_init.go's existing init-flow handler.
+		_, err := bootstrap.Read(state.SMMissingGridDir)
+		state.SMMissingGridErr = err
+		return nil
+	})
+
+	ctx.Step(`^the engine alerts "([^"]*)"$`, func(alertName string) error {
+		if state.SMMissingGridErr == nil {
+			return errors.New("expected grid-current-points-to-missing-version; got nil error")
+		}
+		if !errors.Is(state.SMMissingGridErr, bootstrap.ErrGridCurrentPointsToMissing) {
+			return fmt.Errorf("expected ErrGridCurrentPointsToMissing; got %v",
+				state.SMMissingGridErr)
+		}
+		// The alert NAME must match the sentinel's wire form so
+		// downstream consumers parse it consistently.
+		if !strings.Contains(state.SMMissingGridErr.Error(), alertName) {
+			return fmt.Errorf("error %q does not name %q",
+				state.SMMissingGridErr.Error(), alertName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^refuses to accept new pass starts$`, func() error {
+		// bootstrap.Read returning an error IS the refusal — there's
+		// no "accept pass start" surface in v1 beyond the init flow.
+		// Verify the error is non-nil (refusal observable).
+		if state.SMMissingGridErr == nil {
+			return errors.New("expected init to refuse; got nil")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the operator must restore the missing file or re-point grid\.current to an existing version$`,
+		func() error {
+			// Verify the recovery path: write the missing file, retry
+			// Read, and assert it now succeeds.
+			g := bootstrap.NewGrid("op-recovery")
+			g.GridVersion = state.SMMissingGridVersion
+			if err := g.Write(state.SMMissingGridDir); err != nil {
+				return fmt.Errorf("recovery write: %w", err)
+			}
+			restored, err := bootstrap.Read(state.SMMissingGridDir)
+			if err != nil {
+				return fmt.Errorf("post-recovery Read: %w", err)
+			}
+			if restored == nil {
+				return errors.New("post-recovery Read returned nil Grid")
+			}
+			return nil
+		})
 }
 
 // scenarioHasTag reports whether a godog scenario carries the given tag.

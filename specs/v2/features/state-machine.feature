@@ -230,7 +230,7 @@ Feature: Status state machine engine
   Scenario: Grid-current points at missing grid file
     Given .ghyll/grid.current contains "v3"
     But .ghyll/grid.v3.yaml does not exist (deletion, partial restore, manual edit)
-    When the harness initializes
+    When the engine performs grid resolution
     Then the engine alerts "grid-current-points-to-missing-version"
     And refuses to accept new pass starts
     And the operator must restore the missing file or re-point grid.current to an existing version

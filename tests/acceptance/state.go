@@ -160,6 +160,20 @@ type ScenarioState struct {
 	SMFindingsStore         *runner.FindingsStore // freshly constructed per scenario
 	SMFindingID             string                // current finding under test
 	SMFindingError          error                 // last finding-transition error
+
+	// Amendment step state (specs/v2/features/amendment.feature).
+	// Phase B2 of v2-final consolidation.
+	AmendQueue          *runner.AmendmentQueue
+	AmendObservedEvents []runner.AmendmentEvent
+	AmendLastErr        error
+	AmendDrained        []runner.AmendmentRequest
+	AmendGridDir        string // tmpdir for grid.Write tests
+	AmendGridVersion    int    // last grid version written
+
+	// State-machine grid-missing scenario (B1 fix-forward via B2).
+	SMMissingGridDir     string
+	SMMissingGridVersion int
+	SMMissingGridErr     error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

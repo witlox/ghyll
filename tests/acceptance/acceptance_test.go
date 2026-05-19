@@ -20,6 +20,7 @@ func TestFeatures(t *testing.T) {
 				"../../specs/v2/features/init.feature",
 				"../../specs/v2/features/runner-step3.feature",
 				"../../specs/v2/features/state-machine.feature",
+				"../../specs/v2/features/amendment.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
@@ -97,6 +98,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// State-machine step definitions (specs/v2/features/state-machine.feature).
 	// Phase B1 of v2-final consolidation.
 	registerStateMachineSteps(ctx, state)
+
+	// Amendment step definitions (specs/v2/features/amendment.feature).
+	// Phase B2 of v2-final consolidation.
+	registerAmendmentSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
