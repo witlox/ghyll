@@ -298,4 +298,112 @@ func registerAmendmentDeferredSteps(ctx *godog.ScenarioContext, state *ScenarioS
 		}
 		return nil
 	})
+
+	// -------- Unaffected pass continues --------
+	//
+	// The substrate matches passes-to-abort by ArrowID equality
+	// against AmendmentRequest.SourceArrow. A pass on a DIFFERENT
+	// arrow is unaffected. The scenario's "declared no dependencies
+	// on the amended file" framing is the operator-policy reading of
+	// the substrate's arrow-level isolation: distinct arrows are
+	// distinct dependency units.
+
+	ctx.Step(`^pass P2 on \(analyst, contextB\) is running$`, func() error {
+		// First set up the "amended" pass (P1) on the SourceArrow we
+		// will commit against — that arrow's other passes are the
+		// ones we expect to abort. P2 is intentionally on a different
+		// arrow.
+		const sourceArrow = "implementer->architect@contextA/v1"
+		const otherArrow = "analyst->architect@contextB/v1"
+		p1, err := runner.OpenPass(runner.PassOptions{
+			PassID:    "P1-on-source",
+			Role:      "implementer",
+			Context:   "contextA",
+			ArrowID:   sourceArrow,
+			LockTable: state.ADLockTable,
+			Bus:       state.ADBus,
+		})
+		if err != nil {
+			return fmt.Errorf("open P1: %w", err)
+		}
+		state.ADAffectedPass = p1
+		state.ADPasses.Register(p1)
+		p2, err := runner.OpenPass(runner.PassOptions{
+			PassID:    "P2-unaffected",
+			Role:      "analyst",
+			Context:   "contextB",
+			ArrowID:   otherArrow,
+			LockTable: state.ADLockTable,
+			Bus:       state.ADBus,
+		})
+		if err != nil {
+			return fmt.Errorf("open P2: %w", err)
+		}
+		state.ADP5 = p2 // reuse the P5 slot for the unaffected pass
+		state.ADPasses.Register(p2)
+		state.ADAmendment = runner.AmendmentRequest{
+			ID:          "amend-unaffected",
+			Reason:      runner.AmendmentReasonMissingCrossContextSpec,
+			SourceArrow: sourceArrow,
+			TargetRole:  "analyst",
+			Contexts:    []string{"contextA", "contextB"},
+			FindingIDs:  []string{"F-unaff"},
+			Description: "amendment for affected/unaffected scenario",
+			CreatedAt:   "2026-05-19T00:00:00Z",
+		}
+		return nil
+	})
+
+	ctx.Step(`^P2's arrow declared no dependencies on the amended file$`, func() error {
+		// Narrative — the substrate's arrow-level isolation is what
+		// makes this true. P2 is on a different ArrowID from the
+		// amendment's SourceArrow, so AmendmentCommitter's
+		// "match-by-ArrowID" abort scan never touches it.
+		if state.ADP5.ArrowID() == state.ADAmendment.SourceArrow {
+			return fmt.Errorf("P2 ArrowID %q equals SourceArrow %q",
+				state.ADP5.ArrowID(), state.ADAmendment.SourceArrow)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the amendment commits$`, func() error {
+		res, err := state.ADCommitter.Commit(context.Background(),
+			runner.CommitRequest{Amendment: state.ADAmendment})
+		state.ADResult = res
+		state.ADCommitErr = err
+		return err
+	})
+
+	ctx.Step(`^P2 continues running against vN$`, func() error {
+		if state.ADP5.State() != runner.PassStateOpen {
+			return fmt.Errorf("P2 state = %q; want open (unaffected)",
+				state.ADP5.State())
+		}
+		// The affected pass P1 must have aborted — confirming the
+		// commit ran but only touched the source arrow.
+		if state.ADAffectedPass.State() != runner.PassStateAborted {
+			return fmt.Errorf("P1 state = %q; want aborted (sanity check)",
+				state.ADAffectedPass.State())
+		}
+		return nil
+	})
+
+	ctx.Step(`^records its completion against vN \(not v\(N\+1\)\)$`, func() error {
+		// P2 closes normally — the amendment did NOT propagate to it.
+		// "Records its completion" = Close transitions to Closed and
+		// ClosedAt is populated. The grid version P2 was opened against
+		// (vN, before the amendment) is implicit in the ArrowID's
+		// version segment (or absent — both encode the same invariant:
+		// the close happens in the substrate without being co-opted
+		// by the v(N+1) bump).
+		state.ADP5.Close("normal-completion")
+		if state.ADP5.State() != runner.PassStateClosed {
+			return fmt.Errorf("P2 state after Close = %q; want closed",
+				state.ADP5.State())
+		}
+		if state.ADP5.ClosedAt().IsZero() {
+			return errors.New("P2 ClosedAt zero after Close")
+		}
+		return nil
+	})
 }

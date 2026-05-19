@@ -45,7 +45,6 @@ Feature: Grid amendment and global lock
     And the arrow's status becomes "invalidated"
     And P1's findings are preserved with grid-version tag vN
 
-  @deferred
   Scenario: Unaffected pass continues
     Given pass P2 on (analyst, contextB) is running
     And P2's arrow declared no dependencies on the amended file
