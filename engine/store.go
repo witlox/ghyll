@@ -108,7 +108,7 @@ func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 // schemaVersion is the engine's current schema generation. Bumped
 // when a migration that can't be expressed by `CREATE ... IF NOT
 // EXISTS` ships. Validation-pass-10 C7.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // ErrEngineSchemaMismatch is returned when a DB written by a newer
 // ghyll binary is opened by an older one. The operator-friendly
@@ -319,4 +319,34 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
 CREATE INDEX IF NOT EXISTS idx_runs_clause ON evaluation_runs(clause_id);
 CREATE INDEX IF NOT EXISTS idx_runs_pass   ON evaluation_runs(pass_id);
 CREATE INDEX IF NOT EXISTS idx_runs_arrow  ON evaluation_runs(arrow_id);
+
+-- Attestations: operator-verdict records (ADR-010).
+-- Kind 'depth-type' attests a clause's depth-type assignment
+-- (clause_id NOT NULL). Kind 'on-the-spot' attests an arrow
+-- definition produced by the definer hook (clause_id NULL).
+-- attested_by_role MUST NOT equal source_role or target_role
+-- (§12.2 / ADR-009) — enforced at the runner.AttestationStore
+-- boundary; the schema records the source/target roles for audit.
+CREATE TABLE IF NOT EXISTS attestations (
+	attestation_id     TEXT PRIMARY KEY,
+	kind               TEXT NOT NULL,
+	arrow_id           TEXT NOT NULL,
+	clause_id          TEXT,
+	op_id              TEXT NOT NULL,
+	attested_by_role   TEXT NOT NULL,
+	source_role        TEXT NOT NULL DEFAULT '',
+	target_role        TEXT NOT NULL DEFAULT '',
+	verdict            TEXT NOT NULL,
+	reason             TEXT NOT NULL DEFAULT '',
+	timestamp          INTEGER NOT NULL,
+	grid_version       INTEGER NOT NULL,
+	CHECK (kind IN ('depth-type', 'on-the-spot')),
+	CHECK ((kind = 'on-the-spot' AND clause_id IS NULL)
+	    OR (kind = 'depth-type'  AND clause_id IS NOT NULL)),
+	CHECK (verdict IN ('pass', 'fail', 'insufficient-basis'))
+);
+CREATE INDEX IF NOT EXISTS idx_attestations_arrow
+	ON attestations(arrow_id);
+CREATE INDEX IF NOT EXISTS idx_attestations_clause
+	ON attestations(clause_id) WHERE clause_id IS NOT NULL;
 `

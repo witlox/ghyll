@@ -177,16 +177,23 @@ func TestScenario_RoleLock_ConcurrentContention_OneWinsOthersBusy(t *testing.T) 
 			defer wg.Done()
 			<-start // hold until release
 			tok, err := tbl.TryAcquire("analyst", "checkout", p, 0)
-			counterMu.Lock()
-			defer counterMu.Unlock()
 			if err != nil {
+				counterMu.Lock()
 				var busy *ErrRoleContextBusy
 				if errors.As(err, &busy) {
 					busyErrs++
 				}
+				counterMu.Unlock()
 				return
 			}
+			// Hold briefly so other goroutines hit the contended
+			// path before this one releases. Without the hold the
+			// goroutine can release before its peers even reach
+			// TryAcquire, collapsing the test to sequential.
+			time.Sleep(500 * time.Microsecond)
+			counterMu.Lock()
 			successes++
+			counterMu.Unlock()
 			tok.Release()
 		}(passID)
 	}

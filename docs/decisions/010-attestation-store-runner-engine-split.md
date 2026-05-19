@@ -68,22 +68,28 @@ CREATE TABLE attestations (
     attestation_id     TEXT PRIMARY KEY,
     kind               TEXT NOT NULL,    -- 'depth-type' | 'on-the-spot'
     arrow_id           TEXT NOT NULL,
-    clause_id          TEXT,             -- present iff kind='depth-type' AND attestation is per-clause
+    clause_id          TEXT,             -- NULL iff kind='on-the-spot'; NOT NULL iff kind='depth-type'
     op_id              TEXT NOT NULL,
     attested_by_role   TEXT NOT NULL,
-    source_role        TEXT NOT NULL,    -- the arrow's source role (for §12.2 validation)
-    target_role        TEXT NOT NULL,    -- the arrow's target role (for §12.2 validation)
+    source_role        TEXT NOT NULL,    -- the arrow's source role (for §12.2 audit)
+    target_role        TEXT NOT NULL,    -- the arrow's target role (for §12.2 audit)
     verdict            TEXT NOT NULL,    -- 'pass' | 'fail' | 'insufficient-basis'
     reason             TEXT,
     timestamp          INTEGER NOT NULL,
     grid_version       INTEGER NOT NULL,
     CHECK (kind IN ('depth-type', 'on-the-spot')),
-    CHECK ((kind = 'on-the-spot' AND clause_id IS NULL) OR kind = 'depth-type'),
+    CHECK ((kind = 'on-the-spot' AND clause_id IS NULL)
+        OR (kind = 'depth-type'  AND clause_id IS NOT NULL)),
     CHECK (verdict IN ('pass', 'fail', 'insufficient-basis'))
 );
 CREATE INDEX idx_attestations_arrow ON attestations(arrow_id);
 CREATE INDEX idx_attestations_clause ON attestations(clause_id) WHERE clause_id IS NOT NULL;
 ```
+
+The kind-pairing CHECK is symmetric: depth-type MUST have a clause_id;
+on-the-spot MUST NOT. A relaxation (depth-type with NULL clause_id)
+would let a buggy caller record an arrow-scoped depth-type attestation
+indistinguishable from on-the-spot, defeating the kind discriminator.
 
 The `clause_id` is nullable specifically because on-the-spot
 attestations attest the *whole arrow definition* (there is no

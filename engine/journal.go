@@ -55,6 +55,7 @@ type journalEvent struct {
 	grid           runner.GridEvent
 	amendment      runner.AmendmentEvent
 	run            *runner.EvaluationRun
+	attestation    runner.AttestationEvent
 	flushDone      chan struct{} // populated for jKindFlush events
 }
 
@@ -64,6 +65,7 @@ const (
 	jKindGrid           = "grid"
 	jKindAmendment      = "amendment"
 	jKindRun            = "run"
+	jKindAttestation    = "attestation"
 	jKindFlush          = "flush"
 
 	defaultJournalBuffer  = 1024
@@ -192,6 +194,8 @@ func (j *Journal) handle(e journalEvent) {
 		j.handleAmendment(ctx, e.amendment)
 	case jKindRun:
 		j.handleRun(ctx, e.run)
+	case jKindAttestation:
+		j.handleAttestation(ctx, e.attestation)
 	}
 }
 
@@ -374,6 +378,23 @@ func (j *Journal) AttachAmendments(q *runner.AmendmentQueue) {
 	q.Observe(func(e runner.AmendmentEvent) {
 		j.enqueue(journalEvent{kind: jKindAmendment, amendment: e})
 	})
+}
+
+// AttachAttestations registers an AttestationObserver per ADR-010.
+// Every Record on the in-memory store gets persisted by the
+// consumer goroutine.
+func (j *Journal) AttachAttestations(store *runner.AttestationStore) {
+	store.Observe(func(e runner.AttestationEvent) {
+		j.enqueue(journalEvent{kind: jKindAttestation, attestation: e})
+	})
+}
+
+// handleAttestation persists one attestation record.
+func (j *Journal) handleAttestation(ctx context.Context, e runner.AttestationEvent) {
+	switch e.Kind {
+	case runner.AttestationEventRecord:
+		j.logErr("insertAttestation", j.store.insertAttestation(ctx, e.Record))
+	}
 }
 
 func (j *Journal) handleAmendment(ctx context.Context, e runner.AmendmentEvent) {

@@ -27,6 +27,7 @@ type ReplayCounts struct {
 	Arrows            int
 	AmendmentsActive  int
 	AmendmentsDrained int
+	Attestations      int
 
 	// Errors collects per-row failures so a single corrupt row
 	// doesn't stop the whole replay (J9). Empty when clean.
@@ -43,6 +44,13 @@ type ReplayTargets struct {
 	Classifications *runner.ClassificationsStore
 	Grid            *runner.Grid
 	Amendments      *runner.AmendmentQueue
+
+	// Attestations is the AttestationStore populated FIRST (before
+	// grid) per ADR-010 so a clause's DepthTypeAttestationRef can
+	// resolve through the in-memory store as soon as the grid is
+	// loaded. Optional — if nil, attestation replay is skipped (used
+	// by tests that don't exercise the attestation path).
+	Attestations *runner.AttestationStore
 }
 
 // replayPageSize is the per-batch read size for paging through
@@ -66,6 +74,24 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 	}
 	if err := ensureEmpty(targets); err != nil {
 		return c, err
+	}
+
+	// 0. Attestations (ADR-010) — replay FIRST so a clause's
+	//    DepthTypeAttestationRef can be resolved through the
+	//    in-memory store as soon as the grid is loaded. Optional:
+	//    skip if targets.Attestations is nil.
+	if targets.Attestations != nil {
+		records, err := store.listAttestations(ctx)
+		if err != nil {
+			return c, fmt.Errorf("replay attestations: %w", err)
+		}
+		for _, rec := range records {
+			if err := targets.Attestations.Record(rec); err != nil {
+				c.Errors = append(c.Errors, fmt.Sprintf("attestation %s: %v", safeID(rec.ID), err))
+				continue
+			}
+			c.Attestations++
+		}
 	}
 
 	// 1. Grid arrows (latest version per ID).
@@ -192,6 +218,10 @@ func ensureEmpty(t ReplayTargets) error {
 	}
 	if t.Amendments.Len() != 0 {
 		return fmt.Errorf("%w: amendments", ErrReplayCachesNotEmpty)
+	}
+	// Attestations target is optional; only check when supplied.
+	if t.Attestations != nil && t.Attestations.Version() != 0 {
+		return fmt.Errorf("%w: attestations", ErrReplayCachesNotEmpty)
 	}
 	return nil
 }
