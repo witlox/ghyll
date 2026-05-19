@@ -11,6 +11,7 @@ import (
 
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
+	"github.com/witlox/ghyll/ui"
 )
 
 // cmdEngineMain dispatches the `ghyll engine ...` subcommands.
@@ -147,7 +148,8 @@ func cmdEngineStatus(args []string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			// C11/C15: emit a structured marker first so scripts can
 			// distinguish missing-engine from any other failure.
-			fmt.Printf("%s\nghyll engine: no store at %s (project has not initialized v2 yet)\n", missingEngineLine, dbPath)
+			ui.Info("%s", missingEngineLine)
+			ui.Info("ghyll engine: no store at %s (project has not initialized v2 yet)", dbPath)
 			return nil
 		}
 		return classifyCLIError(err, fl.Verbose)
@@ -191,13 +193,14 @@ func cmdEngineStatus(args []string) error {
 	if total == 0 {
 		header = emptyEngineMarker
 	}
-	fmt.Printf("%s\nengine: %s\n", header, dbPath)
-	fmt.Printf("  arrows:           %d\n", arrows)
-	fmt.Printf("  findings:         %d\n", findings)
-	fmt.Printf("  requirements:     %d\n", reqs)
-	fmt.Printf("  classifications:  %d\n", cls)
-	fmt.Printf("  amendments:       %d pending, %d drained\n", pendingAm, drainedAm)
-	fmt.Printf("  evaluation runs:  %d\n", runs)
+	ui.Info("%s", header)
+	ui.Info("engine: %s", dbPath)
+	ui.Info("  arrows:           %d", arrows)
+	ui.Info("  findings:         %d", findings)
+	ui.Info("  requirements:     %d", reqs)
+	ui.Info("  classifications:  %d", cls)
+	ui.Info("  amendments:       %d pending, %d drained", pendingAm, drainedAm)
+	ui.Info("  evaluation runs:  %d", runs)
 	// NOTE: output format above is NOT a wire contract. C15:
 	// machine consumers should use a future `--format json` once
 	// it lands.
@@ -217,7 +220,8 @@ func cmdEngineReplay(args []string) error {
 	dbPath := fl.DBPath
 	if err := preflightDBPath(dbPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Printf("%s\nghyll engine: no store at %s (nothing to replay)\n", missingEngineLine, dbPath)
+			ui.Info("%s", missingEngineLine)
+			ui.Info("ghyll engine: no store at %s (nothing to replay)", dbPath)
 			return nil
 		}
 		return classifyCLIError(err, fl.Verbose)
@@ -239,12 +243,12 @@ func cmdEngineReplay(args []string) error {
 	}
 	counts, replayErr := engine.Replay(ctx, store, targets)
 	// C10: print whatever partial counts we got before any error.
-	fmt.Printf("replay: %s\n", dbPath)
-	fmt.Printf("  arrows:            %d\n", counts.Arrows)
-	fmt.Printf("  findings:          %d\n", counts.Findings)
-	fmt.Printf("  requirements:      %d\n", counts.Requirements)
-	fmt.Printf("  classifications:   %d\n", counts.Classifications)
-	fmt.Printf("  amendments:        %d active, %d drained\n",
+	ui.Info("replay: %s", dbPath)
+	ui.Info("  arrows:            %d", counts.Arrows)
+	ui.Info("  findings:          %d", counts.Findings)
+	ui.Info("  requirements:      %d", counts.Requirements)
+	ui.Info("  classifications:   %d", counts.Classifications)
+	ui.Info("  amendments:        %d active, %d drained",
 		counts.AmendmentsActive, counts.AmendmentsDrained)
 	if replayErr != nil {
 		return classifyCLIError(replayErr, fl.Verbose)
@@ -254,17 +258,17 @@ func cmdEngineReplay(args []string) error {
 		if shown > maxCLIErrorsShown {
 			shown = maxCLIErrorsShown
 		}
-		fmt.Printf("  per-row errors:    %d\n", len(counts.Errors))
+		ui.Info("  per-row errors:    %d", len(counts.Errors))
 		for i := 0; i < shown; i++ {
 			// C3: sanitize each error string at the boundary.
-			fmt.Printf("    - %s\n", sanitizeOneLine(counts.Errors[i]))
+			ui.Info("    - %s", sanitizeOneLine(counts.Errors[i]))
 		}
 		if len(counts.Errors) > maxCLIErrorsShown {
-			fmt.Printf("    … %d more errors elided\n", len(counts.Errors)-maxCLIErrorsShown)
+			ui.Info("    … %d more errors elided", len(counts.Errors)-maxCLIErrorsShown)
 		}
 		return fmt.Errorf("replay completed with %d errors", len(counts.Errors))
 	}
-	fmt.Println("  per-row errors:    0")
+	ui.Info("  per-row errors:    0")
 	return nil
 }
 

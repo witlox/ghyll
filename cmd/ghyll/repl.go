@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -10,6 +9,7 @@ import (
 	"syscall"
 
 	ghyllcontext "github.com/witlox/ghyll/context"
+	"github.com/witlox/ghyll/ui"
 )
 
 // REPL runs the interactive read-eval-print loop.
@@ -20,7 +20,7 @@ func REPL(sess *Session, input io.Reader) {
 
 	go func() {
 		<-sigCh
-		fmt.Println("\nshutting down...")
+		ui.Info("\nshutting down...")
 		// Create final checkpoint on graceful shutdown
 		if sess.ctxManager.Turn() > 0 {
 			_ = sess.createCheckpoint(ghyllcontext.CheckpointRequest{
@@ -36,7 +36,7 @@ func REPL(sess *Session, input io.Reader) {
 	}()
 
 	for {
-		fmt.Print(sess.Prompt())
+		ui.Print(sess.Prompt())
 
 		if !scanner.Scan() {
 			break // EOF
@@ -63,7 +63,7 @@ func REPL(sess *Session, input io.Reader) {
 						Reason:      "shutdown",
 					})
 				}
-				fmt.Println("goodbye")
+				ui.Info("goodbye")
 				return
 			}
 			if res.Output != "" {
@@ -85,7 +85,7 @@ func REPL(sess *Session, input io.Reader) {
 					continue
 				}
 			}
-			sess.output(fmt.Sprintf("unknown command: %s", line))
+			sess.output("unknown command: " + line)
 			continue
 		}
 

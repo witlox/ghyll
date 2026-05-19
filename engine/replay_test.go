@@ -22,7 +22,7 @@ func fullReplayCycle(t *testing.T) (*Store, ReplayTargets, ReplayCounts) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		j := NewJournal(store, nil)
+		j := NewJournal(store, testLogger())
 		fs := runner.NewFindingsStore()
 		cs := runner.NewClassificationsStore()
 		g := runner.NewGrid()

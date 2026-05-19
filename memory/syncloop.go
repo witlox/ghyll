@@ -2,7 +2,7 @@ package memory
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -17,16 +17,15 @@ func SyncLoop(ctx context.Context, syncer *Syncer, interval time.Duration) {
 		select {
 		case <-ticker.C:
 			if err := syncer.Fetch(); err != nil {
-				log.Printf("sync pull: %v", err)
+				slog.Warn("memory.SyncLoop: pull failed", "err", err)
 			}
 			if err := syncer.CommitAndPush(ctx); err != nil {
-				log.Printf("sync push: %v", err)
+				slog.Warn("memory.SyncLoop: push failed", "err", err)
 			}
 		case <-ctx.Done():
-			// Final push attempt on shutdown
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := syncer.CommitAndPush(shutdownCtx); err != nil {
-				log.Printf("final sync push: %v", err)
+				slog.Warn("memory.SyncLoop: final push failed", "err", err)
 			}
 			cancel()
 			return

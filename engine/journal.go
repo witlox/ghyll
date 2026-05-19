@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +35,7 @@ import (
 //   - clock is injectable (J11) so tests can pin timestamps.
 type Journal struct {
 	store   *Store
-	logger  *log.Logger
+	logger  *slog.Logger
 	clock   func() time.Time
 	timeout time.Duration
 
@@ -71,19 +71,19 @@ const (
 )
 
 // NewJournal constructs a Journal bound to store. If logger is nil,
-// log.Default() is used. The consumer goroutine starts immediately.
-func NewJournal(store *Store, logger *log.Logger) *Journal {
+// slog.Default() is used. The consumer goroutine starts immediately.
+func NewJournal(store *Store, logger *slog.Logger) *Journal {
 	return NewJournalWithClock(store, logger, time.Now, defaultJournalBuffer)
 }
 
 // NewJournalWithClock is the test-friendly constructor. Pass nil
 // clock for time.Now. Buffer of 0 uses the default.
-func NewJournalWithClock(store *Store, logger *log.Logger, clock func() time.Time, buffer int) *Journal {
+func NewJournalWithClock(store *Store, logger *slog.Logger, clock func() time.Time, buffer int) *Journal {
 	if store == nil {
 		panic("engine.NewJournal: nil store")
 	}
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
 	if clock == nil {
 		clock = time.Now
@@ -151,8 +151,8 @@ func (j *Journal) enqueue(e journalEvent) {
 		return
 	case <-t.C:
 		j.dropped.Add(1)
-		j.logger.Printf("engine.Journal: events channel full after %s; dropping %s event",
-			enqueueBackpressureBudget, e.kind)
+		j.logger.Warn("engine.Journal: events channel full; dropping event",
+			"after", enqueueBackpressureBudget, "kind", e.kind)
 	}
 }
 
@@ -221,7 +221,7 @@ func (j *Journal) logErr(label string, err error) {
 	if err == nil {
 		return
 	}
-	j.logger.Printf("engine.Journal: %s: %v", label, err)
+	j.logger.Warn("engine.Journal: error", "label", label, "err", err)
 }
 
 // AttachFindings registers a FindingsObserver that journals every
@@ -402,7 +402,7 @@ func (j *Journal) handleAmendment(ctx context.Context, e runner.AmendmentEvent) 
 		// destroy F44 dedup across process restart. The journal
 		// log here is the only persistent signal of the operator's
 		// Reset intent.
-		j.logger.Printf("engine.Journal: AmendmentEventReset is in-memory only; persistence retained")
+		j.logger.Info("engine.Journal: AmendmentEventReset is in-memory only; persistence retained")
 	}
 }
 

@@ -2,11 +2,21 @@ package engine
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
 	"github.com/witlox/ghyll/runner"
 )
+
+// testLogger returns a logger that discards output, so journal
+// diagnostics (e.g., backpressure warnings) do not pollute test
+// output or interleave across parallel test runs sharing the global
+// slog default.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+}
 
 // helper: open store + journal + a FindingsStore wired to it.
 func setupJournal(t *testing.T) (*Store, *Journal, *runner.FindingsStore, *runner.ClassificationsStore, *runner.Grid, *runner.AmendmentQueue) {
@@ -15,7 +25,7 @@ func setupJournal(t *testing.T) (*Store, *Journal, *runner.FindingsStore, *runne
 	if err != nil {
 		t.Fatal(err)
 	}
-	j := NewJournal(store, nil)
+	j := NewJournal(store, testLogger())
 	fs := runner.NewFindingsStore()
 	cs := runner.NewClassificationsStore()
 	g := runner.NewGrid()

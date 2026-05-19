@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/witlox/ghyll/memory"
+	"github.com/witlox/ghyll/ui"
 )
 
 // cmdMemoryMain handles `ghyll memory` subcommands.
@@ -27,13 +28,13 @@ func cmdMemoryMain(args []string) error {
 
 	switch args[0] {
 	case "log":
-		return cmdMemoryLog(store, os.Stdout)
+		return cmdMemoryLog(store, ui.Stdout())
 	case "search":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: ghyll memory search <query>")
 		}
 		query := strings.Join(args[1:], " ")
-		return cmdMemorySearch(store, query, os.Stdout)
+		return cmdMemorySearch(store, query, ui.Stdout())
 	case "sync":
 		return cmdMemorySyncManual()
 	default:
@@ -60,18 +61,18 @@ func cmdMemorySyncManual() error {
 		return fmt.Errorf("sync setup: %w", err)
 	}
 
-	fmt.Println("fetching remote checkpoints...")
+	ui.Info("fetching remote checkpoints...")
 	if err := syncer.Fetch(); err != nil {
-		fmt.Printf("fetch: %v (continuing with push)\n", err)
+		ui.Info("fetch: %v (continuing with push)", err)
 	}
 
 	gocontext := gocontextpkg.Background()
-	fmt.Println("pushing local checkpoints...")
+	ui.Info("pushing local checkpoints...")
 	if err := syncer.CommitAndPush(gocontext); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 
-	fmt.Println("sync complete")
+	ui.Info("sync complete")
 	return nil
 }
 

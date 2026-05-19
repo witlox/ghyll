@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +69,7 @@ var (
 // openEngine creates the engine.Store + fresh in-memory caches.
 // Does NOT attach the journal — the caller must call replayEngine
 // first, then attachJournal.
-func openEngine(workdir string, logger *log.Logger) (*engineRuntime, error) {
+func openEngine(workdir string, logger *slog.Logger) (*engineRuntime, error) {
 	_ = logger
 	dbPath, err := defaultEngineDBPath(workdir)
 	if err != nil {
@@ -167,7 +167,7 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 // W1: returns ErrEngineAttachTwice on second call rather than
 // leaking observers + goroutines. Per W6: returns
 // ErrEngineReplayBeforeAttach if replay has not run.
-func (r *engineRuntime) attachJournal(logger *log.Logger) error {
+func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	if r == nil {
 		return errors.New("engine: nil runtime")
 	}

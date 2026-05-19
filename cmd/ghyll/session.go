@@ -16,6 +16,7 @@ import (
 	"github.com/witlox/ghyll/stream"
 	"github.com/witlox/ghyll/tool"
 	"github.com/witlox/ghyll/types"
+	"github.com/witlox/ghyll/ui"
 	"github.com/witlox/ghyll/workflow"
 	"time"
 )
@@ -132,10 +133,10 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	}
 
 	if s.renderer == nil {
-		s.renderer = stream.NewRenderer(os.Stdout)
+		s.renderer = stream.NewRenderer(ui.Stdout())
 	}
 	if s.output == nil {
-		s.output = func(msg string) { fmt.Println(msg) }
+		s.output = func(msg string) { ui.Info("%s", msg) }
 	}
 
 	// Resolve active model
