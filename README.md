@@ -15,14 +15,11 @@ migrations, glue code, and rapid prototyping, where throughput is the
 win and ghyll's gate ceremony is pure overhead. Stating the second half
 is the position.
 
-> **Status — read before relying on this.** ghyll v1 (the code in this
-> repo: dialects, memory, drift detection, streaming) ships as
-> continuity infrastructure. The correctness mechanism — typed gate
-> clauses, role transitions as first-class arrows, the integrator
-> feedback cycle — is **designed but not yet built**. See
-> [`specs/architecture/`](specs/architecture/) for the design and
-> [`specs/architecture/direction.md` §7](specs/architecture/direction.md) for
-> the hypothesis caveat.
+> **Status.** The correctness mechanism — typed gate clauses, role
+> transitions as first-class arrows, the integrator feedback cycle —
+> is implemented. Dialects, memory, drift detection, and streaming
+> support it as continuity infrastructure. Design lives in
+> [`specs/architecture/`](specs/architecture/).
 
 > ## :warning: SANDBOX REQUIRED
 >
@@ -76,7 +73,7 @@ cp config/example.toml ~/.ghyll/config.toml
 ghyll run .
 ```
 
-## Direction (v2 — designed, not built)
+## Correctness mechanism
 
 The differentiator is **behavioral, not infrastructural**. ghyll's
 correctness mechanism is a gate system, not drift detection.
@@ -104,13 +101,14 @@ correctness mechanism is a gate system, not drift detection.
 - **ghyll can refuse.** The definition phase detects projects where
   ghyll's friction is pure cost and recommends a fast agent instead.
 
-Full design and the hypothesis caveat: [`specs/architecture/`](specs/architecture/).
+Full design reference: [`specs/architecture/`](specs/architecture/).
 
-## v1 (this repo) — continuity infrastructure
+## Continuity infrastructure
 
-What ships today supports v2 as continuity, not as the correctness
-mechanism. Drift detection is useful for recovering lost context. It is
-not what catches shallow work.
+The gate system is the correctness mechanism. Dialects, memory, and
+drift detection support continuity across sessions. Drift detection
+is useful for recovering lost context; it is not what catches
+shallow work.
 
 | Model | Active params | Context | Tier |
 |-------|--------------|---------|------|
@@ -128,15 +126,15 @@ not what catches shallow work.
 
 **[witlox.github.io/ghyll](https://witlox.github.io/ghyll)**
 
-Docs describe the v1 implementation. The v2 design lives in
-[`specs/architecture/`](specs/architecture/) until it is built.
+Architectural reference (current code, not aspirational) lives in
+[`specs/architecture/`](specs/architecture/).
 
 ## Development
 
 ```bash
 make setup           # install tools + git hooks
 make                 # lint + test + build
-make coverage-check  # enforce 50% coverage
+make coverage-check  # enforce 70% coverage
 make docs-serve      # preview docs locally
 ```
 

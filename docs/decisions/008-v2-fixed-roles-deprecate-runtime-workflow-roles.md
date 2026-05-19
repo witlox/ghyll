@@ -152,4 +152,4 @@ build agents, not by ghyll's runtime).
 - ADR-007 — tier-based routing (orthogonal; still applies)
 - specs/architecture/v2-design.md §3.3 — fixed roles
 - specs/architecture/roles/*.md — per-role contracts (source of truth)
-- specs/v2-final-plan.md —
+- specs/v2-final-plan.md — the consolidation plan that executed this decision

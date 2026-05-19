@@ -23,13 +23,23 @@ real `Session`, `runner.Runner`, `engine.Store`, and `bootstrap` code;
 they no longer warrant a separate category. NONE-class scenarios are
 gone outside the `@deferred` filter.
 
-## Strict mode roadmap
+## Strict mode
 
 `tests/acceptance/acceptance_test.go` runs with `Strict=false`. The
 filter `~@deferred` skips scenarios that depend on code surfaces not
 yet built (attestation event bus, Pass entity, ProjectStatus
-aggregator, crash recovery). The final tag-up flips `Strict=true` so
-that unbound steps fail loudly instead of silently passing.
+aggregator, crash recovery, edit-failure fault-injection harness).
+
+Pending-step axis is clean at v1.0.0: every previously-pending step
+row (4 in `state-machine.feature` outlines, 1 in `edit.feature`) is
+now under a `@deferred` Examples or scenario tag. Flipping
+`Strict=true` would surface a separate axis — 13 distinct duplicate
+step-regex registrations across step files (e.g., `^a running session
+with model "([^"]*)"$` bound in both `steps_web.go` and
+`steps_session_features.go`). Godog reports these as "ambiguous" and
+runs whichever bound first; the duplicates need to be consolidated
+to single registrations before `Strict=true` is safe. Scoped as
+post-v1.0.0 cleanup.
 
 ## Package fidelity
 
@@ -50,8 +60,7 @@ that unbound steps fail loudly instead of silently passing.
 | `vault/` | 14 | 6 | 8 | 0 | 0 | HIGH |
 | `workflow/` | 10 | 10 | 0 | 0 | 0 | HIGH |
 
-Coverage: 73.9% across all packages (floor 50%; target 80% at next
-tag).
+Coverage: 73.9% across all packages (floor 70%; stretch target 80%).
 
 ## Interface fidelity
 

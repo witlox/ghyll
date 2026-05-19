@@ -38,7 +38,7 @@ make                  # lint + test + build
 make build-bin        # versioned binaries to bin/
 make test             # unit + acceptance tests
 make test-race        # with race detector
-make coverage-check   # enforce 50% threshold
+make coverage-check   # enforce 70% threshold
 make docs-serve       # preview mdbook locally
 make embedder         # download ONNX embedding model
 ```
@@ -49,7 +49,7 @@ Requires: Go 1.25+, ONNX Runtime (optional, for drift detection).
 
 ```
 cmd/
-  ghyll/              CLI entry point + session loop
+  ghyll/              CLI entry point + session loop + engine wiring
   ghyll-vault/        team memory server entry point
 config/               TOML loader + validation
 types/                shared types (Message, ToolCall, ToolResult) — leaf package
@@ -74,10 +74,19 @@ context/              unified context manager
   manager.go          compaction + backfill orchestration
   drift.go            cosine similarity drift detection
   injection.go        prompt injection signal detection
+runner/               gate-and-arrow runtime: clause evaluation, arrow status,
+                      adversarial phase, on-the-spot arrow creation, amendments
+engine/               sqlite-backed persistent store + Journal observer fanout +
+                      Replay (loads persisted entities at session start)
+bootstrap/            project initialization: auto-propose, modify rules,
+                      orphan-symbol extraction, role-clause parsing, session registry
+catalogue/            machine-clause concept catalogue (per-language bindings)
+gates/                gate concept schemas (one YAML per concept)
+internal/             pathglob + skipdirs utilities (leaf packages)
 vault/                team memory HTTP server
 tests/acceptance/     godog BDD acceptance tests
 specs/                behavioral specifications + architecture + fidelity
-docs/                 mdbook documentation site
+docs/                 mdbook documentation site + ADRs
 scripts/              scenario verification tooling
 ```
 
@@ -90,7 +99,7 @@ scripts/              scenario verification tooling
 - Tests: TDD (red-green-refactor), TestScenario_* naming, godog for acceptance
 - Memory checkpoints: append-only, hash-chained, ed25519 signed
 - The git orphan branch `ghyll/memory` is never merged into code branches
-- CI: build -> validate -> test pipeline, 50% coverage threshold
+- CI: build -> validate -> test pipeline, 70% coverage threshold
 
 ## Key Design Decisions
 

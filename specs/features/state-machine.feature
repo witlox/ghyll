@@ -31,10 +31,19 @@ Feature: Status state machine engine
       | fail                 | pending              |
       | unevaluated          | pass                 |
       | unevaluated          | pending              |
+      | running              | pending              |
+
+    # The awaiting-attestation / insufficient-basis statuses are not
+    # part of the v1 ClauseStatus enum (the attestation flow runs as a
+    # peer mechanism, not as additional clause statuses). These rows
+    # exercise the runtime's behavior when the operator surface that
+    # introduces those statuses lands.
+    @deferred
+    Examples:
+      | from                 | to                   |
       | awaiting-attestation | pending              |
       | awaiting-attestation | running              |
       | insufficient-basis   | pending              |
-      | running              | pending              |
       | running              | awaiting-attestation |
 
   @deferred
