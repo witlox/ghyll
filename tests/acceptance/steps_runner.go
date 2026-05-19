@@ -254,6 +254,17 @@ func (s *ScenarioState) noPassOnBStarted() error {
 	if s.RunnerTransitionErr == nil {
 		return errors.New("expected transition refused (no pass started)")
 	}
+	// Per B7 adversarial pass: verify the refusal is a structured
+	// TransitionRefusal (not some unrelated error) AND that it names
+	// the upstream arrow — proves the refusal is keyed on the right
+	// arrow, not a generic failure.
+	tr := runner.AsTransitionRefusal(s.RunnerTransitionErr)
+	if tr == nil {
+		return fmt.Errorf("not a TransitionRefusal: %v", s.RunnerTransitionErr)
+	}
+	if tr.UpstreamArrowID == "" {
+		return errors.New("TransitionRefusal missing UpstreamArrowID")
+	}
 	return nil
 }
 
@@ -265,12 +276,19 @@ func (s *ScenarioState) runnerPermitsTransition() error {
 	return nil
 }
 
-// startsNewPassOnB is narrative; the runner would now schedule a
-// new pass on the downstream arrow. We don't model pass execution
-// here.
+// startsNewPassOnB verifies the runner has permitted the transition
+// AND the upstream arrow was in a status that authorizes it. Per B7
+// adversarial pass: bolstered from a pure "no error" check by also
+// asserting the upstream status precondition (Complete satisfies
+// next role per ArrowStatus.SatisfiesNextRole). Pass execution
+// itself is phase-11 surface.
 func (s *ScenarioState) startsNewPassOnB() error {
 	if s.RunnerTransitionErr != nil {
 		return fmt.Errorf("expected new pass startable; transition was refused: %v", s.RunnerTransitionErr)
+	}
+	if !s.RunnerUpstreamStatus.SatisfiesNextRole() {
+		return fmt.Errorf("upstream status %s does not satisfy next role; transition should NOT have been permitted",
+			s.RunnerUpstreamStatus)
 	}
 	return nil
 }
@@ -304,12 +322,29 @@ func (s *ScenarioState) errorContainsArrowAndGridVersion() error {
 	return nil
 }
 
-// operatorEventPublishedNarrative is narrative — the operator-event-
-// bus integration is a separate slice. We verify the refusal is
-// present (so a future event-bus listener has a signal to emit on).
-func (s *ScenarioState) operatorEventPublishedNarrative(_ string, _ string) error {
+// operatorEventPublishedNarrative — the operator-event-bus integration
+// is phase-11 surface. Per B7 adversarial pass: bolstered from a pure
+// "refusal present" check by ALSO verifying the refusal kind is one
+// the event bus would emit on (transition-refused* or pass-aborted).
+// If the refusal is a different kind, the future event-bus listener
+// would have nothing to publish for the stated event types.
+func (s *ScenarioState) operatorEventPublishedNarrative(eventKindA, eventKindB string) error {
 	if s.RunnerTransitionErr == nil {
 		return errors.New("no refusal — event bus would have nothing to emit")
+	}
+	tr := runner.AsTransitionRefusal(s.RunnerTransitionErr)
+	if tr == nil {
+		return fmt.Errorf("not a transition refusal (event bus would not key on this): %v",
+			s.RunnerTransitionErr)
+	}
+	// The feature claims one of two event kinds — verify the refusal's
+	// kind matches one of them (allowing the future event bus to emit
+	// the stated type).
+	kind := string(tr.Kind)
+	if !strings.Contains(kind, "transition-refused") &&
+		eventKindA != "pass-aborted" && eventKindB != "pass-aborted" {
+		return fmt.Errorf("refusal kind %q doesn't match expected event types %q or %q",
+			kind, eventKindA, eventKindB)
 	}
 	return nil
 }
