@@ -22,13 +22,26 @@ import (
 // engine can re-export it (`ghyll engine export-attestations`).
 //
 // The writer is thread-safe: an internal mutex serializes appends
-// so concurrent Record events don't interleave bytes.
+// so concurrent Record events don't interleave bytes. Each line
+// is written in a single Write call (json + newline pre-joined),
+// so a process crash mid-syscall cannot leave a partial line
+// without leaving NO line — `O_APPEND` on the underlying file
+// guarantees position-atomicity for writes up to PIPE_BUF size,
+// and a single JSONL record stays well under that limit.
+//
+// Write failures are tracked via WriteErrors() — the Observer
+// callback cannot return errors (per the AttestationObserver
+// contract), so failures are counted instead. Callers should
+// inspect WriteErrors() at session end to detect audit-trail
+// loss.
 type AttestationJSONLWriter struct {
-	mu      sync.Mutex
-	path    string
-	out     io.WriteCloser
-	closed  bool
-	writeFn func(io.Writer, []byte) error
+	mu          sync.Mutex
+	path        string
+	out         io.WriteCloser
+	closed      bool
+	writeFn     func(io.Writer, []byte) error
+	writeErrors int
+	lastErr     error
 }
 
 // NewAttestationJSONLWriter opens (or creates+appends to) path.
@@ -65,6 +78,11 @@ func newAttestationJSONLWriterForWriter(w io.WriteCloser) *AttestationJSONLWrite
 // `attestationStore.Observe(writer.Observer())`. Observer events
 // AFTER Close are silently dropped (callers should Close at
 // session end after Flush).
+//
+// Marshal and write failures increment the internal error counter;
+// inspect via WriteErrors() and LastError() at session end. The
+// Observer cannot return errors per the AttestationObserver
+// contract — surfacing on the bus or via slog is the alternative.
 func (w *AttestationJSONLWriter) Observer() AttestationObserver {
 	return func(e AttestationEvent) {
 		if e.Kind != AttestationEventRecord {
@@ -77,13 +95,33 @@ func (w *AttestationJSONLWriter) Observer() AttestationObserver {
 		}
 		line, err := json.Marshal(newJsonlRecord(e.Record))
 		if err != nil {
-			// Marshal of a well-formed record can't fail in
-			// practice (all fields are strings/ints), but guard
-			// anyway.
+			w.writeErrors++
+			w.lastErr = fmt.Errorf("marshal attestation %s: %w", e.Record.ID, err)
 			return
 		}
-		_ = w.writeFn(w.out, line)
+		if err := w.writeFn(w.out, line); err != nil {
+			w.writeErrors++
+			w.lastErr = fmt.Errorf("write attestation %s: %w", e.Record.ID, err)
+		}
 	}
+}
+
+// WriteErrors returns the count of marshal or write failures
+// observed since open. A non-zero count signals audit-trail loss;
+// the operator should inspect LastError() and reconcile against
+// the engine table (`ghyll engine export-attestations`).
+func (w *AttestationJSONLWriter) WriteErrors() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writeErrors
+}
+
+// LastError returns the most recent marshal or write error, nil if
+// none.
+func (w *AttestationJSONLWriter) LastError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastErr
 }
 
 // Close flushes (sync the file) and closes the underlying writer.
@@ -140,10 +178,16 @@ func newJsonlRecord(rec AttestationRecord) jsonlRecord {
 	}
 }
 
+// writeLine emits the JSON payload + newline as a SINGLE Write
+// call. Two-call variants (json then "\n") can interleave under
+// concurrent appenders if the underlying writer doesn't honor
+// O_APPEND atomicity on each call; one-call guarantees that
+// O_APPEND moves to end-of-file once, writes the full record,
+// and returns. The buffer is recreated per call (no shared state).
 func writeLine(w io.Writer, line []byte) error {
-	if _, err := w.Write(line); err != nil {
-		return err
-	}
-	_, err := w.Write([]byte("\n"))
+	payload := make([]byte, 0, len(line)+1)
+	payload = append(payload, line...)
+	payload = append(payload, '\n')
+	_, err := w.Write(payload)
 	return err
 }

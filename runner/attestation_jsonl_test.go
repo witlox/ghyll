@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,75 @@ func TestScenario_AttestationJSONL_EmptyPath_Errors(t *testing.T) {
 		t.Fatal("empty path should error")
 	}
 }
+
+// failingWriter returns an error on every Write. Used to verify
+// the Observer counts write failures.
+type failingWriter struct {
+	errOnWrite error
+}
+
+func (f *failingWriter) Write(_ []byte) (int, error) { return 0, f.errOnWrite }
+func (f *failingWriter) Close() error                { return nil }
+
+func TestScenario_AttestationJSONL_WriteFailureCountsAndSurfacesError(t *testing.T) {
+	boom := errors.New("disk full")
+	w := newAttestationJSONLWriterForWriter(&failingWriter{errOnWrite: boom})
+	defer w.Close()
+
+	store := NewAttestationStore()
+	store.Observe(w.Observer())
+
+	rec := AttestationRecord{
+		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
+		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
+		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	}
+	_ = store.Record(rec)
+
+	if w.WriteErrors() != 1 {
+		t.Fatalf("WriteErrors = %d; want 1", w.WriteErrors())
+	}
+	if w.LastError() == nil {
+		t.Fatal("LastError should be set after write failure")
+	}
+	if !strings.Contains(w.LastError().Error(), "att-A1-C1-v1") {
+		t.Fatalf("LastError should name the record ID: %v", w.LastError())
+	}
+}
+
+// TestScenario_AttestationJSONL_SingleWriteCall verifies the line
+// + newline are emitted in one syscall. Probes the writeFn the
+// Observer dispatches through.
+func TestScenario_AttestationJSONL_SingleWriteCall(t *testing.T) {
+	tally := &writeCounter{}
+	w := newAttestationJSONLWriterForWriter(tally)
+	defer w.Close()
+	store := NewAttestationStore()
+	store.Observe(w.Observer())
+
+	rec := AttestationRecord{
+		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
+		ArrowID: "A1", ClauseID: "C1", OpID: "op",
+		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	}
+	_ = store.Record(rec)
+	if tally.calls != 1 {
+		t.Fatalf("Write called %d times; want 1 (json+newline must be one syscall for O_APPEND atomicity)", tally.calls)
+	}
+}
+
+type writeCounter struct {
+	calls int
+	buf   bytes.Buffer
+}
+
+func (w *writeCounter) Write(p []byte) (int, error) {
+	w.calls++
+	return w.buf.Write(p)
+}
+func (w *writeCounter) Close() error { return nil }
 
 // ensure NewAttestationJSONLWriter returns a value that compiles
 // as an io.Closer (helps catch accidental signature changes).

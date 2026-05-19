@@ -343,7 +343,16 @@ CREATE TABLE IF NOT EXISTS attestations (
 	CHECK (kind IN ('depth-type', 'on-the-spot')),
 	CHECK ((kind = 'on-the-spot' AND clause_id IS NULL)
 	    OR (kind = 'depth-type'  AND clause_id IS NOT NULL)),
-	CHECK (verdict IN ('pass', 'fail', 'insufficient-basis'))
+	CHECK (verdict IN ('pass', 'fail', 'insufficient-basis')),
+	-- §12.2 / ADR-009: attested_by_role MUST NOT equal source or
+	-- target role. Case-sensitivity differs from runner.AttestationStore
+	-- (which does a case-insensitive EqualFold check); the schema
+	-- enforces the exact-string variant as a backstop against
+	-- out-of-band SQL inserts that bypass the runner-layer guard.
+	-- Empty source/target columns (the default '') skip the check
+	-- since the runner did not record those identities.
+	CHECK (source_role = '' OR attested_by_role <> source_role),
+	CHECK (target_role = '' OR attested_by_role <> target_role)
 );
 CREATE INDEX IF NOT EXISTS idx_attestations_arrow
 	ON attestations(arrow_id);

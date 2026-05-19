@@ -133,6 +133,49 @@ func TestEngineAttestations_CheckConstraint_RejectsBogusVerdict(t *testing.T) {
 	}
 }
 
+// TestEngineAttestations_CheckConstraint_RejectsSelfCertSource — the
+// schema-layer backstop for §12.2 / ADR-009. The runner layer
+// already rejects self-cert, but an out-of-band SQL insert bypasses
+// the runner.AttestationStore.Record validation. The CHECK
+// constraint ensures the DB never holds a self-cert row.
+func TestEngineAttestations_CheckConstraint_RejectsSelfCertSource(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	rec := sampleDepthTypeRecord()
+	rec.AttestedByRole = rec.SourceRole // explicit self-cert against source
+	err := store.insertAttestation(ctx, rec)
+	if err == nil {
+		t.Fatal("CHECK constraint should reject source-role self-cert at DB layer")
+	}
+}
+
+func TestEngineAttestations_CheckConstraint_RejectsSelfCertTarget(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	rec := sampleDepthTypeRecord()
+	rec.AttestedByRole = rec.TargetRole
+	err := store.insertAttestation(ctx, rec)
+	if err == nil {
+		t.Fatal("CHECK constraint should reject target-role self-cert at DB layer")
+	}
+}
+
+// TestEngineAttestations_CheckConstraint_EmptyRoles_SkipSelfCert verifies
+// that records without recorded source/target roles (empty string)
+// skip the schema self-cert check — those came from legacy paths
+// that didn't record the audit identities.
+func TestEngineAttestations_CheckConstraint_EmptyRoles_SkipSelfCert(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	rec := sampleDepthTypeRecord()
+	rec.SourceRole = ""
+	rec.TargetRole = ""
+	rec.AttestedByRole = "anyone"
+	if err := store.insertAttestation(ctx, rec); err != nil {
+		t.Fatalf("empty source/target should bypass schema check; got %v", err)
+	}
+}
+
 func TestEngineAttestations_InsertOnIdenticalContent_Idempotent(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
