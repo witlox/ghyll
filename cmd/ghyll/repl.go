@@ -47,55 +47,33 @@ func REPL(sess *Session, input io.Reader) {
 			continue
 		}
 
-		// Handle commands
-		switch {
-		case line == "/exit" || line == "/quit":
-			// Final checkpoint on clean exit
-			if sess.ctxManager.Turn() > 0 {
-				_ = sess.createCheckpoint(ghyllcontext.CheckpointRequest{
-					SessionID:   sess.sessionID,
-					Turn:        sess.ctxManager.Turn(),
-					ActiveModel: sess.activeModel,
-					Summary:     "session ended",
-					Messages:    sess.ctxManager.Messages(),
-					Reason:      "shutdown",
-				})
+		// Built-in slash commands. /quit is a REPL-only alias for /exit.
+		if line == "/quit" {
+			line = "/exit"
+		}
+		if res := sess.DispatchSlashCommand(line); res.Handled {
+			if res.ExitRequested {
+				if sess.ctxManager.Turn() > 0 {
+					_ = sess.createCheckpoint(ghyllcontext.CheckpointRequest{
+						SessionID:   sess.sessionID,
+						Turn:        sess.ctxManager.Turn(),
+						ActiveModel: sess.activeModel,
+						Summary:     "session ended",
+						Messages:    sess.ctxManager.Messages(),
+						Reason:      "shutdown",
+					})
+				}
+				fmt.Println("goodbye")
+				return
 			}
-			fmt.Println("goodbye")
-			return
-		case line == "/deep":
-			if sess.modelLocked {
-				sess.output("ℹ /deep ignored, model locked via --model flag")
-			} else {
-				sess.deepOverride = true
-				sess.output("switched to deep tier")
-			}
-			continue
-		case line == "/plan":
-			if sess.planMode {
-				sess.output("plan mode already active")
-			} else {
-				sess.planMode = true
-				sess.output("plan mode activated")
+			if res.Output != "" {
+				sess.output(res.Output)
 			}
 			continue
-		case line == "/fast":
-			if sess.modelLocked {
-				sess.output("ℹ /fast ignored, model locked via --model flag")
-			} else {
-				sess.deepOverride = false
-				sess.planMode = false
-				sess.output("auto-routing restored, plan mode off")
-			}
-			continue
-		case line == "/status":
-			fmt.Printf("model: %s (locked: %v, deep: %v, plan: %v)\n",
-				sess.activeModel, sess.modelLocked, sess.deepOverride, sess.planMode)
-			fmt.Printf("turn: %d, tool_depth: %d\n",
-				sess.ctxManager.Turn(), sess.toolDepth)
-			continue
-		case strings.HasPrefix(line, "/"):
-			// Check workflow commands (invariant 49: inject as user message)
+		}
+
+		// Non-built-in slash commands (workflow-defined).
+		if strings.HasPrefix(line, "/") {
 			cmdName := strings.TrimPrefix(line, "/")
 			if sess.wf != nil {
 				if content, ok := sess.wf.Commands[cmdName]; ok {

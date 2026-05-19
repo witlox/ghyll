@@ -1035,6 +1035,103 @@ func (s *Session) SetPlanMode(active bool) {
 	s.planMode = active
 }
 
+// DeepOverride reports whether the operator's /deep override is active.
+func (s *Session) DeepOverride() bool {
+	return s.deepOverride
+}
+
+// SetDeepOverride flips the /deep override flag. Refused when the
+// model is locked via --model.
+func (s *Session) SetDeepOverride(active bool) {
+	if s.modelLocked {
+		return
+	}
+	s.deepOverride = active
+}
+
+// ModelLocked reports whether --model was used to lock the model.
+func (s *Session) ModelLocked() bool {
+	return s.modelLocked
+}
+
+// ComposedSystemPrompt is the exported wrapper for composedSystemPrompt,
+// used by tests and any caller that needs to inspect the prompt
+// composition for a given (workflow + role + plan-mode) configuration.
+func (s *Session) ComposedSystemPrompt() string {
+	return s.composedSystemPrompt()
+}
+
+// SlashCommandResult reports what DispatchSlashCommand did with a
+// given input line. Handled is false when the line was not a known
+// slash command (the caller should treat it as user input).
+type SlashCommandResult struct {
+	Handled       bool   // true if a slash command was recognized
+	Output        string // text to surface to the operator (status, ack, etc.)
+	ContinueLoop  bool   // when true, REPL should continue (not exit)
+	ExitRequested bool   // /exit was typed
+}
+
+// DispatchSlashCommand handles the built-in slash commands /deep,
+// /plan, /fast, /status, /exit. Returns Handled=false when the line
+// is not a built-in (callers route to workflow-defined commands or
+// model dispatch).
+//
+// The REPL uses this method so the BDD layer can exercise the same
+// dispatch logic without standing up the full input loop.
+func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
+	switch line {
+	case "/exit":
+		return SlashCommandResult{Handled: true, ExitRequested: true}
+	case "/deep":
+		if s.modelLocked {
+			return SlashCommandResult{
+				Handled: true, ContinueLoop: true,
+				Output: "ℹ /deep ignored, model locked via --model flag",
+			}
+		}
+		s.deepOverride = true
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "switched to deep tier",
+		}
+	case "/plan":
+		if s.planMode {
+			return SlashCommandResult{
+				Handled: true, ContinueLoop: true,
+				Output: "plan mode already active",
+			}
+		}
+		s.planMode = true
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "plan mode activated",
+		}
+	case "/fast":
+		if s.modelLocked {
+			return SlashCommandResult{
+				Handled: true, ContinueLoop: true,
+				Output: "ℹ /fast ignored, model locked via --model flag",
+			}
+		}
+		s.deepOverride = false
+		s.planMode = false
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "auto-routing restored, plan mode off",
+		}
+	case "/status":
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf(
+				"model: %s (locked: %v, deep: %v, plan: %v)\nturn: %d, tool_depth: %d",
+				s.activeModel, s.modelLocked, s.deepOverride, s.planMode,
+				s.ctxManager.Turn(), s.toolDepth,
+			),
+		}
+	}
+	return SlashCommandResult{Handled: false}
+}
+
 // ActiveModel returns the current model name.
 func (s *Session) ActiveModel() string {
 	return s.activeModel
