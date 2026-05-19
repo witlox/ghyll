@@ -39,7 +39,7 @@ import (
 //   - C11/C15: structured first-line token on missing-DB so scripts
 //     can distinguish "no engine" from "engine empty" without
 //     parsing free text.
-const engineUsage = "usage: ghyll engine status|replay [--dir <path>] [--timeout <seconds>] [--verbose]"
+const engineUsage = "usage: ghyll engine status|replay|verify-attestations [--dir <path>] [--timeout <seconds>] [--verbose]"
 
 func cmdEngineMain(args []string) error {
 	if len(args) < 1 {
@@ -52,9 +52,46 @@ func cmdEngineMain(args []string) error {
 		return cmdEngineStatus(rest)
 	case "replay":
 		return cmdEngineReplay(rest)
+	case "verify-attestations":
+		return cmdEngineVerifyAttestations(rest)
 	default:
 		return fmt.Errorf("ghyll engine: unknown subcommand %q", sub)
 	}
+}
+
+// cmdEngineVerifyAttestations walks the project-local
+// `.ghyll/attestations.jsonl` audit file and reports any record
+// that violates the schema invariants (ADR-009 / ADR-010 self-
+// cert, kind / clause_id pairing, verdict enum, required fields).
+//
+// Exit-status contract: returns nil on a clean audit (no
+// failures), an error on any failure. The error message includes
+// the per-line issues so the operator sees the first batch of
+// failures without needing --verbose.
+func cmdEngineVerifyAttestations(args []string) error {
+	fl, err := parseEngineFlags(args)
+	if err != nil {
+		return err
+	}
+	jsonlPath := filepath.Join(filepath.Dir(fl.DBPath), "attestations.jsonl")
+	if _, err := os.Stat(jsonlPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			ui.Info("%s", missingEngineLine)
+			ui.Info("ghyll engine: no attestation log at %s (no attestations recorded yet)", jsonlPath)
+			return nil
+		}
+		return classifyCLIError(err, fl.Verbose)
+	}
+	v := &runner.AttestationVerifier{}
+	res, err := v.VerifyFile(jsonlPath)
+	if err != nil {
+		return classifyCLIError(err, fl.Verbose)
+	}
+	ui.Info("%s", res.String())
+	if res.Failed > 0 {
+		return fmt.Errorf("attestation-verify: %d failed record(s)", res.Failed)
+	}
+	return nil
 }
 
 // engineFlags is the parsed form of an `engine` subcommand's flags.
