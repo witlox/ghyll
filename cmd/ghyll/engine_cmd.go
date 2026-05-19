@@ -187,8 +187,12 @@ func cmdEngineStatus(args []string) error {
 	if err != nil {
 		return classifyCLIError(err, fl.Verbose)
 	}
+	atts, err := store.CountAttestations(ctx)
+	if err != nil {
+		return classifyCLIError(err, fl.Verbose)
+	}
 
-	total := arrows + findings + reqs + cls + pendingAm + drainedAm + runs
+	total := arrows + findings + reqs + cls + pendingAm + drainedAm + runs + atts
 	header := presentEngineMarker
 	if total == 0 {
 		header = emptyEngineMarker
@@ -201,6 +205,7 @@ func cmdEngineStatus(args []string) error {
 	ui.Info("  classifications:  %d", cls)
 	ui.Info("  amendments:       %d pending, %d drained", pendingAm, drainedAm)
 	ui.Info("  evaluation runs:  %d", runs)
+	ui.Info("  attestations:     %d", atts)
 	// NOTE: output format above is NOT a wire contract. C15:
 	// machine consumers should use a future `--format json` once
 	// it lands.

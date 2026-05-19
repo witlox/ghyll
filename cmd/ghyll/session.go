@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	gocontext "context"
+	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/config"
 	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/dialect"
@@ -248,7 +249,16 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	if replayTimeout <= 0 {
 		replayTimeout = defaultReplayTimeout
 	}
-	rt, err := openEngine(s.workdir, nil)
+	// Load the grid file (if any) to thread the
+	// `insufficient-basis-rounds-max` config into the engine
+	// runtime. A missing or unparseable grid file is non-fatal
+	// here — escalation is disabled (max=0) and the runtime
+	// proceeds.
+	ibRoundsMax := 0
+	if g, gerr := bootstrap.Read(s.workdir); gerr == nil && g != nil {
+		ibRoundsMax = g.InsufficientBasisRoundsMax
+	}
+	rt, err := openEngineWithOptions(s.workdir, nil, ibRoundsMax)
 	if err != nil {
 		s.output(fmt.Sprintf("⚠ engine open failed (continuing without persistence): %v", err))
 		return

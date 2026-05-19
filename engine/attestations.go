@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/witlox/ghyll/runner"
 )
@@ -140,10 +141,25 @@ func (s *Store) listAttestations(ctx context.Context) ([]runner.AttestationRecor
 
 // CountAttestations returns the total persisted attestation count,
 // used by `ghyll engine status`.
+//
+// Tolerates a missing attestations table (a v1 schema DB) by
+// returning (0, nil). The engine status CLI then reports
+// "attestations: 0" — consistent with the user-visible view that
+// no attestations exist on a pre-v2 schema. Upgrade is automatic
+// the next time a v2 binary opens the store via OpenStore (NOT
+// OpenStoreReadOnly), which runs the schema DDL.
 func (s *Store) CountAttestations(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM attestations`).Scan(&n)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		// sqlite returns "no such table: attestations" for v1
+		// schemas. Surface as zero so status displays cleanly.
+		if strings.Contains(err.Error(), "no such table") {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("count attestations: %w", err)
 	}
 	return n, nil
