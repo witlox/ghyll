@@ -373,6 +373,12 @@ type Runner struct {
 	// engine layer can journal them. Mirrors FindingsStore.Observe
 	// (phase-9 work). Observers see a deep-copy snapshot; they
 	// MUST be fast and non-blocking.
+	//
+	// Validation-pass-10-integrator M1: protected by obsMu so
+	// OnEvaluationRun / fireRunObservers can race-safely under
+	// `go test -race`. The engine attaches one observer per Journal,
+	// but a future multi-arrow dispatch might wire several.
+	obsMu        sync.RWMutex
 	runObservers []EvaluationRunObserver
 }
 
@@ -426,7 +432,9 @@ func (r *Runner) WithActualTier(tier DepthRank) *Runner {
 // store. Returns r so the call can be chained with WithActualTier
 // etc.
 func (r *Runner) OnEvaluationRun(fn EvaluationRunObserver) *Runner {
+	r.obsMu.Lock()
 	r.runObservers = append(r.runObservers, fn)
+	r.obsMu.Unlock()
 	return r
 }
 
@@ -583,7 +591,13 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 // not recover observers; an observer that panics is a programming
 // error, not operator-driven.
 func (r *Runner) fireRunObservers(run *EvaluationRun) {
-	for _, fn := range r.runObservers {
+	// Snapshot under read lock so observers can fire without
+	// blocking concurrent OnEvaluationRun calls.
+	r.obsMu.RLock()
+	snap := make([]EvaluationRunObserver, len(r.runObservers))
+	copy(snap, r.runObservers)
+	r.obsMu.RUnlock()
+	for _, fn := range snap {
 		fn(run)
 	}
 }

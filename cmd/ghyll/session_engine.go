@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
@@ -36,6 +37,12 @@ import (
 // second call rather than leaking goroutines).
 
 // engineRuntime bundles every v2 surface a session needs.
+//
+// Integrator-pass H1: lifecycleMu protects the replayDone /
+// journalAttached transition so the flag-check + journal-create
+// is atomic. Today's session.go calls these on a single goroutine,
+// but the lock makes the invariant durable against future
+// concurrent NewSession-like call sites.
 type engineRuntime struct {
 	store           *engine.Store
 	journal         *engine.Journal
@@ -47,6 +54,7 @@ type engineRuntime struct {
 
 	dbPath string
 
+	lifecycleMu     sync.Mutex
 	replayDone      bool
 	journalAttached bool
 }
@@ -130,9 +138,17 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 	if r == nil {
 		return engine.ReplayCounts{}, errors.New("engine: nil runtime")
 	}
+	r.lifecycleMu.Lock()
 	if r.journalAttached {
+		r.lifecycleMu.Unlock()
 		return engine.ReplayCounts{}, ErrEngineReplayAfterAttach
 	}
+	r.lifecycleMu.Unlock()
+	// Replay itself can take many seconds on a large DB; do not hold
+	// the lock during the disk I/O. The journalAttached check above
+	// + the lock around the replayDone write below is sufficient
+	// because attachJournal also takes the lock and refuses if
+	// replayDone is false.
 	counts, err := engine.Replay(ctx, r.store, engine.ReplayTargets{
 		Findings:        r.findings,
 		Classifications: r.classifications,
@@ -140,7 +156,9 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 		Amendments:      r.amendments,
 	})
 	if err == nil {
+		r.lifecycleMu.Lock()
 		r.replayDone = true
+		r.lifecycleMu.Unlock()
 	}
 	return counts, err
 }
@@ -153,12 +171,19 @@ func (r *engineRuntime) attachJournal(logger *log.Logger) error {
 	if r == nil {
 		return errors.New("engine: nil runtime")
 	}
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
 	if r.journalAttached {
 		return ErrEngineAttachTwice
 	}
 	if !r.replayDone {
 		return ErrEngineReplayBeforeAttach
 	}
+	// Construct the Journal AFTER replayDone but BEFORE flipping
+	// journalAttached so no observer can fire on a half-initialized
+	// Journal even if a concurrent NewRunner sneaks in. The
+	// AttachX calls themselves take the runner's write lock so
+	// observer registration is serialized with the runner.
 	r.journal = engine.NewJournal(r.store, logger)
 	r.journal.AttachFindings(r.findings)
 	r.journal.AttachClassifications(r.classifications)

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -401,10 +402,11 @@ func runShellWithCap(ctx context.Context, workDir, command string, timeout time.
 	cmd.Env = filteredParentEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	var reaped atomic.Bool
 	var killOnce sync.Once
 	doKill := func() {
 		killOnce.Do(func() {
-			killProcessGroup(cmd, DefaultBindingGrace)
+			killProcessGroup(cmd, DefaultBindingGrace, &reaped)
 		})
 	}
 	stdoutCap := newCaptureBuf(killServerSubprocessMaxBytes, doKill)
@@ -416,7 +418,11 @@ func runShellWithCap(ctx context.Context, workDir, command string, timeout time.
 		return shellRunResult{}, fmt.Errorf("spawn: %w", err)
 	}
 	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		reaped.Store(true)
+		waitCh <- err
+	}()
 	var waitErr error
 	select {
 	case waitErr = <-waitCh:

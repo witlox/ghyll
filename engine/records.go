@@ -88,9 +88,10 @@ type FindingRecord struct {
 
 // UpsertFinding inserts or updates a finding. Validation-pass-9
 // E2: severity/status/type/ID validated at writer boundary so a
-// caller bypassing the runner can't persist corruption. E3:
-// newer-wins on conflict via `WHERE excluded.store_version >
-// findings.store_version`.
+// caller bypassing the runner can't persist corruption. E3 +
+// integrator L1: strict newer-wins on conflict via `WHERE
+// excluded.store_version > findings.store_version` so a replayed
+// event at the same version is a no-op (idempotent replay).
 func (s *Store) UpsertFinding(ctx context.Context, f FindingRecord) error {
 	if strings.TrimSpace(f.ID) == "" {
 		return ErrEngineEmptyID
@@ -122,7 +123,7 @@ func (s *Store) UpsertFinding(ctx context.Context, f FindingRecord) error {
 			grid_version      = excluded.grid_version,
 			store_version     = excluded.store_version,
 			updated_at        = excluded.updated_at
-		WHERE excluded.store_version >= findings.store_version
+		WHERE excluded.store_version > findings.store_version
 	`,
 		f.ID, f.ArrowID, f.Type, f.Severity, f.Status,
 		f.Description, f.RaisedAt, f.RaisedByRole,
@@ -194,7 +195,7 @@ func (s *Store) UpsertRequirement(ctx context.Context, r RequirementRecord) erro
 			description   = excluded.description,
 			store_version = excluded.store_version,
 			declared_at   = excluded.declared_at
-		WHERE excluded.store_version >= requirements.store_version
+		WHERE excluded.store_version > requirements.store_version
 	`, r.ArrowID, r.ReqID, r.MinDepth, r.Description, int64(r.StoreVersion), r.DeclaredAt)
 	if err != nil {
 		return fmt.Errorf("UpsertRequirement %s/%s: %w", safeID(r.ArrowID), safeID(r.ReqID), err)
@@ -234,7 +235,7 @@ func (s *Store) UpsertClassification(ctx context.Context, c ClassificationRecord
 			overwrite_count = classifications.overwrite_count + 1,
 			store_version   = excluded.store_version,
 			classified_at   = excluded.classified_at
-		WHERE excluded.store_version >= classifications.store_version
+		WHERE excluded.store_version > classifications.store_version
 	`, c.ArrowID, c.ReqID, c.Observed, c.Evidence,
 		c.OverwriteCount, int64(c.StoreVersion), c.ClassifiedAt)
 	if err != nil {

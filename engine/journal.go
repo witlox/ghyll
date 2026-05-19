@@ -121,20 +121,46 @@ func (j *Journal) Dropped() uint64 {
 	return j.dropped.Load()
 }
 
-// enqueue pushes an event onto the consumer channel. After Close
-// or on full channel, increments the dropped counter and logs.
+// enqueue pushes an event onto the consumer channel. Per
+// integrator-pass C1: a full channel is treated as backpressure
+// rather than silent loss — the call blocks up to
+// enqueueBackpressureBudget so the runner experiences a short stall
+// rather than the engine.db diverging from in-memory state.
+//
+// After Close or after the budget elapses, the event drops and the
+// counter increments so the operator sees the divergence at
+// session shutdown (see Session.Close in cmd/ghyll).
 func (j *Journal) enqueue(e journalEvent) {
 	if j.closed.Load() {
 		j.dropped.Add(1)
 		return
 	}
+	// Fast path — non-blocking send when the consumer is keeping up.
 	select {
 	case j.events <- e:
+		return
 	default:
+	}
+	// Backpressure path — bounded block. Observers fire under the
+	// runner's WRITE lock so a long block here stalls the runner;
+	// the budget keeps the worst case to enqueueBackpressureBudget.
+	t := time.NewTimer(enqueueBackpressureBudget)
+	defer t.Stop()
+	select {
+	case j.events <- e:
+		return
+	case <-t.C:
 		j.dropped.Add(1)
-		j.logger.Printf("engine.Journal: events channel full; dropping %s event", e.kind)
+		j.logger.Printf("engine.Journal: events channel full after %s; dropping %s event",
+			enqueueBackpressureBudget, e.kind)
 	}
 }
+
+// enqueueBackpressureBudget caps the per-event block when the
+// consumer goroutine is behind. Tuned for batch-burst durability:
+// short enough that a slow disk doesn't deadlock the runner, long
+// enough that a transient consumer stall doesn't trigger drops.
+const enqueueBackpressureBudget = 100 * time.Millisecond
 
 // runConsumer drains the channel and writes to sqlite synchronously.
 // Single goroutine preserves total order.

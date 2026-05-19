@@ -422,10 +422,38 @@ func (s *Session) flushStagedBeforeModelSwitch(prevModel string, decision dialec
 		GhyllModel:   modelStamp,
 	}, commitTimeout)
 	if res.Error != "" {
-		return fmt.Errorf("commit: %s", res.Error)
+		return &handoffFlushError{stage: "commit", inner: errors.New(sanitizeOneLine(res.Error))}
 	}
 	s.output(fmt.Sprintf("ℹ flushed staged changes under %s before handoff to %s", modelStamp, safeTarget))
 	return nil
+}
+
+// handoffFlushError marks a flush failure that MUST block the model
+// switch (commit failed, unstaged changes, unknown git state).
+// Wraps so handleHandoff can distinguish from advisory errors.
+type handoffFlushError struct {
+	stage string
+	inner error
+}
+
+func (e *handoffFlushError) Error() string {
+	return fmt.Sprintf("%s: %v", e.stage, e.inner)
+}
+
+func (e *handoffFlushError) Unwrap() error { return e.inner }
+
+// isHandoffBlockingFlushError reports whether the flush error
+// should abort the model switch (vs. log advisory and continue).
+// Per integrator M3 — commit-failed and unstaged-refused both block.
+func isHandoffBlockingFlushError(err error) bool {
+	var f *handoffFlushError
+	if errors.As(err, &f) {
+		return true
+	}
+	// Unstaged refusal returns a plain error from
+	// flushStagedBeforeModelSwitch; recognize by its message.
+	return strings.Contains(err.Error(), "unstaged changes present") ||
+		strings.Contains(err.Error(), "pending status unknown")
 }
 
 // buildModelStamp returns the Ghyll-Model trailer value for a given
@@ -762,9 +790,19 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	// H7: a flush failure records a distinct checkpoint Reason so
 	// `ghyll memory log` can show that the audit trail's "handed
 	// off" did NOT include a clean staged-changes flush.
+	//
+	// Integrator M3: a hard commit failure (not "nothing to commit"
+	// — that returns nil) MUST abort the switch. Otherwise the
+	// staging area carries the old model's work into the new
+	// model's first commit and per-model attribution silently
+	// breaks. Unstaged-changes refusal (H5) is also a hard abort.
 	flushReason := "handoff"
 	if err := s.flushStagedBeforeModelSwitch(prevModel, decision); err != nil {
-		s.output(fmt.Sprintf("⚠ flush before handoff: %v", err))
+		if isHandoffBlockingFlushError(err) {
+			s.output(fmt.Sprintf("⚠ handoff blocked: flush before model switch failed: %v", err))
+			return fmt.Errorf("handoff: flush failed and switch blocked: %w", err)
+		}
+		s.output(fmt.Sprintf("⚠ flush before handoff (advisory): %v", err))
 		flushReason = "handoff-flush-failed"
 	}
 

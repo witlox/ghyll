@@ -208,3 +208,54 @@ func TestVault_V2_MethodNotAllowed(t *testing.T) {
 		t.Errorf("POST status = %d; want 405", resp.StatusCode)
 	}
 }
+
+// TestVault_V2_PaginationMetadata verifies the integrator-pass M5
+// surface: every list response carries a `page` object with
+// total/limit/offset/returned/has_more so clients can detect
+// truncation without re-issuing a count query.
+func TestVault_V2_PaginationMetadata(t *testing.T) {
+	ts, store := newTestServerWithEngine(t)
+	ctx := context.Background()
+	// Seed 5 extra findings to widen the page test.
+	for i := 0; i < 5; i++ {
+		_ = store.UpsertFinding(ctx, engine.FindingRecord{
+			ID: "F" + string(rune('A'+i)), ArrowID: "A1", Type: "local-bug",
+			Severity: 2, Status: "open",
+		})
+	}
+	body := getJSON(t, ts.URL+"/v2/findings?limit=2&offset=0")
+	page, ok := body["page"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing page metadata in response: %v", body)
+	}
+	for _, key := range []string{"total", "limit", "offset", "returned", "has_more"} {
+		if _, ok := page[key]; !ok {
+			t.Errorf("page metadata missing %q: %v", key, page)
+		}
+	}
+	if total, _ := page["total"].(float64); total < 6 {
+		t.Errorf("total = %v; want >= 6 (5 seeded + 1 from base fixture)", page["total"])
+	}
+	if hasMore, _ := page["has_more"].(bool); !hasMore {
+		t.Errorf("has_more should be true with limit=2 + 6 total; got page=%v", page)
+	}
+}
+
+// TestVault_V2_TransitionsPagination_PartialMetadata verifies that
+// the transitions endpoint (no CountX helper) still emits page
+// metadata, with `has_more` derived from page-full heuristic.
+func TestVault_V2_TransitionsPagination_PartialMetadata(t *testing.T) {
+	ts, _ := newTestServerWithEngine(t)
+	body := getJSON(t, ts.URL+"/v2/findings/transitions?finding_id=F1&limit=10")
+	page, ok := body["page"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing page metadata: %v", body)
+	}
+	// total intentionally absent for partial paginator.
+	if _, hasTotal := page["total"]; hasTotal {
+		t.Errorf("transitions endpoint must NOT claim a total (no CountX): page=%v", page)
+	}
+	if _, ok := page["has_more"]; !ok {
+		t.Errorf("has_more must be present: page=%v", page)
+	}
+}

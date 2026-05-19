@@ -170,7 +170,12 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"findings": rows})
+	total, err := s.engine.CountFindings(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("findings", rows, len(rows), total, limit, offset))
 }
 
 // handleTransitions: GET /v2/findings/transitions?finding_id=...&limit=...&offset=...
@@ -204,7 +209,9 @@ func (s *Server) handleTransitions(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"transitions": rows})
+	// Transitions don't have a CountX yet; estimate has_more from
+	// page-full + offset; total is omitted.
+	s.writeJSON(w, r, partialPaginated("transitions", rows, len(rows), limit, offset))
 }
 
 // handleAmendments: GET /v2/amendments?source_arrow=...&drained=true|false&limit=...&offset=...
@@ -240,7 +247,12 @@ func (s *Server) handleAmendments(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"amendments": rows})
+	pending, drainedCount, err := s.engine.CountAmendments(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("amendments", rows, len(rows), pending+drainedCount, limit, offset))
 }
 
 // handleArrows: GET /v2/arrows?kind=append|on-the-spot&min_grid_version=...&limit=...&offset=...
@@ -280,7 +292,12 @@ func (s *Server) handleArrows(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"arrows": rows})
+	total, err := s.engine.CountArrows(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("arrows", rows, len(rows), total, limit, offset))
 }
 
 // handleRequirements: GET /v2/requirements?arrow_id=...&limit=...&offset=...
@@ -312,7 +329,12 @@ func (s *Server) handleRequirements(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"requirements": rows})
+	total, err := s.engine.CountRequirements(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("requirements", rows, len(rows), total, limit, offset))
 }
 
 // handleClassifications: GET /v2/classifications?arrow_id=...&limit=...&offset=...
@@ -344,7 +366,12 @@ func (s *Server) handleClassifications(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"classifications": rows})
+	total, err := s.engine.CountClassifications(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("classifications", rows, len(rows), total, limit, offset))
 }
 
 // handleEvaluationRuns: GET /v2/evaluation-runs?clause_id=...&pass_id=...&arrow_id=...&limit=...&offset=...
@@ -385,7 +412,48 @@ func (s *Server) handleEvaluationRuns(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(r, w, err)
 		return
 	}
-	s.writeJSON(w, r, map[string]any{"evaluation_runs": rows})
+	total, err := s.engine.CountEvaluationRuns(r.Context())
+	if err != nil {
+		s.writeServerError(r, w, err)
+		return
+	}
+	s.writeJSON(w, r, paginatedResponse("evaluation_runs", rows, len(rows), total, limit, offset))
+}
+
+// paginatedResponse formats a list-endpoint body with pagination
+// metadata so clients can detect truncation without re-issuing
+// a count query. Per integrator M5.
+//
+// Layout:
+//
+//	{ "<key>": [...], "page": { "total": N, "limit": L, "offset": O, "has_more": bool } }
+func paginatedResponse(key string, rows any, returned, total, limit, offset int) map[string]any {
+	hasMore := offset+returned < total
+	return map[string]any{
+		key: rows,
+		"page": map[string]any{
+			"total":    total,
+			"limit":    limit,
+			"offset":   offset,
+			"returned": returned,
+			"has_more": hasMore,
+		},
+	}
+}
+
+// partialPaginated is the same shape but without an accurate
+// `total`, used for endpoints where a Count helper is not (yet)
+// available. `has_more` is conservative: true when the page filled.
+func partialPaginated(key string, rows any, returned, limit, offset int) map[string]any {
+	return map[string]any{
+		key: rows,
+		"page": map[string]any{
+			"limit":    limit,
+			"offset":   offset,
+			"returned": returned,
+			"has_more": returned >= limit,
+		},
+	}
 }
 
 // silence the errors import — required by go vet on unused-import.

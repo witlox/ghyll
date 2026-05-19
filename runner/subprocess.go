@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -288,10 +289,16 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	// Kill closure passed to captureBuf so cap-overflow triggers
 	// immediate process-group termination (F2). One-shot via
 	// sync.Once.
+	//
+	// CI race fix: `reaped` is set by the wait goroutine AFTER
+	// cmd.Wait returns. killProcessGroup consults this flag instead
+	// of cmd.ProcessState so the kill path never races the Wait
+	// path's writes to cmd internals.
+	var reaped atomic.Bool
 	var killOnce sync.Once
 	doKill := func() {
 		killOnce.Do(func() {
-			killProcessGroup(cmd, b.Grace)
+			killProcessGroup(cmd, b.Grace, &reaped)
 		})
 	}
 
@@ -312,9 +319,13 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	}()
 
 	// Wait in a goroutine so we can race against ctx + cap-kill.
+	// CI race fix: set `reaped` before sending so killProcessGroup
+	// observes Wait's completion without reading cmd.ProcessState.
 	waitErrCh := make(chan error, 1)
 	go func() {
-		waitErrCh <- cmd.Wait()
+		err := cmd.Wait()
+		reaped.Store(true)
+		waitErrCh <- err
 	}()
 
 	var waitErr error
@@ -510,45 +521,69 @@ func depthExceeds(v any, max int) bool {
 // waits grace, then SIGKILL if the process is still alive. On
 // Linux, negating PID targets the whole group.
 //
-// Refuses to signal if cmd.ProcessState != nil (process already
-// reaped — prevents PID-recycle race per validation-pass-3 F14).
-func killProcessGroup(cmd *exec.Cmd, grace time.Duration) {
+// Refuses to signal if `reaped` is set (Wait has returned, process
+// is reaped — prevents PID-recycle race per validation-pass-3 F14).
+//
+// CI race fix: `reaped` (atomic.Bool, set by the Wait goroutine
+// after cmd.Wait returns) replaces the racy `cmd.ProcessState !=
+// nil` read for the F14 PID-recycle guard. For the in-grace poll
+// we use `syscall.Kill(pid, 0)` — a documented liveness probe that
+// returns ESRCH when the process no longer exists. This avoids
+// reading cmd.ProcessState concurrently with Wait (a data race
+// under `go test -race`) while still detecting process death
+// promptly.
+func killProcessGroup(cmd *exec.Cmd, grace time.Duration, reaped *atomic.Bool) {
 	if cmd.Process == nil {
 		return
 	}
-	// F14: if cmd already reaped, do nothing (PID may have been
-	// recycled to another process).
-	if cmd.ProcessState != nil {
+	// F14: if Wait already returned, do nothing (PID may have
+	// been recycled to another process).
+	if reaped != nil && reaped.Load() {
 		return
 	}
 	// F34: clamp grace at floor.
 	if grace < minBindingGrace {
 		grace = minBindingGrace
 	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
 	if err != nil {
 		// Fall back to direct PID signalling.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		time.Sleep(grace)
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
+		if waitForExitOrGrace(pid, reaped, grace) {
+			return
 		}
+		_ = cmd.Process.Kill()
 		return
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	// Poll until either the process is reaped (via cmd.Wait
-	// elsewhere) or grace expires. Checking cmd.ProcessState
-	// avoids the signal-0 PID-recycle window.
+	if waitForExitOrGrace(pid, reaped, grace) {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+// waitForExitOrGrace polls the target process's liveness via
+// syscall.Kill(pid, 0) until either the kernel reports ESRCH (the
+// process exited and was reaped — by the parent's cmd.Wait
+// goroutine), the `reaped` flag flips, or the grace window
+// expires. Returns true when the process is gone.
+func waitForExitOrGrace(pid int, reaped *atomic.Bool, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil {
-			return
+		if reaped != nil && reaped.Load() {
+			return true
+		}
+		// kill(pid, 0) is the POSIX liveness probe — succeeds on
+		// existing process (returns nil), ESRCH on missing pid.
+		// This avoids touching cmd.ProcessState (which Wait
+		// writes under a different lock).
+		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if cmd.ProcessState == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}
+	return reaped != nil && reaped.Load()
 }
 
 // captureBuf is an io.Writer with a byte cap. When the cap trips,
