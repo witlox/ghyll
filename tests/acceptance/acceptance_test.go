@@ -19,12 +19,36 @@ func TestFeatures(t *testing.T) {
 				"../../specs/features",
 				"../../specs/v2/features/init.feature",
 				"../../specs/v2/features/runner-step3.feature",
+				"../../specs/v2/features/state-machine.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
 			// Strict mode: undefined/pending steps cause failure.
-			// Disable during early development to see what's missing.
+			//
+			// Currently FALSE because the v1 BDD suite has ~75 SHALLOW
+			// state-theater scenarios that return nil from steps without
+			// calling production code (audited 2026-05-19). Setting
+			// Strict=true would fail them all, drowning out new-scenario
+			// regressions in noise.
+			//
+			// Roadmap: when Phase C (lift v1 SHALLOW → THOROUGH) finishes
+			// and the v1 step files only return nil with explicit
+			// `godog.ErrPending` for known-deferred bodies, flip this to
+			// true so undefined-by-omission surfaces loudly. Phase F
+			// (final tag) requires Strict=true.
 			Strict: false,
+			// Tag filter — skip @phase11-marked scenarios. They depend
+			// on code surfaces not yet shipped (full attestation flow,
+			// Pass entity, checkpoint log, ProjectStatus aggregator,
+			// crash recovery). See specs/v2-final-plan.md D-4.
+			//
+			// godog's tag-expression syntax is cucumber-standard:
+			// `~@tag` negates (skip scenarios with this tag). Verified
+			// in this suite's run output — @phase11 scenarios do NOT
+			// execute. The bare `@phase11` (without the tilde) would
+			// run ONLY phase11 scenarios; the inverse, what we want, is
+			// the tilde form.
+			Tags: "~@phase11",
 		},
 	}
 
@@ -69,6 +93,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 	// Runner step definitions (specs/v2/features/runner.feature).
 	registerRunnerSteps(ctx, state)
+
+	// State-machine step definitions (specs/v2/features/state-machine.feature).
+	// Phase B1 of v2-final consolidation.
+	registerStateMachineSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

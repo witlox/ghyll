@@ -376,6 +376,27 @@ files, no duplicate inherited features.
   `registerAttestationSteps` / `registerAdversarialSteps` once they
   exist (Phase B) and confirm acceptance_test.go calls them all.
 
+- **D4.5. Observability refactor: ui package + log/slog**:
+  Three-way split of the current `fmt.Println` / `log.Default()` sprawl
+  (request from 2026-05-19, slotted into Phase D.5):
+  - **Operator UX**: extract `s.output` callsites in `cmd/ghyll/`
+    into a small `ui` package — typed methods `ui.Info(msg)`,
+    `ui.Warn(msg)`, `ui.Status(msg)`, `ui.Handoff(prev, next, reason)`.
+    Terminal-first by default; `--quiet` and `--log-format json`
+    modes added in the same surface.
+  - **Diagnostics**: replace `log.Default()` and `log.Printf` calls
+    in `engine/journal.go` (drop counter), replay error paths, sqlite
+    warning paths with `log/slog`. Text handler by default; JSON via
+    flag. No new dependency — stdlib `log/slog`.
+  - **Audit trail**: the v2 entities (FindingsEvent / ClassificationsEvent
+    / GridEvent / EvaluationRun) ARE the trace layer; engine.Journal
+    + `ghyll engine status|replay` already render them back. Do NOT
+    add OpenTelemetry / zap / context-propagated spans — wrong shape
+    for a single-process sandbox-only agent.
+  - Adversarial scope: every fmt.Println / log.Printf call site
+    moved or annotated. Coverage: structured-output mode round-trips
+    cleanly under `--log-format json`.
+
 - **D5. Spec tree consolidation per D-3 (revised layout)**:
   - Move `specs/direction/direction.md` → `specs/architecture/design.md`.
   - Move `specs/direction/gates.md` → `specs/architecture/gates.md`.

@@ -142,6 +142,24 @@ type ScenarioState struct {
 	// Grid filesystem state (ADR-010 — versioned grid files + grid.current pointer).
 	GridTestDir string
 	GridReadErr error
+
+	// State-machine step state (specs/v2/features/state-machine.feature).
+	// Phase B1 of v2-final consolidation.
+	SMClauseStatus          runner.ClauseStatus   // current clause status under test
+	SMClauseStatusName      string                // wire-form name as the feature posed it
+	SMClauseRecordedAt      time.Time             // timestamp captured at transition
+	SMTransitionError       error                 // last attempted transition's error
+	SMRunner                *runner.Runner        // for depth-below-required tests
+	SMRunnerRegistry        *runner.Registry      // shared registry across the scenario
+	SMRunnerEvalRun         *runner.EvaluationRun // result of the last Evaluate
+	SMArrowClauses          []runner.ClauseDeriveInput
+	SMArrowFindings         []runner.Finding
+	SMDerivedStatus         runner.ArrowStatus
+	SMArrowBlockingClauses  int
+	SMArrowBlockingFindings int
+	SMFindingsStore         *runner.FindingsStore // freshly constructed per scenario
+	SMFindingID             string                // current finding under test
+	SMFindingError          error                 // last finding-transition error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

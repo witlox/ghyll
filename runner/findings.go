@@ -182,6 +182,13 @@ var (
 	ErrFindingUnknownID       = errors.New("finding-unknown-id")
 	ErrFindingInvalidStatus   = errors.New("finding-invalid-status")
 	ErrFindingInvalidSeverity = errors.New("finding-invalid-severity")
+	// ErrFindingProducerSelfAccept guards the gates.md §7.3 invariant:
+	// "the producer may NOT accept its own risk — only the operator may
+	// attest `accepted-risk`." When the role on a transition is
+	// "producer" and the target is accepted-risk, the call is refused.
+	// The operator (via the attestation flow) is the only legitimate
+	// path to accepted-risk.
+	ErrFindingProducerSelfAccept = errors.New("producer-cannot-accept-own-risk")
 )
 
 // maxFindingTransitions bounds per-record lifecycle churn (F25).
@@ -271,6 +278,16 @@ func (s *FindingsStore) transitionImpl(id string, to FindingStatus, role, reason
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// gates.md §7.3: only the operator (via the attestation flow) may
+	// attest accepted-risk. A transition whose stated role is the
+	// producer is refused so the producer cannot self-accept. The
+	// check is on parameters only (no shared state), but lives inside
+	// the lock so it's adjacent to the rest of the validation logic
+	// — easier to audit, no ordering hazard if a future change adds
+	// state-dependent conditions.
+	if to == FindingStatusAcceptedRisk && role == "producer" {
+		return fmt.Errorf("%w: %s", ErrFindingProducerSelfAccept, id)
+	}
 	loc, ok := s.byID[id]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrFindingUnknownID, id)

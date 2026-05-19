@@ -629,7 +629,20 @@ catalogue concepts (§5.1).
 ```
 
 The producer may NOT accept its own risk — only the operator may
-attest `accepted-risk`.
+attest `accepted-risk`. Enforced today by `runner.FindingsStore.
+TransitionWithReason` rejecting `role="producer" + to=accepted-risk`
+(`runner.ErrFindingProducerSelfAccept`).
+
+**Open spec point (surfaced 2026-05-19 in Phase B1 of v2-final
+consolidation)**: the diagram above shows the canonical lifecycle but
+does not enumerate which DIRECT edges (skipping intermediate states)
+are forbidden. The runner currently permits `open → resolved`,
+`resolved → open`, and `accepted-risk → open` direct via
+`validFindingTransition` (the latter two as explicit operator-amendment
+paths). The v2-final BDD layer (`specs/v2/features/state-machine.feature`'s
+illegal-finding-status outline) reflects the runner's contract, not a
+stricter interpretation. A phase-11 spec tightening should pin which
+direct edges are illegal vs. which are operator-amendment legal.
 
 Every finding carries a required **severity** on the enum:
 
