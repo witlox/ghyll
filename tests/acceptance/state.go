@@ -174,6 +174,17 @@ type ScenarioState struct {
 	SMMissingGridDir     string
 	SMMissingGridVersion int
 	SMMissingGridErr     error
+
+	// Attestation step state (specs/v2/features/attestation.feature).
+	// Phase B3 of v2-final consolidation.
+	AttRegistry        *bootstrap.SessionRegistry
+	AttSession         *bootstrap.Session
+	AttSessionErr      error
+	AttOpIDAttempt     string
+	AttFindings        *runner.FindingsStore
+	AttFindingID       string
+	AttOperatorErr     error
+	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt per B3 #M4)
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

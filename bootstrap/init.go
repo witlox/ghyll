@@ -40,10 +40,10 @@ func (d GridDefaults) validate() error {
 		return errors.New("GridDefaults: DepthLadder empty")
 	}
 	if d.InsufficientBasisRoundsMax < 1 {
-		return errors.New("GridDefaults: InsufficientBasisRoundsMax must be >= 1")
+		return ErrInsufficientBasisRoundsMaxNonPositive
 	}
 	if d.RemediationRoundsMax < 1 {
-		return errors.New("GridDefaults: RemediationRoundsMax must be >= 1")
+		return ErrRemediationRoundsMaxNonPositive
 	}
 	return nil
 }
@@ -61,6 +61,14 @@ func (d GridDefaults) validate() error {
 // not write to disk itself — callers separate "ready to write" from
 // "writing" so the grid can be inspected, attested over, or sent
 // through a dry-run before persistence.
+
+// GridDefaults validation errors. Wire form matches gates.md §11
+// (attestation.feature). Operator-facing wording is the public
+// contract; downstream tooling parses on this name.
+var (
+	ErrInsufficientBasisRoundsMaxNonPositive = errors.New("insufficient-basis-rounds-max-must-be-positive")
+	ErrRemediationRoundsMaxNonPositive       = errors.New("remediation-rounds-max-must-be-positive")
+)
 
 // BuildInit errors.
 var (

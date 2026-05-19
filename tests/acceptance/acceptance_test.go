@@ -21,6 +21,7 @@ func TestFeatures(t *testing.T) {
 				"../../specs/v2/features/runner-step3.feature",
 				"../../specs/v2/features/state-machine.feature",
 				"../../specs/v2/features/amendment.feature",
+				"../../specs/v2/features/attestation.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
@@ -102,6 +103,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// Amendment step definitions (specs/v2/features/amendment.feature).
 	// Phase B2 of v2-final consolidation.
 	registerAmendmentSteps(ctx, state)
+
+	// Attestation step definitions (specs/v2/features/attestation.feature).
+	// Phase B3 of v2-final consolidation. Most attestation surface is
+	// phase-11 (full operator event bus, JSONL verdict records); B3
+	// wires the surfaces that exist today (op-id validation,
+	// FindingStore operator transitions).
+	registerAttestationSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
