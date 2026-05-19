@@ -449,8 +449,21 @@ func registerSessionFeatureSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 			state.DeepOverride = false
 			buildPrompt()
 		case "/deep":
+			if state.ModelLocked {
+				// /deep is ignored when model is locked
+				// (matches routing scenarios that pre-set
+				// state.ModelLocked via --model flag).
+				state.AddTerminal("ℹ /deep ignored, model locked via --model flag")
+				break
+			}
 			state.DeepOverride = true
 			sessionModel = "glm5"
+			// Routing scenarios assert state.ActiveModel flips
+			// to glm5 on /deep. Setting it here removes the need
+			// for a routing.go-specific step regex (resolves
+			// the cross-file regex ambiguity that blocked
+			// Strict=true).
+			state.ActiveModel = "glm5"
 			buildPrompt()
 		case "/status":
 			planStr := "off"

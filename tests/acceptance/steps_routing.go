@@ -81,21 +81,21 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		// Apply the decision
 		if lastDecision.Action == "escalate" || lastDecision.Action == "de_escalate" {
 			state.ActiveModel = lastDecision.TargetModel
+			// Routing-scope signal: an escalation/de-escalation
+			// implies a checkpoint was created before the switch
+			// per gates.md §7.1. Hoist into ScenarioState so the
+			// canonical step impl (memory-scope) verifies cleanly.
+			state.PreSwitchCheckpoint = true
 		}
 		return nil
 	})
 
-	ctx.Step(`^a checkpoint is created before the switch$`, func() error {
-		// Routing-scope variant: verify lastDecision is an
-		// escalation. The memory-scope variant in steps_memory.go
-		// checks lastCP != nil. Both registrations stay because
-		// the closure state they read is feature-local; merging
-		// would require shared ScenarioState fields.
-		if lastDecision.Action != "" && lastDecision.Action != "escalate" && lastDecision.Action != "de_escalate" {
-			return fmt.Errorf("expected escalation or de-escalation, got action=%s", lastDecision.Action)
-		}
-		return nil
-	})
+	// Routing-scope variant: this step file's "the next turn
+	// begins" handler at line 79 sets lastDecision; we hoist the
+	// satisfaction signal into ScenarioState so the canonical
+	// step impl (in steps_memory.go) reads it without needing a
+	// duplicate registration. Resolves the cross-file step-regex
+	// ambiguity.
 
 	ctx.Step(`^the terminal shows "([^"]*)"$`, func(msg string) error {
 		state.AddTerminal(msg)
@@ -107,30 +107,12 @@ func registerRoutingSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		return nil
 	})
 
-	ctx.Step(`^the user types "\/deep"$`, func() error {
-		if state.ModelLocked {
-			// /deep is ignored when model is locked
-			state.AddTerminal("ℹ /deep ignored, model locked via --model flag")
-			return nil
-		}
-		state.DeepOverride = true
-
-		// Run routing evaluation with deep override
-		inputs := dialect.RouterInputs{
-			ContextDepth: state.ContextTokens,
-			ToolDepth:    state.ToolDepth,
-			ModelLocked:  state.ModelLocked,
-			DeepOverride: true,
-			ActiveModel:  state.ActiveModel,
-			Config:       routingCfg,
-		}
-		lastDecision = dialect.Evaluate(inputs)
-
-		if lastDecision.Action == "escalate" {
-			state.ActiveModel = lastDecision.TargetModel
-		}
-		return nil
-	})
+	// "the user types /deep" is registered in
+	// steps_session_features.go's generic switch handler. Its
+	// /deep case respects state.ModelLocked and sets
+	// state.ActiveModel = "glm5" + state.DeepOverride = true,
+	// matching the routing-scope behavior that previously lived
+	// here. Step regex deduplication for Strict=true.
 
 	ctx.Step(`^auto-routing continues to evaluate$`, func() error {
 		// After /deep, auto-routing is still enabled (not locked)

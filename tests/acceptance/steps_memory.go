@@ -454,8 +454,15 @@ func registerMemorySteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^a checkpoint is created before the switch$`, func() error {
-		if lastCP == nil {
+		if lastCP == nil && !state.PreSwitchCheckpoint {
 			return fmt.Errorf("no checkpoint was created before switch")
+		}
+		// Surface to the shared state so other step files reading the
+		// signal see the affirmative result (memory-scope's lastCP
+		// satisfaction implies the same gate as routing-scope's
+		// escalation).
+		if lastCP != nil {
+			state.PreSwitchCheckpoint = true
 		}
 		return nil
 	})

@@ -41,6 +41,15 @@ type ScenarioState struct {
 	ChainValid      bool
 	PendingVerifyCP interface{} // *memory.Checkpoint for cross-step-file sharing
 
+	// PreSwitchCheckpoint is set by EITHER memory-scope (lastCP
+	// observation) OR routing-scope (lastDecision was an
+	// escalation/de-escalation) signaling that the "checkpoint
+	// before model switch" precondition is satisfied. Lifted to
+	// ScenarioState so a single canonical step impl can verify
+	// the shared signal (resolves the cross-file step-regex
+	// ambiguity that previously blocked Strict=true).
+	PreSwitchCheckpoint bool
+
 	// Drift
 	Similarity float64
 	Threshold  float64

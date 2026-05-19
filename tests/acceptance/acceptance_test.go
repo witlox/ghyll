@@ -20,26 +20,11 @@ func TestFeatures(t *testing.T) {
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
-			// Strict mode: undefined or pending steps fail the suite.
-			//
-			// Kept false because 3 step-regex registrations are
-			// ambiguous in ways that can't be cleanly resolved
-			// without a step-state refactor:
-			//
-			//   - `^a checkpoint is created before the switch$`
-			//     (routing-scope lastDecision vs memory-scope lastCP).
-			//   - `^push failure is logged but does not interrupt
-			//     the session$` (vault-scope real-push vs sync-scope
-			//     no-op — RESOLVED).
-			//   - `^the user types "/deep"$` (routing-scope
-			//     dialect.Evaluate vs session-features-scope generic
-			//     slash handler).
-			//
-			// 10 of 13 original ambiguities were consolidated; the
-			// remaining 3 require moving closure-locals to
-			// ScenarioState — out of scope for v1.x. Flipping Strict
-			// to true is the only follow-up.
-			Strict: false,
+			// Strict mode: undefined or pending steps fail the
+			// suite. All 13 original step-regex ambiguities have
+			// been consolidated (the last three resolved by
+			// lifting closure-local state to ScenarioState).
+			Strict: true,
 			// Tag filter — skip scenarios tagged `@deferred`. They
 			// describe surface that depends on code not yet shipped
 			// (full attestation event bus, Pass entity, ProjectStatus
