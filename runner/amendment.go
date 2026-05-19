@@ -198,6 +198,38 @@ func (q *AmendmentQueue) Enqueue(r AmendmentRequest) error {
 	return nil
 }
 
+// MarkDrained removes a single amendment by ID from the pending
+// queue and emits an AmendmentEventDrain event carrying just that
+// request. Used by AmendmentCommitter so an individual amendment
+// commit flows through the journal's drained_at persistence path
+// without disturbing other pending amendments.
+//
+// Idempotent: if the ID is not in the pending queue (already
+// drained, never enqueued), MarkDrained is a silent no-op.
+func (q *AmendmentQueue) MarkDrained(id string) {
+	if id == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.byID[id]; !ok {
+		return
+	}
+	delete(q.byID, id)
+	var drained AmendmentRequest
+	out := q.pending[:0]
+	for _, r := range q.pending {
+		if r.ID == id {
+			drained = deepCopyAmendment(r)
+			continue
+		}
+		out = append(out, r)
+	}
+	q.pending = out
+	q.seenIDs[id] = struct{}{}
+	q.emit(AmendmentEvent{Kind: AmendmentEventDrain, Drained: []AmendmentRequest{drained}})
+}
+
 // Drain returns a deep-copy snapshot of pending amendments and
 // clears the pending slice. seenIDs is RETAINED so drained IDs
 // can't be re-emitted (F44). Call Reset to clear seenIDs too.

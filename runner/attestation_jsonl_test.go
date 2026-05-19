@@ -223,6 +223,97 @@ func (w *writeCounter) Write(p []byte) (int, error) {
 }
 func (w *writeCounter) Close() error { return nil }
 
+// TestScenario_AttestationJSONL_FsyncRunsBeforeObserverReturns —
+// the operator spec requires fsync BEFORE the Record call's
+// caller proceeds. We probe by attaching a syncFn that pulses a
+// channel; the Record call must not return until the channel
+// pulses.
+func TestScenario_AttestationJSONL_FsyncBeforeAccept(t *testing.T) {
+	buf := &bytes.Buffer{}
+	w := newAttestationJSONLWriterForWriter(nopWriteCloser{buf})
+	syncCalls := 0
+	w.syncFn = func() error { syncCalls++; return nil }
+	defer w.Close()
+	store := NewAttestationStore()
+	store.Observe(w.Observer())
+
+	rec := AttestationRecord{
+		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
+		ArrowID: "A1", ClauseID: "C1", OpID: "op",
+		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	}
+	if err := store.Record(rec); err != nil {
+		t.Fatal(err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("syncFn called %d times; want 1 (fsync-before-accept)", syncCalls)
+	}
+}
+
+// TestScenario_AttestationJSONL_FailurePublishesBusEvent pins the
+// adversary-fix: the operator UI needs to see audit-durability
+// failures in real time. fsync / write / marshal failures publish
+// OpEventAttestationAuditDurabilityFailed so subscribers can
+// surface the divergence.
+func TestScenario_AttestationJSONL_FailurePublishesBusEvent(t *testing.T) {
+	buf := &bytes.Buffer{}
+	w := newAttestationJSONLWriterForWriter(nopWriteCloser{buf})
+	w.syncFn = func() error { return errors.New("disk full") }
+	bus := NewOperatorBus()
+	w.WithBus(bus)
+	defer w.Close()
+
+	var got []OperatorEvent
+	bus.Subscribe(func(e OperatorEvent) { got = append(got, e) })
+
+	store := NewAttestationStore()
+	store.Observe(w.Observer())
+	rec := AttestationRecord{
+		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
+		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
+		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	}
+	_ = store.Record(rec)
+
+	var sawDurability bool
+	for _, e := range got {
+		if e.Kind == OpEventAttestationAuditDurabilityFailed {
+			sawDurability = true
+			if e.ArrowID != "A1" || e.ClauseID != "C1" || e.OpID != "op-alice" {
+				t.Errorf("event payload mismatch: %+v", e)
+			}
+		}
+	}
+	if !sawDurability {
+		t.Fatal("expected OpEventAttestationAuditDurabilityFailed event")
+	}
+}
+
+func TestScenario_AttestationJSONL_FsyncFailureCounted(t *testing.T) {
+	buf := &bytes.Buffer{}
+	w := newAttestationJSONLWriterForWriter(nopWriteCloser{buf})
+	w.syncFn = func() error { return errors.New("disk full at fsync") }
+	defer w.Close()
+	store := NewAttestationStore()
+	store.Observe(w.Observer())
+
+	rec := AttestationRecord{
+		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
+		ArrowID: "A1", ClauseID: "C1", OpID: "op",
+		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	}
+	_ = store.Record(rec)
+	if w.WriteErrors() != 1 {
+		t.Fatalf("WriteErrors after fsync fail = %d; want 1", w.WriteErrors())
+	}
+	if w.LastError() == nil || !strings.Contains(w.LastError().Error(), "fsync") {
+		t.Fatalf("LastError should name fsync; got %v", w.LastError())
+	}
+}
+
 // ensure NewAttestationJSONLWriter returns a value that compiles
 // as an io.Closer (helps catch accidental signature changes).
 var _ io.Closer = (*AttestationJSONLWriter)(nil)

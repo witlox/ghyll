@@ -155,7 +155,7 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 	jsonlPath := filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
 	jw, jerr := runner.NewAttestationJSONLWriter(jsonlPath)
 	if jerr == nil {
-		rt.jsonlWriter = jw
+		rt.jsonlWriter = jw.WithBus(rt.bus)
 	} else if logger != nil {
 		logger.Warn("engine: attestation JSONL writer unavailable",
 			"path", jsonlPath, "err", jerr)

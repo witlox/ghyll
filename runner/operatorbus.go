@@ -59,6 +59,9 @@ const (
 
 	// State-machine events.
 	OpEventInsufficientBasisRoundsExceeded OperatorEventKind = "insufficient-basis-rounds-exceeded"
+
+	// Audit-trail events.
+	OpEventAttestationAuditDurabilityFailed OperatorEventKind = "attestation-audit-durability-failed"
 )
 
 // OperatorEventSubscriber receives events in publish order. Slow

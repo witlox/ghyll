@@ -17,9 +17,14 @@ import (
 // moment it fires — the file and the in-memory store stay
 // consistent.
 //
-// Per ADR-010: durability lives in the engine sqlite table. The
-// JSONL file is a derived audit trail; if it is deleted, the
-// engine can re-export it (`ghyll engine export-attestations`).
+// Per ADR-010 + the operator-attestation spec: durability lives
+// in the engine sqlite table; the JSONL file is a derived audit
+// trail. Each line is fsync'd BEFORE the Record call returns,
+// satisfying the spec invariant "the file is fsync'd before the
+// verdict is reported as accepted." If the fsync fails, the
+// record is counted as a write error AND the on-disk line may be
+// half-flushed — operators should consult LastError() and
+// reconcile against the engine table.
 //
 // The writer is thread-safe: an internal mutex serializes appends
 // so concurrent Record events don't interleave bytes. Each line
@@ -40,8 +45,29 @@ type AttestationJSONLWriter struct {
 	out         io.WriteCloser
 	closed      bool
 	writeFn     func(io.Writer, []byte) error
+	syncFn      func() error // fsync the underlying file; nil = no-op
 	writeErrors int
 	lastErr     error
+
+	// Bus (optional) receives OpEventAttestationAuditDurability-
+	// Failed events when a marshal / write / fsync error occurs.
+	// Wired via WithBus. Surfacing failures via the bus gives
+	// operator-facing UIs and the engine status CLI a real-time
+	// signal that the audit trail diverged from the engine table,
+	// without forcing the AttestationStore.Record contract to
+	// fail (the engine table is the durable source of truth per
+	// ADR-010; the JSONL is a derived audit trail).
+	bus *OperatorBus
+}
+
+// WithBus wires an OperatorBus so the writer publishes a typed
+// event on any audit-durability failure. Returns the receiver for
+// chaining.
+func (w *AttestationJSONLWriter) WithBus(bus *OperatorBus) *AttestationJSONLWriter {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.bus = bus
+	return w
 }
 
 // NewAttestationJSONLWriter opens (or creates+appends to) path.
@@ -63,6 +89,7 @@ func NewAttestationJSONLWriter(path string) (*AttestationJSONLWriter, error) {
 		path:    path,
 		out:     f,
 		writeFn: writeLine,
+		syncFn:  f.Sync, // fsync-before-accept (operator spec invariant)
 	}, nil
 }
 
@@ -95,14 +122,44 @@ func (w *AttestationJSONLWriter) Observer() AttestationObserver {
 		}
 		line, err := json.Marshal(newJsonlRecord(e.Record))
 		if err != nil {
-			w.writeErrors++
-			w.lastErr = fmt.Errorf("marshal attestation %s: %w", e.Record.ID, err)
+			w.recordFailure(e.Record, fmt.Errorf("marshal attestation %s: %w", e.Record.ID, err))
 			return
 		}
 		if err := w.writeFn(w.out, line); err != nil {
-			w.writeErrors++
-			w.lastErr = fmt.Errorf("write attestation %s: %w", e.Record.ID, err)
+			w.recordFailure(e.Record, fmt.Errorf("write attestation %s: %w", e.Record.ID, err))
+			return
 		}
+		// fsync-before-accept (operator spec invariant). The
+		// Observer returns AFTER fsync so the AttestationStore.Record
+		// caller only proceeds once the audit row is durable on
+		// disk. If fsync fails, we surface the failure via the
+		// bus AND the WriteErrors counter so the operator path
+		// sees it — but the Observer returns normally because the
+		// AttestationObserver contract has no error channel and
+		// the engine table is the durable source of truth (the
+		// JSONL is a derived audit trail per ADR-010).
+		if w.syncFn != nil {
+			if err := w.syncFn(); err != nil {
+				w.recordFailure(e.Record, fmt.Errorf("fsync attestation %s: %w", e.Record.ID, err))
+			}
+		}
+	}
+}
+
+// recordFailure is called under w.mu. Increments the error
+// counter, captures the last error, and publishes a typed bus
+// event so operator-facing surfaces see the failure in real time.
+func (w *AttestationJSONLWriter) recordFailure(rec AttestationRecord, err error) {
+	w.writeErrors++
+	w.lastErr = err
+	if w.bus != nil {
+		w.bus.Publish(OperatorEvent{
+			Kind:     OpEventAttestationAuditDurabilityFailed,
+			ArrowID:  rec.ArrowID,
+			ClauseID: rec.ClauseID,
+			OpID:     rec.OpID,
+			Detail:   err.Error(),
+		})
 	}
 }
 
