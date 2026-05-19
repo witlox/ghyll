@@ -32,38 +32,24 @@ is the position.
 >
 > | Platform | Sandbox | Description |
 > |----------|---------|-------------|
-> | **macOS / Linux** | [SRT](https://github.com/anthropic-experimental/sandbox-runtime) | **Recommended.** Anthropic's Sandbox Runtime — OS-level filesystem and network isolation via Seatbelt (macOS) and bubblewrap (Linux). |
-> | **macOS** | [Ash](https://github.com/nicholasgasior/ash) | App Sandbox profiles via `sandbox-exec`. |
+> | **macOS** | [Sandbox]([https://github.com/anthropic-experimental/sandbox-runtime](https://igorstechnoclub.com/sandbox-exec/)) | MacOS Native Sandbox Runtime. |
 > | **Linux** | [bubblewrap](https://github.com/containers/bubblewrap) | Unprivileged namespace sandboxing. |
-> | **Linux** | [firejail](https://github.com/netblue30/firejail) | SUID sandbox with seccomp-bpf. |
 > | **Any** | Docker/Podman | Container isolation. |
 >
-> <details><summary>SRT example (recommended)</summary>
+> <details><summary>Sandbox-exec example</summary>
+>
+> sandbox-exec uses a sandbox file (`~/.config/sandbox/ghyll.sb`) for fine-grained control:
+>
+> ```sandbox-file (permissive)
+> (version 1)
+> (allow default)
+> (deny network*)
+> (deny file-read-data (regex "^/Users/[^/]+/(Documents|Pictures|Desktop)"))
+> ```
 >
 > ```bash
-> # Install SRT
-> npm install -g @anthropic-ai/sandbox-runtime
->
-> # Run ghyll inside SRT
-> srt ghyll run .
+> sandbox-exec -f ~/.config/sandbox/ghyll.sh ghyll
 > ```
->
-> SRT uses a settings file (`~/.srt-settings.json`) for fine-grained control:
->
-> ```json
-> {
->   "network": {
->     "allowedDomains": ["inference.internal"]
->   },
->   "filesystem": {
->     "denyRead": ["~/.ssh", "~/.aws"],
->     "allowWrite": [".", "~/.ghyll"],
->     "denyWrite": [".env"]
->   }
-> }
-> ```
->
-> Everything is denied by default — network, filesystem writes, and sensitive paths are blocked unless explicitly allowed. This makes it ideal for containing LLM-driven tool execution.
 >
 > </details>
 >
