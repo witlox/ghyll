@@ -111,6 +111,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// loop-bomb detection, bounded escalation, verification
 	// auto-insert (adversarial.feature).
 	registerAdversarialDeferredSteps(ctx, state)
+
+	// Runner deferred batch — concurrent / refused / amendment
+	// abort / depth-gate scenarios (runner.feature).
+	registerRunnerDeferredSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

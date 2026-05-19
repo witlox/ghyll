@@ -35,14 +35,12 @@ Feature: Machine-clause runner (enforcement spine)
     And the result records the hit location
     And the arrow's derived status becomes "blocked"
 
-  @deferred
   Scenario: Machine evaluator returns unevaluated due to depth
-    # This depth-gate short-circuit is wired in state-machine.feature
-    # ("Depth-below-required produces unevaluated") which covers the
-    # same runner.WithActualTier vs Clause.MinDepthTier contract. The
-    # @deferred here marks the SPECIFIC mutation-score-concept fixture
-    # as a deferred wiring (runner.feature's flavour differs in clause
-    # naming but tests the same invariant).
+    # Same depth-gate short-circuit as state-machine.feature
+    # "Depth-below-required produces unevaluated", verified through
+    # the mutation-score concept (a stub evaluator registered against
+    # the runner Registry; the depth gate short-circuits BEFORE the
+    # stub runs, asserted by the step bindings).
     Given a clause "mutation-score(...)" with depth-sensitive depth-type
     And the active model tier is below the clause's declared minimum
     When the runner attempts to invoke the evaluator
@@ -141,7 +139,6 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Concurrent execution coordination ----
 
-  @deferred
   Scenario: Two passes on different contexts run concurrently
     Given pass P1 on (analyst, contextA, stratum-1)
     And pass P2 on (analyst, contextB, stratum-1)
@@ -153,14 +150,12 @@ Feature: Machine-clause runner (enforcement spine)
     And the state-machine per-clause locks for P1 and P2 are distinct (different pass-ids → different lock keys)
     And running with `-race` reports no data races on the shared evaluator-output buffer
 
-  @deferred
   Scenario: Two passes on same (role, context) are refused
     Given pass P1 on (analyst, contextA) is running
     When a second pass P2 on (analyst, contextA) is requested
     Then the runner refuses P2 with kind "single-active-role-violation"
     And P2 is not started until P1 completes or aborts
 
-  @deferred
   Scenario: Pass aborted due to grid amendment
     Given pass P1 is in remediation phase
     And a grid amendment lands invalidating P1's arrow

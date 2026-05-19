@@ -245,6 +245,27 @@ type ScenarioState struct {
 	SubprocCommand string
 	SubprocTimeout time.Duration
 
+	// Runner-pass deferred batch (concurrent / refused / amendment
+	// abort / depth-gate scenarios in runner.feature).
+	RPLockTable   *runner.RoleContextLockTable
+	RPBus         *runner.OperatorBus
+	RPP1          *runner.Pass
+	RPP2          *runner.Pass
+	RPP2Err       error
+	RPP1Open      bool
+	RPP2Open      bool
+	RPRegistry    *runner.Registry
+	RPRunner      *runner.Runner
+	RPRun         *runner.EvaluationRun
+	RPRunErr      error
+	RPDepthBlock  bool // true if evaluator stub would have been called
+	RPPasses      *runner.PassRegistry
+	RPGrid        *runner.Grid
+	RPCommitter   *runner.AmendmentCommitter
+	RPAmendQueue  *runner.AmendmentQueue
+	RPFindings    *runner.FindingsStore
+	RPGridVersion uint64
+
 	// Adversarial deferred batch (multi-round remediation +
 	// loop-bomb + convergence/escalation flows).
 	ADRFindings    *runner.FindingsStore
