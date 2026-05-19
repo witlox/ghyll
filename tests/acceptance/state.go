@@ -185,6 +185,20 @@ type ScenarioState struct {
 	AttFindingID       string
 	AttOperatorErr     error
 	AttOperatorPayload string // JSON marshal output (separate from AttOpIDAttempt per B3 #M4)
+
+	// Adversarial step state (specs/v2/features/adversarial.feature).
+	// Phase B4 of v2-final consolidation.
+	AdvAdversary       *runner.Adversary
+	AdvFindings        *runner.FindingsStore
+	AdvClassifications *runner.ClassificationsStore
+	AdvRunner          *runner.Runner
+	AdvRegistry        *runner.Registry
+	AdvAttack          runner.AdversaryAttack
+	AdvReport          *runner.AttackReport
+	AdvAttackErr       error
+	AdvOpenSweepFn     runner.OpenSweepFn
+	AdvClassifyFn      runner.DepthClassifyFn
+	AdvTmpProjectDir   string // freshly-created per scenario; guaranteed empty (no TODO leakage)
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

@@ -22,6 +22,7 @@ func TestFeatures(t *testing.T) {
 				"../../specs/v2/features/state-machine.feature",
 				"../../specs/v2/features/amendment.feature",
 				"../../specs/v2/features/attestation.feature",
+				"../../specs/v2/features/adversarial.feature",
 			},
 			Output:   colors.Colored(os.Stdout),
 			TestingT: t,
@@ -110,6 +111,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// wires the surfaces that exist today (op-id validation,
 	// FindingStore operator transitions).
 	registerAttestationSteps(ctx, state)
+
+	// Adversarial step definitions (specs/v2/features/adversarial.feature).
+	// Phase B4 of v2-final consolidation. Wires per-round Adversary.Attack
+	// + OpenSweep/Classify hooks + Findings raise/derive. Orchestrator-
+	// level concerns (multi-round remediation, producer-fix-signal,
+	// operator-event-bus) are tagged @phase11.
+	registerAdversarialSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
