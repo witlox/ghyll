@@ -17,9 +17,8 @@ import (
 //   - F2: ArrowDefinition.Validate requires non-empty Stratum/Context.
 //   - F1: Grid Append/Lookup deep-copy slices/maps.
 //   - F5: self-cert check covers BOTH SourceRole and TargetRole
-//     (conservative reading of §12.2 — the target role is also a
-//     stakeholder with conflict-of-interest). Escalate to analyst
-//     if the spec intends a narrower reading.
+//     per ADR-009. The target role is a co-author of the on-the-spot
+//     contract; allowing it to attest leaves a self-cert channel.
 //   - F6: DetectUndeclared returns an explicit error on malformed
 //     Transition instead of silently swallowing.
 //   - F7: arrow / role IDs trimmed in Suspension so identity
@@ -175,9 +174,9 @@ func ResolveOnTheSpot(
 	if strings.TrimSpace(att.AttestedByRole) == "" {
 		return 0, ErrAttestationRoleEmpty
 	}
-	// §12.2: producing role MAY NOT self-certify. Conservative
-	// reading (F5): target role is also forbidden — it has a direct
-	// stake in the contract it's about to receive.
+	// §12.2 (ADR-009): neither source nor target role may attest the
+	// on-the-spot arrow definition. Both are co-authors of the
+	// contract.
 	role := strings.TrimSpace(att.AttestedByRole)
 	if strings.EqualFold(role, susp.Transition.SourceRole) {
 		return 0, fmt.Errorf("%w: producer role %q cannot attest its own definition",

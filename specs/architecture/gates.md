@@ -969,9 +969,11 @@ on-the-spot arrow definition:
 
 1. The arrow is defined now — clauses, evaluation types, depth types,
    dependency declarations, per-requirement minimum depth.
-2. This definition is **itself gated by operator attestation** — the
-   producing role may not self-certify the definition it wants to use
-   to continue.
+2. This definition is **itself gated by operator attestation** —
+   neither the source role nor the target role may attest the
+   definition, because both have conflict-of-interest as co-authors
+   of the contract (ADR-009). The attestation must come from a third
+   role.
 3. Because depth-type assignment is `depth-sensitive`, on-the-spot
    creation **escalates the model tier for the duration of the
    definition act**, then routes the actual traversal per the
