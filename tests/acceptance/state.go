@@ -244,6 +244,24 @@ type ScenarioState struct {
 	SubprocErr     error
 	SubprocCommand string
 	SubprocTimeout time.Duration
+
+	// Adversarial deferred batch (multi-round remediation +
+	// loop-bomb + convergence/escalation flows).
+	ADRFindings    *runner.FindingsStore
+	ADRClassif     *runner.ClassificationsStore
+	ADRRunner      *runner.Runner
+	ADRRegistry    *runner.Registry
+	ADRBus         *runner.OperatorBus
+	ADRBusEvents   []runner.OperatorEvent
+	ADRReport      *runner.RemediationReport
+	ADRReportErr   error
+	ADROrchResult  *runner.OrchestratorResult
+	ADROrchErr     error
+	ADRRoundsMax   int
+	ADRAttempted   int
+	ADRFinalRounds int
+	ADRMaxValid    bool
+	ADRMaxInitErr  error
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

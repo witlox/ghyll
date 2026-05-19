@@ -102,7 +102,6 @@ Feature: Per-arrow adversarial phase
     And on accepted-risk: F1 transitions to "accepted-risk"
     And on rejected: F1 stays "open" and remediation continues
 
-  @deferred
   Scenario: Multiple findings in flight
     Given findings F1, F2, F3 all "open" after R0
     When the producer fixes F1 and F2 but not F3
@@ -111,7 +110,6 @@ Feature: Per-arrow adversarial phase
     And F3 stays "open"
     And remediation continues for F3
 
-  @deferred
   Scenario: Non-convergence escalates after remediation-rounds-max
     Given finding F1 has been re-attacked through remediation-rounds-max rounds (default 5) and remains "open"
     When the final round completes
@@ -121,7 +119,6 @@ Feature: Per-arrow adversarial phase
 
   # ---- Phase exit to verification ----
 
-  @deferred
   Scenario: Convergence — all findings disposed
     Given all findings above the severity threshold are "resolved" or "accepted-risk"
     When the remediation loop converges
@@ -138,7 +135,6 @@ Feature: Per-arrow adversarial phase
 
   # ---- Adversarial additions: remediation-rounds-max boundary ----
 
-  @deferred
   Scenario Outline: Remediation-rounds-max boundary
     Given remediation-rounds-max is configured to "<max>"
     And finding F1 remains "open" through <attempted> remediation rounds
@@ -152,7 +148,6 @@ Feature: Per-arrow adversarial phase
       | 1   | 1         | yes (operator immediately) |
       | 0   | 0         | rejected at init: max=0 invalid |
 
-  @deferred
   Scenario: Producer signals fix but artifact is unchanged (loop bomb)
     Given finding F1 status "open" after round R0
     When the producer emits "producer-fix-signal" but the upstream artifact's content-hash is identical to the version R0 saw

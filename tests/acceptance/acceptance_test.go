@@ -106,6 +106,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// Amendment-commit + pass-identity scenarios that exercise the
 	// AmendmentCommitter end-to-end (amendment.feature).
 	registerAmendmentDeferredSteps(ctx, state)
+
+	// Adversarial deferred batch — multi-round remediation,
+	// loop-bomb detection, bounded escalation, verification
+	// auto-insert (adversarial.feature).
+	registerAdversarialDeferredSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).
