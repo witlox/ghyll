@@ -81,7 +81,10 @@ func NewAttestationJSONLWriter(path string) (*AttestationJSONLWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("attestation-jsonl: mkdir %s: %w", filepath.Dir(path), err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// O_RDWR (not O_WRONLY) so TruncateTrailingPartial can ReadAt
+	// to find the last newline byte. Per ADR-015 Part C the writer
+	// must support read-back of its own bytes.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("attestation-jsonl: open %s: %w", path, err)
 	}
@@ -101,10 +104,16 @@ func newAttestationJSONLWriterForWriter(w io.WriteCloser) *AttestationJSONLWrite
 }
 
 // Observer returns an AttestationObserver that appends one JSON
-// line per Record event. Wire via
-// `attestationStore.Observe(writer.Observer())`. Observer events
-// AFTER Close are silently dropped (callers should Close at
-// session end after Flush).
+// line per Record event. **DEPRECATED for primary use** since
+// Tier 1 (ADR-015 Part C): the JSONL is now the source of truth
+// for attestations, written inline by AttestationStore.Record via
+// SetPrimaryWriter(writer.PrimaryWriter()). Use PrimaryWriter()
+// instead of Observer() for the load-bearing path.
+//
+// Observer() remains as a non-blocking secondary surface — events
+// fire AFTER the in-memory Record succeeds, so a failure here
+// cannot fail the Record call. Callers that want the
+// fail-on-fsync invariant MUST use PrimaryWriter().
 //
 // Marshal and write failures increment the internal error counter;
 // inspect via WriteErrors() and LastError() at session end. The

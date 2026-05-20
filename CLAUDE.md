@@ -77,7 +77,9 @@ context/              unified context manager
 runner/               gate-and-arrow runtime: clause evaluation, arrow status,
                       adversarial phase, on-the-spot arrow creation, amendments
 engine/               sqlite-backed persistent store + Journal observer fanout +
-                      Replay (loads persisted entities at session start)
+                      Replay (loads persisted entities at session start) +
+                      Recovery (crash reconciliation between engine, JSONL audit,
+                      and runner stores at session start)
 bootstrap/            project initialization: auto-propose, modify rules,
                       orphan-symbol extraction, role-clause parsing, session registry
 catalogue/            machine-clause concept catalogue (per-language bindings)
@@ -112,6 +114,8 @@ scripts/              scenario verification tooling
 - [ADR-007: Tier-based routing](docs/decisions/007-tier-based-routing.md) — decouple routing from model names
 
 - [ADR-008: Fixed v2 roles, no runtime overlay](docs/decisions/008-v2-fixed-roles-deprecate-runtime-workflow-roles.md) — diamond roles are contracts in specs, not swappable system prompts
+
+- [ADR-015: Pass persistence + JSONL source of truth](docs/decisions/015-pass-persistence-and-jsonl-source-of-truth.md) — Tier 1: `passes` table + crash recovery + JSONL becomes the authoritative attestation log (amends ADR-010)
 
 Architectural reference (current code, not aspirational):
 

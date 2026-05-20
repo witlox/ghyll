@@ -28,6 +28,7 @@ func main() {
 			"       ghyll memory log",
 			"       ghyll engine status [--dir <path>]",
 			"       ghyll engine replay [--dir <path>]",
+			"       ghyll engine recover [--dry-run] [--dir <path>]",
 			"       ghyll engine verify-attestations [--dir <path>]",
 			"       ghyll arrow show <arrow-id> [--dir <path>]",
 			"       ghyll version",

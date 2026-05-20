@@ -291,6 +291,7 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 		Grid:            r.grid,
 		Amendments:      r.amendments,
 		Attestations:    r.attestations,
+		Passes:          r.passes, // M-6: populate ReplayCounts.Passes* (pre-Recovery)
 	})
 	if err != nil {
 		return counts, err
@@ -440,13 +441,14 @@ func (r *engineRuntime) closeEngine() {
 	}
 	// Teardown order:
 	//   1. Journal drains pending events (synchronous up to 5s
-	//      per event). Last attestation Record events publish to
-	//      the AttestationStore Observer, which writes to the
-	//      JSONL file.
-	//   2. JSONL writer flushes + closes the audit file. Doing
-	//      this BEFORE store.Close ensures any final events that
-	//      the journal sent to the AttestationStore (which the
-	//      JSONL writer subscribes to) have landed on disk.
+	//      per event). Tier 1 (ADR-015 Part C): the JSONL writer
+	//      is the AttestationStore's primaryWriter, so it has
+	//      ALREADY written each record inline (before byID
+	//      mutates). The journal only persists the engine-table
+	//      cache copy.
+	//   2. JSONL writer flushes + closes the audit file. This
+	//      happens BEFORE store.Close so any final journal-
+	//      observer writes have landed.
 	//   3. Store closes sqlite.
 	if r.journal != nil {
 		r.journal.Close()

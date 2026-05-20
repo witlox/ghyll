@@ -54,8 +54,14 @@ func registerTier1RecoverySteps(ctx *godog.ScenarioContext, state *ScenarioState
 		return c, nil
 	})
 	ctx.After(func(c context.Context, sc *godog.Scenario, _ error) (context.Context, error) {
+		// M-2 (G2-F-10 / G2-I-T4): RemoveAll the per-scenario
+		// tmpdir so CI doesn't accumulate `tier1-recovery-*` dirs.
 		if state.TR1Store != nil {
 			_ = state.TR1Store.Close()
+		}
+		if state.TR1Workdir != "" {
+			_ = os.RemoveAll(state.TR1Workdir)
+			state.TR1Workdir = ""
 		}
 		return c, nil
 	})
@@ -423,24 +429,25 @@ func registerTier1RecoverySteps(ctx *godog.ScenarioContext, state *ScenarioState
 	// -------- Pass completes and emits checkpoint (runner.feature) --------
 
 	ctx.Step(`^pass P1 has reached terminal arrow status$`, func() error {
-		// Open + close a pass; verify the engine row reflects the
-		// closure.
-		state.TR1Passes = runner.NewPassRegistry()
-		state.TR1LockTable = runner.NewRoleContextLockTable()
-		// Subscribe a journal-like sink that writes to the engine.
-		// Easiest: actually wire the journal.
+		// M-1 (G2-F-9): use SCENARIO-LOCAL registry + lock-table
+		// rather than overwriting shared state.TR1Passes /
+		// state.TR1LockTable. This step is self-contained: it opens
+		// a pass, closes it, flushes the journal, asserts the row
+		// landed. The After hook stays correct for the rest of the
+		// scenario.
+		passes := runner.NewPassRegistry()
+		lockTable := runner.NewRoleContextLockTable()
 		journal := engine.NewJournal(state.TR1Store, nil)
-		journal.AttachPasses(state.TR1Passes)
-		// Open + close on this registry → emit → journal handles → engine row.
+		journal.AttachPasses(passes)
 		p, err := runner.OpenPass(runner.PassOptions{
 			PassID: "P-finalize", Role: "analyst", Context: "F",
 			ArrowID: "A-final", GridVersion: 1,
-			LockTable: state.TR1LockTable,
+			LockTable: lockTable,
 		})
 		if err != nil {
 			return fmt.Errorf("OpenPass: %w", err)
 		}
-		state.TR1Passes.Register(p)
+		passes.Register(p)
 		p.Close("derived-complete")
 		journal.Flush()
 		journal.Close()
@@ -501,19 +508,20 @@ func registerTier1RecoverySteps(ctx *godog.ScenarioContext, state *ScenarioState
 	// -------- Pass aborted records reason in checkpoint --------
 
 	ctx.Step(`^pass P1 was aborted mid-phase$`, func() error {
-		state.TR1Passes = runner.NewPassRegistry()
-		state.TR1LockTable = runner.NewRoleContextLockTable()
+		// M-1 (G2-F-9): scenario-local registry + lock-table.
+		passes := runner.NewPassRegistry()
+		lockTable := runner.NewRoleContextLockTable()
 		journal := engine.NewJournal(state.TR1Store, nil)
-		journal.AttachPasses(state.TR1Passes)
+		journal.AttachPasses(passes)
 		p, err := runner.OpenPass(runner.PassOptions{
 			PassID: "P-abort", Role: "implementer", Context: "X",
 			ArrowID: "A-abort", GridVersion: 1,
-			LockTable: state.TR1LockTable,
+			LockTable: lockTable,
 		})
 		if err != nil {
 			return fmt.Errorf("OpenPass: %w", err)
 		}
-		state.TR1Passes.Register(p)
+		passes.Register(p)
 		p.Abort("amendment-drained: missing-cross-context-spec")
 		journal.Flush()
 		journal.Close()

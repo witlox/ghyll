@@ -73,6 +73,55 @@ func TestScenario_ArrowShow_HappyPath_RendersArrow(t *testing.T) {
 	})
 }
 
+// TestScenario_ArrowShow_WithAttestations covers G2-I-2 / G2-I-T2:
+// `ghyll arrow show` must render the attestation count from the
+// JSONL audit file even though engine.Replay no longer loads
+// attestations from the engine table (Tier 1 ADR-015 Part C
+// inversion). The bug was that cmdArrowShow forgot to call
+// LoadFromJSONL, so attestations always showed 0.
+func TestScenario_ArrowShow_WithAttestations(t *testing.T) {
+	rt, workdir := newTier0Runtime(t)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Grid().Append(runner.ArrowDefinition{
+		ID: "A-att", SourceRole: "analyst", TargetRole: "architect",
+		Stratum: "L1", Context: "ctxA",
+		Clauses: []runner.Clause{
+			{Concept: "no-todo-marker", ClauseID: "C1", DepthType: runner.DepthTypeSensitive, MinDepthTier: runner.DepthRankRealistic},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.AttestationStore().Record(runner.AttestationRecord{
+		ID: "att-A-att-C1-v1", Kind: runner.AttestationKindDepthType,
+		ArrowID: "A-att", ClauseID: "C1", OpID: "alice",
+		AttestedByRole: "operator",
+		SourceRole:     "analyst",
+		TargetRole:     "architect",
+		Verdict:        runner.AttestationPass,
+		Timestamp:      1,
+		GridVersion:    1,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	rt.journal.Flush()
+	rt.closeEngine()
+
+	withUICaptured(t, func(out, _ *bytes.Buffer) {
+		if err := cmdArrowShow([]string{"A-att", "--dir", workdir}); err != nil {
+			t.Fatalf("cmdArrowShow: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "attestations: 1") {
+			t.Errorf("attestations count not rendered\n--- got ---\n%s", got)
+		}
+	})
+}
+
 func TestScenario_ArrowShow_UnknownArrowErrors(t *testing.T) {
 	rt, workdir := newTier0Runtime(t)
 	if _, err := rt.replayEngine(context.Background()); err != nil {

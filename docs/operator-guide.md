@@ -111,6 +111,46 @@ engine: /path/to/project/.ghyll/engine.db
 A project that has never initialized v2 emits
 `ghyll-engine-status: missing` and exits cleanly.
 
+### `ghyll engine recover [--dry-run] [--dir <path>]`
+
+Preview what crash recovery would do at the next session start.
+Opens the engine read/write, runs the reconciliation logic
+inside a transaction that is **always rolled back**, prints the
+report. The real recovery happens automatically when you start
+a session with `ghyll run`; this CLI exists so you can preview
+it first.
+
+```
+$ ghyll engine recover --dry-run --dir /path/to/project
+recover (dry-run): /path/to/project/.ghyll/engine.db
+  orphans aborted:        2
+  orphans preserved:      1 (attestation-pending)
+  evaluation_runs flipped: 3 (from JSONL verdicts)
+  events:
+    - recovery-pass-aborted-crash pass=P-1 arrow=A1 clause= no live process at restart; closed_at=...
+    - recovery-attestation-republished pass=P-3 arrow=A1 clause=C5 att-ref=att-X preserved at ...
+    - recovery-attestation-replay pass=P-2 arrow=A2 clause=C7 att-ref=att-Y verdict=pass mapped=pass
+
+note: --dry-run; no changes persisted. Start a session
+      with `ghyll run` to apply recovery for real.
+```
+
+The output covers three reconciliation classes (per ADR-015 Part D):
+
+- **orphans aborted** — open passes whose runner process is gone;
+  marked `aborted:crash`.
+- **orphans preserved** — open passes with a pending depth-type
+  attestation (so the operator can still deliver a verdict). The
+  pass row stays `open` and `recovered_at` is stamped.
+- **evaluation_runs flipped** — clauses with `end_status=running`
+  AND a verdict in the JSONL audit log; `end_status` is reconciled
+  to match the verdict (`pass` → `pass`, `fail` → `fail`,
+  `insufficient-basis` → `running` so the dispatcher re-emits
+  the hint).
+
+The `--commit` flag is explicitly refused — apply recovery via
+`ghyll run`.
+
 ### `ghyll engine verify-attestations [--dir <path>]`
 
 Walk the project's `.ghyll/attestations.jsonl` audit trail and

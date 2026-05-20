@@ -1121,6 +1121,9 @@ func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
 	if line == "/passes" {
 		return s.handlePassesCommand()
 	}
+	if strings.HasPrefix(line, "/passes ") {
+		return s.handlePassByIDCommand(strings.TrimSpace(strings.TrimPrefix(line, "/passes ")))
+	}
 
 	switch line {
 	case "/exit":
@@ -1354,6 +1357,59 @@ func (s *Session) handleAttestationsCommand(arrowArg string) SlashCommandResult 
 		}
 		fmt.Fprintf(&b, "  %s  arrow=%s clause=%s verdict=%s op=%s\n",
 			r.ID, r.ArrowID, clause, r.Verdict, r.OpID)
+	}
+	return SlashCommandResult{
+		Handled: true, ContinueLoop: true,
+		Output: strings.TrimRight(b.String(), "\n"),
+	}
+}
+
+// handlePassByIDCommand renders the engine row for one pass-id.
+// Wired by M-7 (gate-2 auditor) so the operator can look up
+// historical (closed/aborted) passes that the in-memory registry
+// doesn't carry.
+func (s *Session) handlePassByIDCommand(id string) SlashCommandResult {
+	if s.engine == nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ engine not initialized; /passes unavailable",
+		}
+	}
+	if id == "" {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "usage: /passes <pass-id>",
+		}
+	}
+	rec, ok, err := s.engine.Store().GetPass(gocontext.Background(), id)
+	if err != nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ GetPass failed: %v", err),
+		}
+	}
+	if !ok {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("not-found: no pass with id %q", id),
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "pass %s\n", rec.PassID)
+	fmt.Fprintf(&b, "  role:         %s\n", rec.Role)
+	fmt.Fprintf(&b, "  context:      %s\n", rec.Context)
+	fmt.Fprintf(&b, "  arrow_id:     %s\n", rec.ArrowID)
+	fmt.Fprintf(&b, "  grid_version: %d\n", rec.GridVersion)
+	fmt.Fprintf(&b, "  state:        %s\n", rec.State)
+	fmt.Fprintf(&b, "  opened_at:    %s\n", rec.OpenedAt)
+	if rec.ClosedAt != "" {
+		fmt.Fprintf(&b, "  closed_at:    %s\n", rec.ClosedAt)
+	}
+	if rec.CloseReason != "" {
+		fmt.Fprintf(&b, "  close_reason: %s\n", rec.CloseReason)
+	}
+	if rec.RecoveredAt != "" {
+		fmt.Fprintf(&b, "  recovered_at: %s\n", rec.RecoveredAt)
 	}
 	return SlashCommandResult{
 		Handled: true, ContinueLoop: true,

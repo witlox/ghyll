@@ -29,6 +29,14 @@ type ReplayCounts struct {
 	AmendmentsDrained int
 	Attestations      int
 
+	// Pass counters (M-6 / contract drift remediation). Populated
+	// from the `passes` table by the engine.Replay pass-load step
+	// BEFORE Recovery runs (so they reflect pre-recovery state).
+	// Recovery's own counts live in RecoveryReport.
+	PassesOpen    int
+	PassesClosed  int
+	PassesAborted int
+
 	// Errors collects per-row failures so a single corrupt row
 	// doesn't stop the whole replay (J9). Empty when clean.
 	Errors []string
@@ -45,12 +53,18 @@ type ReplayTargets struct {
 	Grid            *runner.Grid
 	Amendments      *runner.AmendmentQueue
 
-	// Attestations is the AttestationStore populated FIRST (before
-	// grid) per ADR-010 so a clause's DepthTypeAttestationRef can
-	// resolve through the in-memory store as soon as the grid is
-	// loaded. Optional — if nil, attestation replay is skipped (used
-	// by tests that don't exercise the attestation path).
+	// Attestations is the AttestationStore. Per ADR-015 Part C
+	// the JSONL is the source of truth, loaded into this store
+	// BEFORE Replay (in session.openEngine). Replay treats a
+	// non-empty store as the authoritative pre-load and counts
+	// rather than re-load.
 	Attestations *runner.AttestationStore
+
+	// Passes is the PassRegistry. Tier 1 Recovery loads passes
+	// directly via Store.ListPasses (not through Replay), but
+	// Replay scans the `passes` table to populate ReplayCounts.
+	// Optional — if nil the pass-count step is skipped.
+	Passes *runner.PassRegistry
 }
 
 // replayPageSize is the per-batch read size for paging through
@@ -195,6 +209,37 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 		c.AmendmentsActive++
 	}); err != nil {
 		return c, fmt.Errorf("replay amendments: %w", err)
+	}
+
+	// M-6: pass counts from the engine `passes` table. Pre-Recovery
+	// state. Recovery's own counts live in RecoveryReport.
+	if targets.Passes != nil {
+		rows, err := store.db.QueryContext(ctx,
+			`SELECT state, COUNT(*) FROM passes GROUP BY state`)
+		if err != nil {
+			return c, fmt.Errorf("replay passes: %w", err)
+		}
+		for rows.Next() {
+			var state string
+			var n int
+			if err := rows.Scan(&state, &n); err != nil {
+				_ = rows.Close()
+				return c, fmt.Errorf("replay passes scan: %w", err)
+			}
+			switch state {
+			case "open":
+				c.PassesOpen = n
+			case "closed":
+				c.PassesClosed = n
+			case "aborted":
+				c.PassesAborted = n
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return c, fmt.Errorf("replay passes rows: %w", err)
+		}
+		_ = rows.Close()
 	}
 
 	return c, nil

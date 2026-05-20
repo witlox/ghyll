@@ -284,6 +284,7 @@ func cmdEngineReplay(args []string) error {
 		Classifications: runner.NewClassificationsStore(),
 		Grid:            runner.NewGrid(),
 		Amendments:      runner.NewAmendmentQueue(),
+		Passes:          runner.NewPassRegistry(), // M-8: populate pass counts
 	}
 	counts, replayErr := engine.Replay(ctx, store, targets)
 	// C10: print whatever partial counts we got before any error.
@@ -294,6 +295,8 @@ func cmdEngineReplay(args []string) error {
 	ui.Info("  classifications:   %d", counts.Classifications)
 	ui.Info("  amendments:        %d active, %d drained",
 		counts.AmendmentsActive, counts.AmendmentsDrained)
+	ui.Info("  passes:            %d open, %d closed, %d aborted",
+		counts.PassesOpen, counts.PassesClosed, counts.PassesAborted)
 	if replayErr != nil {
 		return classifyCLIError(replayErr, fl.Verbose)
 	}
