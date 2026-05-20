@@ -64,10 +64,11 @@ execution itself (that's the runner). Persistence layer mechanics
    not a mix of stale and current per-arrow values. Implementation:
    acquire a read-lock for the duration of the project-status
    computation.
-6. **Persistence on finalization.** When a pass reaches `completed`
-   or `aborted`, its full status state is serialized to the
-   checkpoint log. After finalization, the in-memory state for that
-   pass can be evicted.
+6. **Persistence on transition.** Pass state is persisted to the
+   v2 engine sqlite `passes` table on every transition (open,
+   close, abort) per `pass-persistence.md`. After `closed`/
+   `aborted`, the in-memory state for that pass can be evicted;
+   the row remains queryable in the engine table.
 
 ---
 
@@ -240,25 +241,35 @@ Feature: Compute project-level status
 
 ### F-6: Snapshot and replay
 
+> **Refined by `pass-persistence.md`.** That spec specifies *where*
+> pass state lives (v2 engine sqlite `passes` table), *how*
+> reconciliation works at restart, and the four crash-recovery
+> behaviors (orphan abort, attestation-pending preservation,
+> attestation-record replay, torn-row rollback). Read both specs
+> together for the full restart story; the Gherkin below is the
+> minimal happy-path summary.
+
 ```gherkin
 Feature: Snapshot and replay state from checkpoint log
 
   Scenario: Restart from checkpoint log
     Given the harness was running and is restarted
     When the engine initializes
-    Then it reads the checkpoint log to reconstruct:
-      - all `running` passes (treated as `aborted` with reason `crash`)
-      - all `completed`/`aborted` passes (kept in log, not in
-        in-memory store)
-      - current grid version
-      - current arrow statuses (per the latest completed pass per arrow)
+    Then it reads the engine `passes` table + JSONL attestation log:
+      - orphan `open` passes without attestation-pending clauses → `aborted:crash`
+      - orphan `open` passes WITH attestation-pending clauses → preserved
+        `open`, hint re-published on the bus
+      - `closed`/`aborted` passes remain queryable (not in memory)
+      - clause statuses are reconciled against JSONL attestation records
+        (JSONL is source of truth per amended ADR-010)
     And the engine is ready to accept new pass starts
 
   Scenario: Query historical pass
-    Given a query for pass P5 (completed and flushed)
+    Given a query for pass P5 (closed or aborted, persisted in engine)
     When the engine receives the query
-    Then it reads from the checkpoint log
+    Then it SELECTs from the `passes` table
     And returns the historical pass's full state
+    Or returns `not-found` if no row exists for P5 (no reconstruction)
 ```
 
 ---
