@@ -135,6 +135,14 @@ type DispatchRequest struct {
 	// (no-todo-marker, etc.). Optional — falls back to the
 	// clause's ProjectDir if set.
 	ProjectDir string
+
+	// AdversaryRole is non-empty when this dispatch runs inside an
+	// adversary-phase pass (orchestrator's adversarial.go). The
+	// dispatcher stamps it on OpEventAttestationRequested so the
+	// modal driver can propagate to AttestationRecord.AdversaryRole
+	// for the §12.2 3-role-chain encoding (gate-1 F-3 / gate-2
+	// CORR-A-5). Empty for vanilla passes.
+	AdversaryRole string
 }
 
 // DispatchResult bundles the per-pass summary.
@@ -271,12 +279,30 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 			if input.AwaitingAttestation && d.Bus != nil {
 				hint := SynthesizeHint(clause)
 				hintJSON, _ := json.Marshal(hint)
+				// Gate-2 CORR-A-5/A-13: stamp Role + Context +
+				// AdversaryRole + GridVersion on the event payload
+				// so the modal driver can construct the
+				// AttestationRecord without re-resolving against
+				// the live grid (which may have shifted since the
+				// pass started).
+				payload := map[string]string{
+					"source_role":  req.Role,
+					"target_role":  req.Arrow.TargetRole,
+					"context":      req.Context,
+					"stratum":      req.Arrow.Stratum,
+					"grid_version": fmt.Sprintf("%d", req.GridVersion),
+				}
+				if req.AdversaryRole != "" {
+					payload["adversary_role"] = req.AdversaryRole
+				}
 				d.Bus.Publish(OperatorEvent{
 					Kind:     OpEventAttestationRequested,
 					ArrowID:  req.Arrow.ID,
 					PassID:   passID,
 					ClauseID: clauseID,
+					Role:     req.Role,
 					Detail:   string(hintJSON),
+					Payload:  payload,
 				})
 			}
 		}

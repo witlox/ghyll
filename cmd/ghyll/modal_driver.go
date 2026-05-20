@@ -61,17 +61,18 @@ type arrowResolved struct {
 // modalRequest is one queued presentation. The kind discriminates
 // verdict-modal vs escalation-modal.
 type modalRequest struct {
-	kind        string // "verdict" | "escalation"
-	hint        modal.Hint
-	passID      string
-	arrowID     string
-	clauseID    string
-	context     string
-	stratum     string
-	sourceRole  string
-	targetRole  string
-	attestRef   string
-	gridVersion uint64
+	kind          string // "verdict" | "escalation"
+	hint          modal.Hint
+	passID        string
+	arrowID       string
+	clauseID      string
+	context       string
+	stratum       string
+	sourceRole    string
+	targetRole    string
+	adversaryRole string
+	attestRef     string
+	gridVersion   uint64
 }
 
 // ErrModalDrainCapExceeded is returned by DrainPending if the
@@ -147,14 +148,32 @@ func (d *modalDriver) enqueueVerdict(ev runner.OperatorEvent) {
 	if hint.ClauseID == "" {
 		hint.ClauseID = ev.ClauseID
 	}
-	d.appendRequest(modalRequest{
+	// Gate-2 CORR-A-5/A-13: the dispatcher stamps Role/Context/
+	// Stratum/AdversaryRole/GridVersion on ev.Payload so the
+	// modal can carry them through to AttestationRecord WITHOUT
+	// re-resolving against the live grid (which may have shifted
+	// since the pass started).
+	req := modalRequest{
 		kind:      "verdict",
 		hint:      hint,
 		passID:    ev.PassID,
 		arrowID:   ev.ArrowID,
 		clauseID:  ev.ClauseID,
 		attestRef: hint.AttestationRef,
-	})
+	}
+	if ev.Payload != nil {
+		req.sourceRole = ev.Payload["source_role"]
+		req.targetRole = ev.Payload["target_role"]
+		req.context = ev.Payload["context"]
+		req.stratum = ev.Payload["stratum"]
+		req.adversaryRole = ev.Payload["adversary_role"]
+		if gv := ev.Payload["grid_version"]; gv != "" {
+			var n uint64
+			_, _ = fmt.Sscanf(gv, "%d", &n)
+			req.gridVersion = n
+		}
+	}
+	d.appendRequest(req)
 }
 
 func (d *modalDriver) enqueueEscalation(ev runner.OperatorEvent) {
@@ -509,6 +528,7 @@ func (d *modalDriver) buildRecord(req modalRequest, sub modal.VerdictSubmission)
 		AttestedByRole:  "operator",
 		SourceRole:      src,
 		TargetRole:      tgt,
+		AdversaryRole:   req.adversaryRole,
 		Verdict:         sub.Verdict,
 		Timestamp:       time.Now().UnixNano(),
 		GridVersion:     gridVer,
