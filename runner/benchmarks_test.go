@@ -33,6 +33,7 @@ func BenchmarkAttestationStore_Record(b *testing.B) {
 		Verdict:        AttestationPass,
 		Timestamp:      1,
 		GridVersion:    1,
+		PassID:         "P-bench",
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -52,7 +53,7 @@ func BenchmarkAttestationStore_Lookup(b *testing.B) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
 		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-bench",
 	}
 	_ = s.Record(rec)
 	b.ReportAllocs()

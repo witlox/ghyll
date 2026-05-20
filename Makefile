@@ -1,5 +1,5 @@
 .PHONY: all build build-bin test test-unit test-acceptance test-race test-live \
-       lint fmt clean \
+       bench lint fmt clean \
        embedder vault verify-scenarios coverage coverage-check install-tools setup \
        docs docs-serve
 
@@ -31,6 +31,12 @@ test-race:
 # and assert streaming SSE + delta callbacks + content render.
 test-live:
 	go test -tags live -count=1 -timeout 5m ./stream/...
+
+# Tier 3 perf baselines: run all benchmarks at -benchtime=2s,
+# print one line per benchmark. Append output to perf/baselines.md
+# manually when re-baselining.
+bench:
+	go test -bench=. -benchmem -run=^$$ -benchtime=2s ./engine/ ./runner/
 
 lint:
 	go vet ./...
