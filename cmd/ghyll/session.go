@@ -1289,6 +1289,14 @@ func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
 	if strings.HasPrefix(line, "/passes ") {
 		return s.handlePassByIDCommand(strings.TrimSpace(strings.TrimPrefix(line, "/passes ")))
 	}
+	// /run-arrow + /list-arrows wire the dispatcher / engineRuntime.RunArrow
+	// into the operator's REPL surface (integrator finding C-3).
+	if strings.HasPrefix(line, "/run-arrow ") || line == "/run-arrow" {
+		return s.handleRunArrowCommand(strings.TrimSpace(strings.TrimPrefix(line, "/run-arrow")))
+	}
+	if line == "/list-arrows" {
+		return s.handleListArrowsCommand()
+	}
 
 	switch line {
 	case "/exit":
