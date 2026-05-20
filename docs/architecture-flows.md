@@ -182,10 +182,113 @@ Key invariants:
 
 ---
 
+## Flow 4: Tier 2 verdict modal (ADR-016)
+
+The path a dispatcher-requested attestation takes from "clause
+is awaiting verdict" through the interactive REPL modal to a
+persisted `AttestationRecord`. Distinct from Flow 1 (which is
+the `/attest` CLI escape hatch); this is the routine path.
+
+```
+Dispatcher    OperatorBus    modalDriver    LineReader    TermModal    AttestationStore   Tree+JSONL
+   |              |              |              |             |              |              |
+   | clause c flips AwaitingAttestation=true                                                  |
+   | Publish(OpEventAttestationRequested, payload={src/tgt/ctx/stratum/grid_ver/adv_role,    |
+   |          Detail=hint-json with arrow_id, clause_id, concept, attest_ref})               |
+   |─────────────>|              |              |             |              |              |
+   |              | fanout       |              |             |              |              |
+   |              |─────────────>| OnEvent(ev)  |             |              |              |
+   |              |              | enqueueVerdict(ev):        |             |              |
+   |              |              |   - parse hint json (capped at 64 KiB)                   |
+   |              |              |   - copy Payload onto modalRequest                       |
+   |              |              |   - dedup via inFlight[attest_ref]                       |
+   |              |              |   - cap-check pending queue                              |
+   |              |              | <─enqueue or drop+OpEventModalBackpressure               |
+   |              |              |              |             |              |              |
+   |  --- REPL turn boundary: DrainPending fires before ui.Print(prompt) ----                |
+   |              |              |              |             |              |              |
+   |              |              | DrainPending(sessionCtx):                                |
+   |              |              |   snapshot pending; pending=nil                          |
+   |              |              |   for req in snapshot:                                   |
+   |              |              |     if ibTracker.IsCrossed(c) → handleEscalation         |
+   |              |              |     else → handleVerdict                                 |
+   |              |              | PresentVerdict(ctx, hint)                                |
+   |              |              |─────────────>| Next(ctx)   |              |              |
+   |              |              |              |────────────>| (blocks)     |              |
+   |              |              |              |             | operator types verdict      |
+   |              |              |              |<────────────| "pass"       |              |
+   |              |              |<─VerdictSubmission{Pass, Confirm, payload}               |
+   |              |              | buildRecord(req, sub):                                   |
+   |              |              |   opID = opIDProvider()  (read AT CALL TIME — gate-1 F-20) |
+   |              |              |   resolve src/tgt/ctx/stratum via arrowResolver fallback   |
+   |              |              | ValidateUnitPayload(unit, payload, residueMaxBytes)        |
+   |              |              | store.Record(rec)         |             |              |
+   |              |              |───────────────────────────────────────>|              |
+   |              |              |                            |             | validateAttestation
+   |              |              |                            |             | + validateAttestationTier2
+   |              |              |                            |             | (PassID + Unit + payload +
+   |              |              |                            |             |  HintJSON + adv-role "__")
+   |              |              |                            |             | primaryWriter (tree)─────>|
+   |              |              |                            |             |              | EncodeAttestationPath(rec)
+   |              |              |                            |             |              | (purefn; safeSegment hashes
+   |              |              |                            |             |              |  '.'/'..'/oversize; init special-case)
+   |              |              |                            |             |              | append + fsync (gate-1 F-11)
+   |              |              |                            |             |              | publish OpEventPathTruncated
+   |              |              |                            |             |              | if hash-substituted
+   |              |              |                            |             |<─────────────| ok
+   |              |              |                            |             | byID[id] = rec; version++
+   |              |              |                            |             | snapshot observers; release s.mu
+   |              |              |                            |             | (CONC-H-3: fanout OUTSIDE lock)
+   |              |              |                            |             | observers run:
+   |              |              |                            |             |  - JSONL writer (forward-only Observer)
+   |              |              |                            |             |  - IBTracker.Record (verdict → reset/inc)
+   |              |              |                            |             |  - Journal observer → engine row
+   |              |              | If sub.Verdict == AttestationFail:                       |
+   |              |              |   bus.Publish(OpEventClauseFailVerdict) BEFORE Record    |
+   |              |              |   (CONC-M-1: fail signal survives Record reject)         |
+   |              |              | clear inFlight[attest_ref]                               |
+   |              |              | continue snapshot iter; bound at 8 rounds                |
+```
+
+Escalation path (after 3 consecutive `insufficient-basis`):
+
+```
+   |              |              | handleEscalation(req):                                   |
+   |              |              | PresentEscalation(ctx, hint)                             |
+   |              |              |─────────────>| Next(ctx) → option (1 or 2) + residue/rationale         |
+   |              |              | bus.Publish(OpEventEscalationPresented) AFTER prompt     |
+   |              |              |              | (CONC-H-5: paired with Resolved)         |
+   |              |              | opt 1 → verdict=pass + residue; opt 2 → verdict=fail + rationale       |
+   |              |              | store.Record(rec)         |             |              |
+   |              |              | ibTracker.Reset(clause)                                  |
+   |              |              | bus.Publish(OpEventEscalationResolved)                   |
+```
+
+Key invariants:
+
+- **opID read at PresentVerdict-call time** (gate-1 F-20) —
+  not at enqueue. So a mid-pass `/op-id` swap takes effect on
+  the next modal.
+- **inFlight dedup** by attestation-ref (gate-1 F-12) — the
+  same dispatcher republish is presented at most once per drain.
+- **DrainPending snapshot-then-iterate** with 8-round cap
+  (gate-1 F-5). On any error, the unprocessed tail re-queues
+  (gate-2 CONC-C-3/C-4).
+- **`/exit` cancels sessionCtx** (gate-1 F-14) so a blocked
+  modal read aborts cleanly; the items re-queue on the next
+  session start via Recovery's republish.
+- **Tree writer is the primary** (gate-1 F-1); flat JSONL is
+  a forward-only Observer. The tree is also the authoritative
+  load surface (`LoadFromTree`).
+- **Path traversal guarded** (gate-2 SEC-C-1): safeSegment
+  hash-substitutes `.` and `..` before they reach
+  `filepath.Join`.
+
 ## Where the diagrams live in code
 
 | Flow | Primary file(s) |
 |---|---|
-| Attestation | `runner/attestationstore.go`, `runner/attestation_jsonl.go`, `runner/attestation_tree.go`, `engine/attestations.go`, `engine/journal.go` |
+| Attestation (CLI) | `cmd/ghyll/session.go handleAttestCommand`, `runner/attestationstore.go`, `runner/attestation_jsonl.go`, `runner/attestation_tree.go`, `engine/attestations.go`, `engine/journal.go` |
 | Adversarial cycle | `runner/orchestrator.go`, `runner/producer_fix.go`, `runner/adversarial.go` |
 | Amendment commit | `runner/amendment.go`, `runner/amendment_commit.go`, `engine/journal.go` (handleAmendment) |
+| Verdict modal (Tier 2) | `cmd/ghyll/modal_driver.go`, `cmd/ghyll/modal/modal.go`, `cmd/ghyll/modal/linereader.go`, `runner/dispatcher.go` (OpEventAttestationRequested publish), `runner/attestation_tree.go` (PrimaryWriter) |

@@ -86,6 +86,50 @@ open passes (1):
 
 An empty registry surfaces as `no open passes`.
 
+### Verdict modal (Tier 2 / ADR-016)
+
+When the dispatcher signals that a clause is awaiting attestation,
+the REPL drains a verdict modal BEFORE the next prompt. You see:
+
+```
+── attestation request ─────────────────
+  arrow:           A-checkout
+  clause:          C2
+  concept:         lint-clean
+  attestation-ref: att-A-checkout-C2-v1
+────────────────────────────────────────
+verdict? [pass / fail / insufficient-basis / skip]:
+```
+
+- `pass` / `p` — `confirm` unit, no payload.
+- `fail` / `f` — prompts for inspected locations
+  (`record-locations-inspected` unit; CSV).
+- `insufficient-basis` / `ib` — prompts for a residue note
+  (`write-residue-note` unit; capped by the grid's
+  `residue-note-max-bytes`).
+- `skip` / `s` — clause stays pending; the next turn re-presents.
+
+After **three** consecutive `insufficient-basis` verdicts the
+escalation prompt fires:
+
+```
+── escalation: 3 insufficient-basis rounds ──
+  arrow:    A-checkout
+  clause:   C2
+  options:
+    1) accept risk     (record residue note; finding → accepted-risk)
+    2) route upstream  (record rationale; pass aborts; deeper-tier retry)
+─────────────────────────────────────────────
+choice (1 or 2):
+```
+
+The chosen verdict is recorded as an `AttestationRecord` with
+the residue/rationale as the payload. There is no default — you
+must choose.
+
+`/exit` cancels any in-flight modal cleanly; the queued items
+re-present on the next session start (Recovery republishes).
+
 ## Offline CLI commands
 
 These work without a running session.
@@ -166,6 +210,34 @@ attestation-verify: 5/5 records OK
 A failed audit returns a non-zero exit code and prints each
 issue's line number + reason.
 
+### `ghyll init attest --op-id <id> [--dir <path>]`
+
+Tier 3 / gate-2 CORR-A-18: the production producer for init
+AttestationRecords. Reads the project grid via `bootstrap.Read`,
+emits one on-the-spot record per arrow with
+`AttestedByRole=init`, persists through the standard Record
+path (tree writer primary + engine catch-up). Idempotent on
+re-run.
+
+```
+$ ghyll init attest --op-id alice@example.com --dir /path/to/project
+ghyll init attest: 3 init attestations recorded for op-id=alice@example.com (grid v1, 3 arrows)
+```
+
+Reject criteria mirror `/op-id`: control bytes, path separators,
+".." substring, Unicode format runes (RTL override, ZWSP, ZWJ,
+BOM), leading dot or dash, trailing dot, or > 256 bytes.
+
+### `ghyll memory <subcommand>`
+
+Memory sync + search subcommands.
+
+| Subcommand | Effect |
+|---|---|
+| `ghyll memory search <query>` | Vector-search past checkpoints by semantic similarity. |
+| `ghyll memory log` | Show the local checkpoint chain (hash, parent, turn, summary). |
+| `ghyll memory sync` | Manual sync to/from the vault. |
+
 ### `ghyll arrow show <arrow-id> [--dir <path>]`
 
 Render one arrow's live state: definition (source / target
@@ -237,11 +309,63 @@ operator must intervene.
 | Operator events lost | The OperatorBus is in-process; check the JSONL writer + status output |
 | Lock contention ("role-context-busy") | `ghyll arrow show` the arrow; `/passes` to see who holds the lock |
 
+## Sandbox setup
+
+ghyll is sandbox-only by design (`CLAUDE.md`: "Tools are direct
+OS calls — no permission layer (sandbox handles security)"). The
+sandbox is the layer that restricts what bash / git / web tools
+can touch. Without one, a compromised model endpoint runs
+arbitrary code with your privileges.
+
+Recommended sandboxes (detected automatically by ghyll):
+
+| Sandbox | How to wrap |
+|---|---|
+| Docker / Podman | Run ghyll inside a container with bind-mounted project dir |
+| bubblewrap | `bwrap --bind ~ /home/me --bind /tmp /tmp ghyll run .` |
+| sandbox-exec (macOS) | `sandbox-exec -f profile.sb ghyll run .` |
+| Firejail | `firejail --noprofile ghyll run .` |
+| Kubernetes | `KUBERNETES_SERVICE_HOST` triggers detection |
+
+Enforcement modes (`GHYLL_REQUIRE_SANDBOX`):
+
+- unset / `0` / `false`: warning only, ghyll starts.
+- `1` / `true` / `yes` / `on`: refuse to start without a detected
+  sandbox. Override with `GHYLL_SANDBOX_ASSUME_SAFE=<reason>`
+  (the reason is logged for audit).
+
+## Vault (team memory) setup
+
+The vault is an HTTP server (`cmd/ghyll-vault`) that synchronizes
+checkpoints across multiple operators. **Production deployments
+MUST configure ed25519 verification** via `WithKeysDir(dir)`;
+the empty-keysDir mode is TEST-only and logs a warning at
+startup.
+
+Layout:
+
+```
+<vault-storage>/
+  devices/
+    alice.pub      # ed25519 public key (PEM)
+    bob.pub
+  …
+```
+
+Each device generates a key pair on first run
+(`memory.LoadOrGenerateKey`); the operator hands `.pub` to the
+vault admin. Checkpoint signing happens automatically; the
+vault refuses any checkpoint whose signature doesn't verify
+against the registered device's pub key.
+
 ## Related architecture documents
 
 - `specs/architecture/gates.md` — the gate schema; §3.7
   (amendment), §11 (adversarial cycle), §12.2 (self-cert)
-- `docs/decisions/009-014` — the v2 ADRs (self-cert, attestation
-  store, role-context lock, operator bus, pass entity, orchestrator)
+- `docs/decisions/009-016` — the v2 ADRs (self-cert, attestation
+  store, role-context lock, operator bus, pass entity,
+  orchestrator, pass persistence, Tier 2 modal)
 - `specs/architecture/components/attestation.md` — operator
   attestation flow spec
+- `docs/architecture-flows.md` — sequence diagrams for the
+  three load-bearing flows
