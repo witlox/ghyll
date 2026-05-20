@@ -1,4 +1,5 @@
-.PHONY: all build build-bin test test-unit test-acceptance lint fmt clean \
+.PHONY: all build build-bin test test-unit test-acceptance test-race test-live \
+       lint fmt clean \
        embedder vault verify-scenarios coverage coverage-check install-tools setup \
        docs docs-serve
 
@@ -23,6 +24,13 @@ test-acceptance:
 
 test-race:
 	go test -race -count=1 $(shell go list ./... | grep -v tests/acceptance)
+
+# Tier 3 / live-endpoint tests. Opt-in: requires the GHYLL_LIVE_*
+# env vars (URL, MODEL, optionally KEY). Without those the tests
+# t.Skip; with them set we hit a real OpenAI-compatible endpoint
+# and assert streaming SSE + delta callbacks + content render.
+test-live:
+	go test -tags live -count=1 -timeout 5m ./stream/...
 
 lint:
 	go vet ./...

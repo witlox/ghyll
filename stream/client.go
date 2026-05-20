@@ -70,6 +70,12 @@ type ClientOptions struct {
 	MaxRetries    int    // default 3
 	BaseBackoffMs int    // default 1000
 	ModelName     string // optional, sent as "model" in API request
+
+	// ExtraHeaders are merged onto every outgoing request. Tier 3
+	// live-endpoint tests use this to set Authorization: Bearer
+	// <key>; production session wiring leaves it nil (the endpoint
+	// config supplies credentials elsewhere).
+	ExtraHeaders http.Header
 }
 
 // Client is the SSE streaming client for OpenAI-compatible endpoints.
@@ -98,6 +104,9 @@ func NewClient(endpoint string, opts *ClientOptions) *Client {
 		}
 		if opts.ModelName != "" {
 			c.opts.ModelName = opts.ModelName
+		}
+		if opts.ExtraHeaders != nil {
+			c.opts.ExtraHeaders = opts.ExtraHeaders.Clone()
 		}
 	}
 	return c
@@ -176,6 +185,14 @@ func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Respons
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	// Tier 3: merge caller-supplied headers (e.g. Authorization
+	// for live-endpoint tests). Caller headers do NOT overwrite
+	// the protocol headers above; the for-Add loop appends.
+	for k, vs := range c.opts.ExtraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
