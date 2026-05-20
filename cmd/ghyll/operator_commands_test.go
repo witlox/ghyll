@@ -93,7 +93,7 @@ func TestScenario_OperatorCmd_OpID_SetAndShow(t *testing.T) {
 func TestScenario_OperatorCmd_OpID_RejectsWhitespace(t *testing.T) {
 	s := newOperatorTestSession(t)
 	r := s.DispatchSlashCommand("/op-id alice bob")
-	if !strings.Contains(r.Output, "must not contain whitespace") {
+	if !strings.Contains(r.Output, "whitespace") {
 		t.Fatalf("expected whitespace rejection; got %+v", r)
 	}
 }

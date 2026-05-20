@@ -1310,10 +1310,10 @@ func (s *Session) handleOpIDCommand(arg string) SlashCommandResult {
 			Output: "op-id cleared",
 		}
 	}
-	if strings.ContainsAny(arg, " \t\n\r") {
+	if err := validateOpID(arg); err != nil {
 		return SlashCommandResult{
 			Handled: true, ContinueLoop: true,
-			Output: "✗ op-id must not contain whitespace",
+			Output: fmt.Sprintf("✗ invalid op-id: %v", err),
 		}
 	}
 	s.opID = arg
@@ -1321,6 +1321,47 @@ func (s *Session) handleOpIDCommand(arg string) SlashCommandResult {
 		Handled: true, ContinueLoop: true,
 		Output: fmt.Sprintf("op-id set: %s", arg),
 	}
+}
+
+// validateOpID hardens the operator identity against being smuggled
+// into filesystem paths or log lines (gate-1 F-13). The op-id is
+// stamped on every AttestationRecord and shows up in JSONL audit
+// rows; bad characters there break parsing or escape the audit
+// tree.
+//
+// Rules:
+//   - non-empty after trim, ≤ 256 bytes
+//   - no whitespace, no control bytes (< 0x20 or 0x7F)
+//   - no path separators ('/', '\\', NUL)
+//   - no ".." substring (path-traversal guard)
+//   - cannot start with '.' or '-' (no dotfiles or flag-likes)
+const maxOpIDBytes = 256
+
+func validateOpID(id string) error {
+	if id == "" {
+		return errors.New("empty")
+	}
+	if len(id) > maxOpIDBytes {
+		return fmt.Errorf("too long (%d > %d bytes)", len(id), maxOpIDBytes)
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c < 0x20 || c == 0x7F:
+			return fmt.Errorf("contains control byte at offset %d (0x%02x)", i, c)
+		case c == '/' || c == '\\' || c == 0:
+			return fmt.Errorf("contains path-separator at offset %d (%q)", i, string(c))
+		case c == ' ' || c == '\t':
+			return fmt.Errorf("contains whitespace at offset %d", i)
+		}
+	}
+	if strings.Contains(id, "..") {
+		return errors.New(`contains ".." (path-traversal guard)`)
+	}
+	if id[0] == '.' || id[0] == '-' {
+		return fmt.Errorf("must not start with %q", string(id[0]))
+	}
+	return nil
 }
 
 // handleAttestCommand parses `/attest <ref> <verdict> [reason]` and
