@@ -181,6 +181,69 @@ func (w *AttestationJSONLWriter) LastError() error {
 	return w.lastErr
 }
 
+// TruncateAt seeks the underlying file to offset and truncates
+// everything past it. Called by session.Open once after a Recovery
+// signal that LoadFromJSONL detected a truncated trailing line
+// (F-6). The next Record overwrites the partial bytes; new
+// records append cleanly.
+//
+// No-op when the underlying writer is not an *os.File (the test-
+// only constructor uses a bytes.Buffer with no truncation surface).
+func (w *AttestationJSONLWriter) TruncateAt(offset int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return errors.New("attestation-jsonl: writer closed")
+	}
+	f, ok := w.out.(*os.File)
+	if !ok {
+		return nil
+	}
+	if err := f.Truncate(offset); err != nil {
+		return fmt.Errorf("attestation-jsonl: truncate %s @%d: %w", w.path, offset, err)
+	}
+	if _, err := f.Seek(offset, 0); err != nil {
+		return fmt.Errorf("attestation-jsonl: seek %s @%d: %w", w.path, offset, err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("attestation-jsonl: sync after truncate %s: %w", w.path, err)
+	}
+	return nil
+}
+
+// PrimaryWriter returns a function suitable for
+// AttestationStore.SetPrimaryWriter. The returned closure
+// performs the same marshal + write + fsync as the Observer but
+// returns the error inline so the store can refuse the Record
+// call (ADR-015 Part C inversion). The Observer path is left
+// in place as a fallback for code that doesn't use the primary-
+// writer wiring.
+func (w *AttestationJSONLWriter) PrimaryWriter() func(AttestationRecord) error {
+	return func(rec AttestationRecord) error {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.closed {
+			return errors.New("attestation-jsonl: writer closed")
+		}
+		line, err := json.Marshal(newJsonlRecord(rec))
+		if err != nil {
+			w.recordFailure(rec, fmt.Errorf("marshal: %w", err))
+			return fmt.Errorf("marshal: %w", err)
+		}
+		if err := w.writeFn(w.out, line); err != nil {
+			w.recordFailure(rec, fmt.Errorf("write: %w", err))
+			return fmt.Errorf("write: %w", err)
+		}
+		if w.syncFn != nil {
+			if err := w.syncFn(); err != nil {
+				w.recordFailure(rec, fmt.Errorf("fsync: %w", err))
+				return fmt.Errorf("fsync: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
 // Close flushes (sync the file) and closes the underlying writer.
 // Subsequent Observer events are silently dropped.
 func (w *AttestationJSONLWriter) Close() error {

@@ -56,6 +56,7 @@ type journalEvent struct {
 	amendment      runner.AmendmentEvent
 	run            *runner.EvaluationRun
 	attestation    runner.AttestationEvent
+	pass           runner.PassEvent
 	flushDone      chan struct{} // populated for jKindFlush events
 }
 
@@ -66,6 +67,7 @@ const (
 	jKindAmendment      = "amendment"
 	jKindRun            = "run"
 	jKindAttestation    = "attestation"
+	jKindPass           = "pass"
 	jKindFlush          = "flush"
 
 	defaultJournalBuffer  = 1024
@@ -132,6 +134,12 @@ func (j *Journal) Dropped() uint64 {
 // After Close or after the budget elapses, the event drops and the
 // counter increments so the operator sees the divergence at
 // session shutdown (see Session.Close in cmd/ghyll).
+//
+// F-11 (Tier 1): jKindPass is CRITICAL PRIORITY. A pass transition
+// dropped here means the engine row never updates, producing a
+// correctness lie at next-restart Recovery ("your closed pass was
+// reported as crashed"). For this kind only, the enqueue blocks
+// indefinitely rather than honoring the 100ms budget.
 func (j *Journal) enqueue(e journalEvent) {
 	if j.closed.Load() {
 		j.dropped.Add(1)
@@ -142,6 +150,12 @@ func (j *Journal) enqueue(e journalEvent) {
 	case j.events <- e:
 		return
 	default:
+	}
+	// F-11: pass events block indefinitely (modulo Close). Other
+	// events keep the bounded-block-then-drop semantics.
+	if e.kind == jKindPass {
+		j.events <- e
+		return
 	}
 	// Backpressure path — bounded block. Observers fire under the
 	// runner's WRITE lock so a long block here stalls the runner;
@@ -196,6 +210,8 @@ func (j *Journal) handle(e journalEvent) {
 		j.handleRun(ctx, e.run)
 	case jKindAttestation:
 		j.handleAttestation(ctx, e.attestation)
+	case jKindPass:
+		j.handlePass(ctx, e.pass)
 	}
 }
 
@@ -395,6 +411,42 @@ func (j *Journal) handleAttestation(ctx context.Context, e runner.AttestationEve
 	case runner.AttestationEventRecord:
 		j.logErr("insertAttestation", j.store.insertAttestation(ctx, e.Record))
 	}
+}
+
+// AttachPasses registers a PassObserver that journals every
+// open / close / abort / recover. Per F-11 the enqueue path for
+// jKindPass blocks indefinitely so invariant 1 holds.
+func (j *Journal) AttachPasses(reg *runner.PassRegistry) {
+	reg.Observe(func(e runner.PassEvent) {
+		j.enqueue(journalEvent{kind: jKindPass, pass: e})
+	})
+}
+
+// handlePass writes a PassRecord via Store.UpsertPass. The
+// upsert clause preserves recovered_at on later updates (F-12).
+func (j *Journal) handlePass(ctx context.Context, e runner.PassEvent) {
+	rec := PassRecord{
+		PassID:      e.PassID,
+		Role:        e.Role,
+		Context:     e.Context,
+		ArrowID:     e.ArrowID,
+		GridVersion: e.GridVersion,
+		State:       string(e.State),
+		OpenedAt:    formatJournalTime(e.OpenedAt),
+		ClosedAt:    formatJournalTime(e.ClosedAt),
+		CloseReason: e.CloseReason,
+		RecoveredAt: formatJournalTime(e.RecoveredAt),
+	}
+	j.logErr("UpsertPass", j.store.UpsertPass(ctx, rec))
+}
+
+// formatJournalTime returns the RFC3339Nano form of t, or empty
+// string for the zero value (keeps the JSON shape stable).
+func formatJournalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func (j *Journal) handleAmendment(ctx context.Context, e runner.AmendmentEvent) {
