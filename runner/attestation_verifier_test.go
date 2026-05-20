@@ -185,7 +185,7 @@ func TestScenario_AttestationVerifier_RoundtripWithProductionWriter(t *testing.T
 		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
 		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
 		Verdict: AttestationPass, Reason: "verified",
-		Timestamp: 1747663200_000000000, GridVersion: 1,
+		Timestamp: 1747663200_000000000, GridVersion: 1, PassID: "P-roundtrip",
 	}
 	if err := store.Record(rec); err != nil {
 		t.Fatal(err)

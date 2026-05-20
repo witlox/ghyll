@@ -22,6 +22,7 @@ func validDepthTypeRec() AttestationRecord {
 		Reason:         "verified",
 		Timestamp:      1747663200000000000,
 		GridVersion:    1,
+		PassID:         "P-test-1",
 	}
 }
 
@@ -37,6 +38,7 @@ func validOnTheSpotRec() AttestationRecord {
 		Verdict:        AttestationPass,
 		Timestamp:      1747663200000000000,
 		GridVersion:    3,
+		PassID:         "P-test-2",
 	}
 }
 

@@ -162,7 +162,7 @@ func TestRecovery_EvaluationRunReconcile(t *testing.T) {
 	if err := atts.Record(runner.AttestationRecord{
 		ID: "att-X", Kind: runner.AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C5", OpID: "alice", AttestedByRole: "operator",
-		Verdict: runner.AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: runner.AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-recover",
 	}); err != nil {
 		t.Fatalf("seed attestation: %v", err)
 	}

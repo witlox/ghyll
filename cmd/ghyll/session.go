@@ -333,6 +333,11 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		modalPendingMaxLen,
 	)
 	s.modalDriver.residueNoteMaxBytes = residueNoteMaxBytes
+	// Mirror the cap onto the AttestationStore so Record-time
+	// validation (gate-2 CORR-A-4 / SEC-H-1) sees the same value
+	// the modal driver applies. atomic.Int64 on the store side,
+	// safe to set from any goroutine.
+	rt.AttestationStore().SetResidueNoteMaxBytes(residueNoteMaxBytes)
 	if total := counts.Arrows + counts.Findings + counts.Requirements +
 		counts.AmendmentsActive + counts.AmendmentsDrained; total > 0 {
 		s.output(fmt.Sprintf("ℹ engine replayed: %d arrows, %d findings, %d requirements, %d amendments (%d drained)",

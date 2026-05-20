@@ -103,17 +103,17 @@ func TestScenario_ProjectStatus_AttestationCounts_GroupedByKind(t *testing.T) {
 	_ = as.Record(AttestationRecord{
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType, ArrowID: "A1", ClauseID: "C1",
 		OpID: "op", AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-1",
 	})
 	_ = as.Record(AttestationRecord{
 		ID: "att-A1-C2-v1", Kind: AttestationKindDepthType, ArrowID: "A1", ClauseID: "C2",
 		OpID: "op", AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 2, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 2, GridVersion: 1, PassID: "P-2",
 	})
 	_ = as.Record(AttestationRecord{
 		ID: "att-A2-v1", Kind: AttestationKindOnTheSpot, ArrowID: "A2",
 		OpID: "op", AttestedByRole: "integrator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 3, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 3, GridVersion: 1, PassID: "P-3",
 	})
 
 	st := CaptureProjectStatus(StatusSources{Attestations: as})

@@ -21,6 +21,7 @@ func sampleDepthTypeRecord() runner.AttestationRecord {
 		Reason:         "verified",
 		Timestamp:      1747663200_000000000,
 		GridVersion:    1,
+		PassID:         "P-sample-1",
 	}
 }
 
@@ -36,6 +37,7 @@ func sampleOnTheSpotRecord() runner.AttestationRecord {
 		Verdict:        runner.AttestationPass,
 		Timestamp:      1747663260_000000000,
 		GridVersion:    1,
+		PassID:         "P-sample-2",
 	}
 }
 

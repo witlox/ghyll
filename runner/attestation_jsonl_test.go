@@ -36,6 +36,7 @@ func TestScenario_AttestationJSONL_AppendsOnRecord(t *testing.T) {
 		Verdict:        AttestationPass,
 		Timestamp:      1747663200_000000000,
 		GridVersion:    1,
+		PassID:         "P-test",
 	}
 	if err := store.Record(rec); err != nil {
 		t.Fatal(err)
@@ -78,6 +79,7 @@ func TestScenario_AttestationJSONL_OnTheSpot_OmitsClauseID(t *testing.T) {
 		Verdict:        AttestationPass,
 		Timestamp:      1747663200_000000000,
 		GridVersion:    1,
+		PassID:         "P-test",
 	}
 	if err := store.Record(rec); err != nil {
 		t.Fatal(err)
@@ -98,7 +100,7 @@ func TestScenario_AttestationJSONL_DoesNotFire_OnIdempotentReRecord(t *testing.T
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 	_ = store.Record(rec) // idempotent — no observer event
@@ -119,7 +121,7 @@ func TestScenario_AttestationJSONL_AfterClose_DropsEvents(t *testing.T) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 	_ = w.Close()
@@ -175,7 +177,7 @@ func TestScenario_AttestationJSONL_WriteFailureCountsAndSurfacesError(t *testing
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 
@@ -204,7 +206,7 @@ func TestScenario_AttestationJSONL_SingleWriteCall(t *testing.T) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 	if tally.calls != 1 {
@@ -241,7 +243,7 @@ func TestScenario_AttestationJSONL_FsyncBeforeAccept(t *testing.T) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	if err := store.Record(rec); err != nil {
 		t.Fatal(err)
@@ -273,7 +275,7 @@ func TestScenario_AttestationJSONL_FailurePublishesBusEvent(t *testing.T) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op-alice",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 
@@ -303,7 +305,7 @@ func TestScenario_AttestationJSONL_FsyncFailureCounted(t *testing.T) {
 		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
 		ArrowID: "A1", ClauseID: "C1", OpID: "op",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1, PassID: "P-test",
 	}
 	_ = store.Record(rec)
 	if w.WriteErrors() != 1 {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // AttestationKind names the two attestation kinds owned by this
@@ -323,6 +324,12 @@ type AttestationStore struct {
 	// of truth for attestations (inverting the original ADR-010
 	// framing).
 	primaryWriter func(AttestationRecord) error
+
+	// residueNoteMaxBytes is the operator residue-note cap
+	// applied by Record's ValidateUnitPayload call (gate-2
+	// CORR-A-10 / F-24). atomic.Int64 so callers can re-tune
+	// from a config-reload goroutine without taking s.mu.
+	residueNoteMaxBytes atomic.Int64
 }
 
 // NewAttestationStore returns an empty store. The engine layer
@@ -330,6 +337,20 @@ type AttestationStore struct {
 // start so subsequent Record calls persist.
 func NewAttestationStore() *AttestationStore {
 	return &AttestationStore{byID: make(map[string]AttestationRecord)}
+}
+
+// SetResidueNoteMaxBytes configures the residue-note cap consumed
+// by Record's ValidateUnitPayload. Zero/negative disables the cap
+// (ValidateUnitPayload falls back to DefaultMaxResidueNoteBytes).
+// Atomic so callers don't need s.mu.
+func (s *AttestationStore) SetResidueNoteMaxBytes(n int) {
+	s.residueNoteMaxBytes.Store(int64(n))
+}
+
+// ResidueNoteMaxBytes returns the configured cap; primarily for
+// tests and diagnostics.
+func (s *AttestationStore) ResidueNoteMaxBytes() int {
+	return int(s.residueNoteMaxBytes.Load())
 }
 
 // Observe registers an observer to be invoked on every mutation.
@@ -371,6 +392,14 @@ func (s *AttestationStore) emit(e AttestationEvent) {
 // the JSONL audit trail the source of truth.
 func (s *AttestationStore) Record(rec AttestationRecord) error {
 	if err := validateAttestation(rec); err != nil {
+		return err
+	}
+	// Gate-2 CORR-A-4/A-6/SEC-H-1: every Tier 2-aware Record call
+	// path passes through full unit-payload + hint + PassID checks.
+	// Pre-Tier-2 callers (recordReplay) bypass this via the
+	// separate recordReplay entry point; legacy rows with empty
+	// Unit/PassID still load via the lenient path.
+	if err := validateAttestationTier2(rec, s.ResidueNoteMaxBytes()); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -544,6 +573,48 @@ func validateAttestation(rec AttestationRecord) error {
 		}
 		if tgt != "" && strings.EqualFold(adv, tgt) {
 			return fmt.Errorf("%w: adversary-role %q equals target-role", ErrAttestationSelfCert, adv)
+		}
+	}
+	return nil
+}
+
+// validateAttestationTier2 runs the Tier 2-specific record checks
+// the modal driver / dispatcher contracts mandate. Separated from
+// validateAttestation so recordReplay (legacy load path) can skip
+// these — pre-Tier-2 rows carry empty PassID/Unit by design.
+//
+// Checks (gate-2 CORR-A-4 / A-6 / SEC-H-1):
+//
+//   - PassID non-empty (the tree path encoder already enforces;
+//     this catches /attest CLI + future writer paths)
+//   - AdversaryRole does NOT contain the reserved "__" separator
+//   - Unit, if non-empty, is in the enum
+//   - UnitPayload (typed) passes ValidateUnitPayload against the
+//     configured residue cap
+//   - HintJSON, if non-empty and != "{}", parses as a JSON object
+func validateAttestationTier2(rec AttestationRecord, residueMaxBytes int) error {
+	if strings.TrimSpace(rec.PassID) == "" {
+		return ErrAttestationPassIDEmpty
+	}
+	adv := strings.TrimSpace(rec.AdversaryRole)
+	if adv != "" && strings.Contains(adv, "__") {
+		return fmt.Errorf(`%w: adversary-role must not contain "__"`, ErrAttestationSelfCert)
+	}
+	if rec.Unit != "" {
+		switch rec.Unit {
+		case VerdictUnitConfirm, VerdictUnitRecordLocationsInspected, VerdictUnitWriteResidueNote:
+			// OK
+		default:
+			return fmt.Errorf("%w: %q", ErrVerdictUnitInvalid, rec.Unit)
+		}
+		if err := ValidateUnitPayload(rec.Unit, rec.UnitPayload, residueMaxBytes); err != nil {
+			return err
+		}
+	}
+	if rec.HintJSON != "" && rec.HintJSON != "{}" {
+		var probe map[string]any
+		if err := json.Unmarshal([]byte(rec.HintJSON), &probe); err != nil {
+			return fmt.Errorf("attestation hint_json malformed: %w", err)
 		}
 	}
 	return nil

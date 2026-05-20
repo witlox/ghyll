@@ -2,6 +2,8 @@ package main
 
 import (
 	gocontext "context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,40 @@ import (
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
 )
+
+// writeLegacyJSONL writes a Tier-1-style JSONL with no PassID
+// field — simulates a pre-Tier-2 audit trail. Direct write
+// bypasses Record's Tier 2 PassID enforcement.
+func writeLegacyJSONL(path string, recs ...runner.AttestationRecord) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	for _, rec := range recs {
+		line, err := json.Marshal(map[string]any{
+			"attestation_id":   rec.ID,
+			"kind":             string(rec.Kind),
+			"arrow_id":         rec.ArrowID,
+			"clause_id":        rec.ClauseID,
+			"op_id":            rec.OpID,
+			"attested_by_role": rec.AttestedByRole,
+			"source_role":      rec.SourceRole,
+			"target_role":      rec.TargetRole,
+			"verdict":          string(rec.Verdict),
+			"reason":           rec.Reason,
+			"timestamp":        rec.Timestamp,
+			"grid_version":     rec.GridVersion,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(f, string(line)); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
 
 // TestScenario_OpenEngine_Tier1ToTier2Migration verifies a project
 // upgrading from Tier 1 (flat .ghyll/attestations.jsonl + engine
@@ -57,33 +93,22 @@ func TestScenario_OpenEngine_Tier1ToTier2Migration(t *testing.T) {
 		Timestamp:      1716100100_000000000,
 		GridVersion:    1,
 	}
-	// Seed the engine table by routing through CatchUpAttestations
-	// which is the public path for population from an in-memory
-	// AttestationStore.
-	seedStore := runner.NewAttestationStore()
-	if err := seedStore.Record(rec1); err != nil {
+	// Write a Tier-1-style flat JSONL (no PassID) directly so we
+	// bypass Record's Tier 2 PassID-required enforcement — the
+	// whole point of this scenario is a pre-Tier-2 audit trail.
+	flatPath := filepath.Join(ghyllDir, "attestations.jsonl")
+	if err := writeLegacyJSONL(flatPath, rec1, rec2); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedStore.Record(rec2); err != nil {
+	// Seed the engine table by loading the legacy JSONL via the
+	// lenient replay path then CatchUp.
+	seedStore := runner.NewAttestationStore()
+	if _, _, err := seedStore.LoadFromJSONL(flatPath, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := bootStore.CatchUpAttestations(gocontext.Background(), seedStore); err != nil {
 		t.Fatal(err)
 	}
-	// Write a flat JSONL with the same records.
-	flatPath := filepath.Join(ghyllDir, "attestations.jsonl")
-	jw, err := runner.NewAttestationJSONLWriter(flatPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pw := jw.PrimaryWriter()
-	if err := pw(rec1); err != nil {
-		t.Fatal(err)
-	}
-	if err := pw(rec2); err != nil {
-		t.Fatal(err)
-	}
-	_ = jw.Close()
 	_ = bootStore.Close()
 
 	// Confirm the tree dir does NOT exist.
