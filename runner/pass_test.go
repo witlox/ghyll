@@ -7,10 +7,14 @@ import (
 )
 
 func TestScenario_Pass_OpenAcquiresLockAndPublishesEvent(t *testing.T) {
+	// Per ADR-015 Part A: bus events fire via PassRegistry.emit's
+	// bridge, not from OpenPass directly. Register the pass so the
+	// audit path lights up.
 	tbl := NewRoleContextLockTable()
 	bus := NewOperatorBus()
 	var events []OperatorEvent
 	bus.Subscribe(func(e OperatorEvent) { events = append(events, e) })
+	reg := NewPassRegistry()
 
 	p, err := OpenPass(PassOptions{
 		PassID: "P1", Role: "analyst", Context: "checkout",
@@ -19,6 +23,7 @@ func TestScenario_Pass_OpenAcquiresLockAndPublishesEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPass: %v", err)
 	}
+	reg.Register(p)
 	defer p.Close("done")
 
 	if got, _ := tbl.InspectHolder("analyst", "checkout"); got != "P1" {
@@ -37,11 +42,13 @@ func TestScenario_Pass_CloseReleasesLockAndPublishesEvent(t *testing.T) {
 	bus := NewOperatorBus()
 	var events []OperatorEvent
 	bus.Subscribe(func(e OperatorEvent) { events = append(events, e) })
+	reg := NewPassRegistry()
 
 	p, _ := OpenPass(PassOptions{
 		PassID: "P1", Role: "analyst", Context: "checkout",
 		ArrowID: "A1", LockTable: tbl, Bus: bus,
 	})
+	reg.Register(p)
 	p.Close("clauses-evaluated")
 
 	if _, held := tbl.InspectHolder("analyst", "checkout"); held {
@@ -62,6 +69,74 @@ func TestScenario_Pass_CloseReleasesLockAndPublishesEvent(t *testing.T) {
 	}
 	if events[1].Kind != OpEventPassClosed {
 		t.Fatalf("second event = %q; want pass-closed", events[1].Kind)
+	}
+}
+
+func TestScenario_PassRegistry_ResumeRebuildsRegistry(t *testing.T) {
+	// F-3: PassRegistry.Resume reconstitutes the in-memory *Pass +
+	// re-acquires the (role, context) lock token. After Resume the
+	// registry lists the pass and the lock is held.
+	tbl := NewRoleContextLockTable()
+	reg := NewPassRegistry()
+	p, err := reg.Resume(ResumeOptions{
+		PassID: "P-recover", Role: "analyst", Context: "ctxA",
+		ArrowID: "A1", GridVersion: 1,
+		OpenedAt: time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC),
+		Now:      func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) },
+	}, tbl)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if p.State() != PassStateOpen {
+		t.Fatalf("State = %q; want open", p.State())
+	}
+	if got, _ := tbl.InspectHolder("analyst", "ctxA"); got != "P-recover" {
+		t.Fatalf("lock holder = %q; want P-recover", got)
+	}
+	if reg.Len() != 1 {
+		t.Fatalf("registry size = %d; want 1", reg.Len())
+	}
+	if p.RecoveredAt().IsZero() {
+		t.Fatal("RecoveredAt unstamped after Resume")
+	}
+}
+
+func TestScenario_Pass_ClosePostLockReleaseEmit(t *testing.T) {
+	// F-4: lock order is p.mu → release → emit. An observer that
+	// calls p.State() during emit (which takes p.mu) must NOT
+	// deadlock. The previous design (emit under p.mu via bus
+	// publish) deadlocked this scenario; the fix verified here.
+	tbl := NewRoleContextLockTable()
+	reg := NewPassRegistry()
+	stateInObserver := make(chan PassState, 1)
+	reg.Observe(func(e PassEvent) {
+		if e.Kind != PassEventClose && e.Kind != PassEventAbort {
+			return
+		}
+		// Re-enter the pass via the registry. If emit ran under
+		// p.mu, this call would deadlock.
+		for _, p := range reg.All() {
+			if p.ID() == e.PassID {
+				stateInObserver <- p.State()
+			}
+		}
+	})
+	p, err := OpenPass(PassOptions{
+		PassID: "P-deadlock", Role: "analyst", Context: "ctxA",
+		ArrowID: "A1", LockTable: tbl,
+	})
+	if err != nil {
+		t.Fatalf("OpenPass: %v", err)
+	}
+	reg.Register(p)
+	p.Close("done")
+	select {
+	case got := <-stateInObserver:
+		if got != PassStateClosed {
+			t.Errorf("observer saw State=%q; want closed", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer deadlocked or never fired")
 	}
 }
 

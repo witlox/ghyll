@@ -2,7 +2,6 @@ package runner
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -44,8 +43,10 @@ type Pass struct {
 	role        string
 	context     string
 	arrowID     string
+	gridVersion uint64
 	openedAt    time.Time
 	closedAt    time.Time
+	recoveredAt time.Time
 	state       PassState
 	closeReason string
 
@@ -55,18 +56,24 @@ type Pass struct {
 
 	// Optional event bus. Nil = silent (still functional).
 	bus *OperatorBus
+
+	// Registry that owns this pass. Set by PassRegistry.Register
+	// or PassRegistry.Resume. closeWith calls registry.emit AFTER
+	// the lock token release (F-4: lock order p.mu → release → emit).
+	registry *PassRegistry
 }
 
 // PassOptions configures Open.
 type PassOptions struct {
-	PassID    string
-	Role      string
-	Context   string
-	ArrowID   string
-	LockTable *RoleContextLockTable
-	LockTTL   time.Duration // 0 = no TTL
-	Bus       *OperatorBus  // optional
-	Now       func() time.Time
+	PassID      string
+	Role        string
+	Context     string
+	ArrowID     string
+	GridVersion uint64
+	LockTable   *RoleContextLockTable
+	LockTTL     time.Duration // 0 = no TTL
+	Bus         *OperatorBus  // optional
+	Now         func() time.Time
 }
 
 // ErrPassRoleEmpty etc. — explicit sentinels for invalid Open.
@@ -112,24 +119,20 @@ func OpenPass(opts PassOptions) (*Pass, error) {
 		return nil, err
 	}
 	p := &Pass{
-		id:        opts.PassID,
-		role:      opts.Role,
-		context:   opts.Context,
-		arrowID:   opts.ArrowID,
-		openedAt:  now(),
-		state:     PassStateOpen,
-		lockToken: tok,
-		bus:       opts.Bus,
+		id:          opts.PassID,
+		role:        opts.Role,
+		context:     opts.Context,
+		arrowID:     opts.ArrowID,
+		gridVersion: opts.GridVersion,
+		openedAt:    now(),
+		state:       PassStateOpen,
+		lockToken:   tok,
+		bus:         opts.Bus,
 	}
-	if p.bus != nil {
-		p.bus.Publish(OperatorEvent{
-			Kind:    OpEventPassOpened,
-			ArrowID: p.arrowID,
-			PassID:  p.id,
-			Role:    p.role,
-			Detail:  p.context,
-		})
-	}
+	// N-1 / N-2: the duplicate bus.Publish(OpEventPassOpened) is
+	// removed. PassRegistry.Register is the single audit path
+	// (emits PassEventOpen); the journal observer bridges to the
+	// bus if a downstream subscriber needs it.
 	return p, nil
 }
 
@@ -147,24 +150,56 @@ func (p *Pass) Abort(reason string) {
 	p.closeWith(reason, PassStateAborted)
 }
 
+// closeWith follows the F-4 lock-ordering rule:
+//
+//  1. Acquire p.mu. Mutate state + capture payload.
+//  2. Release p.mu.
+//  3. Release the lock token.
+//  4. Emit on the registry (unlocked observer fanout).
+//
+// Steps 2–4 happen with NO mutex held, so a registry.emit
+// observer that needs to call p.State() (which takes p.mu)
+// does not deadlock. N-1: the duplicate bus.Publish is removed;
+// PassEvent is the single audit path.
 func (p *Pass) closeWith(reason string, finalState PassState) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.state != PassStateOpen {
+		p.mu.Unlock()
 		return
 	}
 	p.state = finalState
 	p.closeReason = reason
 	p.closedAt = time.Now()
+	payload := PassEvent{
+		Kind:        kindFromFinalState(finalState),
+		PassID:      p.id,
+		Role:        p.role,
+		Context:     p.context,
+		ArrowID:     p.arrowID,
+		GridVersion: p.gridVersion,
+		State:       p.state,
+		OpenedAt:    p.openedAt,
+		ClosedAt:    p.closedAt,
+		CloseReason: p.closeReason,
+		RecoveredAt: p.recoveredAt,
+		At:          p.closedAt,
+	}
+	registry := p.registry
+	p.mu.Unlock()
 	p.lockToken.Release()
-	if p.bus != nil {
-		p.bus.Publish(OperatorEvent{
-			Kind:    OpEventPassClosed,
-			ArrowID: p.arrowID,
-			PassID:  p.id,
-			Role:    p.role,
-			Detail:  fmt.Sprintf("%s:%s", finalState, reason),
-		})
+	if registry != nil {
+		registry.emit(payload)
+	}
+}
+
+// kindFromFinalState maps the terminal PassState to the matching
+// observer event kind.
+func kindFromFinalState(s PassState) PassEventKind {
+	switch s {
+	case PassStateAborted:
+		return PassEventAbort
+	default:
+		return PassEventClose
 	}
 }
 
@@ -204,4 +239,43 @@ func (p *Pass) CloseReason() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.closeReason
+}
+
+// GridVersion returns the grid generation under which the pass
+// was opened. Zero when not stamped.
+func (p *Pass) GridVersion() uint64 { return p.gridVersion }
+
+// RecoveredAt returns the timestamp at which engine.Recovery
+// preserved this pass (attestation-pending exception). Zero on
+// passes that never went through recovery.
+func (p *Pass) RecoveredAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.recoveredAt
+}
+
+// markRecovered stamps recoveredAt + emits PassEventRecover.
+// Called by PassRegistry.Resume after a successful lock
+// re-acquisition. The mutate-then-unlocked-emit pattern matches
+// closeWith (F-4).
+func (p *Pass) markRecovered(at time.Time) {
+	p.mu.Lock()
+	p.recoveredAt = at
+	payload := PassEvent{
+		Kind:        PassEventRecover,
+		PassID:      p.id,
+		Role:        p.role,
+		Context:     p.context,
+		ArrowID:     p.arrowID,
+		GridVersion: p.gridVersion,
+		State:       p.state,
+		OpenedAt:    p.openedAt,
+		RecoveredAt: at,
+		At:          at,
+	}
+	registry := p.registry
+	p.mu.Unlock()
+	if registry != nil {
+		registry.emit(payload)
+	}
 }
