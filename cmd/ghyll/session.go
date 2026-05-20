@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	gocontext "context"
 	"github.com/witlox/ghyll/bootstrap"
@@ -306,9 +307,14 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	// runtime. A missing or unparseable grid file is non-fatal
 	// here — escalation is disabled (max=0) and the runtime
 	// proceeds.
-	ibRoundsMax := 0
-	modalPendingMaxLen := 0
-	residueNoteMaxBytes := 0
+	// Gate-2 CORR-A-23: when bootstrap.Read fails (no grid file
+	// yet — common in fresh non-init projects), fall back to the
+	// built-in defaults instead of leaving everything at zero.
+	// IB rounds = 0 silently disables escalation; 64-entry modal
+	// queue + 16 KiB residue cap give sensible safety bounds.
+	ibRoundsMax := 3
+	modalPendingMaxLen := bootstrap.DefaultModalPendingMaxLen
+	residueNoteMaxBytes := bootstrap.DefaultResidueNoteMaxBytes
 	if g, gerr := bootstrap.Read(s.workdir); gerr == nil && g != nil {
 		ibRoundsMax = g.InsufficientBasisRoundsMax
 		modalPendingMaxLen = g.ModalPendingMaxLen
@@ -447,6 +453,18 @@ func (s *Session) Close() {
 	// invoked via signal handler or test cleanup.
 	if s.sessionCancel != nil {
 		s.sessionCancel()
+	}
+	// Gate-2 CONC-H-4: drop the modal driver's bus subscription
+	// BEFORE the engine + bus go away. Without Stop the bus
+	// retains a callback pointing at a torn-down driver.
+	if s.modalDriver != nil {
+		s.modalDriver.Stop()
+	}
+	// Gate-2 CONC-C-1/C-2: close the shared stdin reader so its
+	// goroutine exits cleanly.
+	if s.lines != nil {
+		s.lines.Close()
+		s.lines = nil
 	}
 	if s.engine == nil {
 		return
@@ -1431,7 +1449,45 @@ func validateOpID(id string) error {
 	if id[0] == '.' || id[0] == '-' {
 		return fmt.Errorf("%w: must not start with %q", ErrOpIDInvalidCharacters, string(id[0]))
 	}
+	if strings.HasSuffix(id, ".") {
+		return fmt.Errorf("%w: trailing '.' rejected", ErrOpIDInvalidCharacters)
+	}
+	// Gate-2 CORR-A-21 / SEC-L-1: reject any rune in the Unicode
+	// Format or Control class. RTL override U+202E and ZWSP U+200B
+	// pass the byte-level checks (their UTF-8 encoding is
+	// 0xE2/0x80/0xAE etc. — all >= 0x80) but render as
+	// invisible-or-direction-changing characters, enabling
+	// operator-impersonation phishing.
+	for _, r := range id {
+		if unicode.IsControl(r) || isFormatRune(r) {
+			return fmt.Errorf("%w: contains Unicode format/control rune U+%04X", ErrOpIDInvalidCharacters, r)
+		}
+	}
 	return nil
+}
+
+// isFormatRune reports whether r is in the Unicode Format
+// (Cf) category — RTL overrides, zero-width joiners, etc.
+func isFormatRune(r rune) bool {
+	return unicode.Is(unicode.Cf, r)
+}
+
+// stripControlBytes drops < 0x20 (except \n/\t/\r preserved as
+// space) and 0x7F. Gate-2 SEC-M-3 helper for operator-supplied
+// free-form fields headed for JSONL audit + UI render.
+func stripControlBytes(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7F {
+			if c == '\n' || c == '\t' || c == '\r' {
+				out = append(out, ' ')
+			}
+			continue
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 // handleAttestCommand parses `/attest <ref> <verdict> [reason]` and
@@ -1463,6 +1519,14 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 	reason := ""
 	if len(parts) == 3 {
 		reason = strings.TrimSpace(parts[2])
+		// Gate-2 SEC-M-3: cap reason at 4 KiB + strip control
+		// bytes so an oversized or smuggled-control reason can't
+		// flow into JSONL audit + UI rendering paths.
+		const maxReasonBytes = 4 * 1024
+		if len(reason) > maxReasonBytes {
+			reason = reason[:maxReasonBytes]
+		}
+		reason = stripControlBytes(reason)
 	}
 
 	verdict, err := parseOperatorVerdict(verdictStr)

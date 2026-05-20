@@ -34,9 +34,27 @@ type modalDriver struct {
 	// max-bytes; zero disables the check). Step 11.
 	residueNoteMaxBytes int
 
+	// unsubscribe drops the OnEvent subscriber from bus (gate-2
+	// CONC-H-4). session.closeEngine MUST call Stop so the bus
+	// doesn't outlive the engine runtime via dangling callbacks.
+	unsubscribe func()
+
 	mu       sync.Mutex
 	pending  []modalRequest
 	inFlight map[string]struct{} // gate-1 F-12: dedup on AttestationRecord.ID
+}
+
+// Stop cancels the modal driver's bus subscription. Idempotent.
+// Called by session.closeEngine to prevent the bus from holding a
+// stale callback past engine teardown (gate-2 CONC-H-4).
+func (d *modalDriver) Stop() {
+	if d == nil {
+		return
+	}
+	if d.unsubscribe != nil {
+		d.unsubscribe()
+		d.unsubscribe = nil
+	}
 }
 
 // arrowResolverFn returns the per-arrow metadata needed to fill
@@ -116,7 +134,7 @@ func newModalDriver(
 		inFlight:      make(map[string]struct{}),
 	}
 	if bus != nil {
-		bus.Subscribe(d.OnEvent)
+		d.unsubscribe = bus.Subscribe(d.OnEvent)
 	}
 	return d
 }
@@ -136,10 +154,17 @@ func (d *modalDriver) OnEvent(ev runner.OperatorEvent) {
 	}
 }
 
+// maxHintDetailBytes caps the Detail JSON the modal driver
+// parses (gate-2 CONC-L-3). 64 KiB is comfortably more than the
+// dispatcher ever emits; a publisher sending megabytes would
+// otherwise peg CPU on the synchronous subscriber callback.
+const maxHintDetailBytes = 64 * 1024
+
 func (d *modalDriver) enqueueVerdict(ev runner.OperatorEvent) {
-	// Parse Detail as JSON Hint (Tier 2 Part G).
+	// Parse Detail as JSON Hint (Tier 2 Part G). Cap to prevent
+	// DoS via oversized publisher payloads.
 	var hint modal.Hint
-	if ev.Detail != "" && ev.Detail[0] == '{' {
+	if ev.Detail != "" && ev.Detail[0] == '{' && len(ev.Detail) <= maxHintDetailBytes {
 		_ = json.Unmarshal([]byte(ev.Detail), &hint)
 	}
 	if hint.ArrowID == "" {
@@ -297,11 +322,25 @@ func extractAttRef(detail string) string {
 		return ""
 	}
 	rest := detail[idx+len(prefix):]
-	end := strings.IndexAny(rest, " \t")
-	if end < 0 {
-		return rest
+	// Gate-2 SEC-M-2 + CONC-L-4: split on ALL whitespace
+	// (including \n / \r) AND strip any trailing control bytes
+	// so a smuggled newline in the ref doesn't disable dedup or
+	// flow into downstream parsers verbatim.
+	end := strings.IndexAny(rest, " \t\r\n")
+	if end >= 0 {
+		rest = rest[:end]
 	}
-	return rest[:end]
+	// Drop any remaining control bytes; reject if anything
+	// non-printable survives.
+	out := make([]byte, 0, len(rest))
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c < 0x20 || c == 0x7F {
+			continue
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 // DrainPending blocks until every queued modal request has been
@@ -426,13 +465,12 @@ func (d *modalDriver) handleVerdict(ctx context.Context, req modalRequest) error
 	if recErr != nil {
 		return recErr
 	}
-	if err := d.store.Record(rec); err != nil {
-		return fmt.Errorf("modal-driver: Record: %w", err)
-	}
-	// Update IB tracker per verdict (matches the existing
-	// session_engine wiring's Observe-based path; the modal
-	// driver calls Record which fires the observer too — so this
-	// is the audit-trail signal).
+	// Gate-2 CONC-M-1: publish OpEventClauseFailVerdict BEFORE
+	// Record so a Record-rejection (e.g. ErrAttestationDuplicate
+	// on retry-after-cancel) doesn't swallow the producer-fix
+	// signal. If Record fails the event still carries useful
+	// audit-trail information; downstream consumers correlate
+	// via attestRef.
 	if d.bus != nil && sub.Verdict == runner.AttestationFail {
 		d.bus.Publish(runner.OperatorEvent{
 			Kind:     runner.OpEventClauseFailVerdict,
@@ -441,6 +479,9 @@ func (d *modalDriver) handleVerdict(ctx context.Context, req modalRequest) error
 			ClauseID: req.clauseID,
 			Detail:   "operator returned fail",
 		})
+	}
+	if err := d.store.Record(rec); err != nil {
+		return fmt.Errorf("modal-driver: Record: %w", err)
 	}
 	return nil
 }

@@ -123,8 +123,16 @@ type OperatorEventSubscriber func(event OperatorEvent)
 // the substrate for the JSONL audit writer.
 type OperatorBus struct {
 	mu          sync.RWMutex
-	subscribers []OperatorEventSubscriber
+	subscribers []subscriberEntry
+	nextID      uint64
 	now         func() time.Time
+}
+
+// subscriberEntry pairs an id with its callback so Unsubscribe
+// can remove by handle. Gate-2 CONC-H-4.
+type subscriberEntry struct {
+	id uint64
+	fn OperatorEventSubscriber
 }
 
 // NewOperatorBus returns an empty bus with time.Now as the
@@ -134,36 +142,55 @@ func NewOperatorBus() *OperatorBus {
 }
 
 // WithClock overrides the timestamp source for tests.
+// Gate-2 CONC-L-1: holds the bus mutex during the swap so a
+// concurrent Publish sees a consistent now-function.
 func (b *OperatorBus) WithClock(clock func() time.Time) *OperatorBus {
+	b.mu.Lock()
 	b.now = clock
+	b.mu.Unlock()
 	return b
 }
 
-// Subscribe registers a subscriber. The bus retains the function;
-// there is no Unsubscribe. Typical use: the session attaches one
-// subscriber per consumer (JSONL writer, status surface, future
-// HTTP forwarder) at startup.
-func (b *OperatorBus) Subscribe(fn OperatorEventSubscriber) {
+// Subscribe registers a subscriber. Returns a closer that removes
+// the subscriber when called (idempotent). Gate-2 CONC-H-4: the
+// session's closeEngine MUST call the returned closer for every
+// subscriber it registers so the bus doesn't outlive the engine
+// runtime through dangling callbacks.
+func (b *OperatorBus) Subscribe(fn OperatorEventSubscriber) func() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.subscribers = append(b.subscribers, fn)
+	b.nextID++
+	id := b.nextID
+	b.subscribers = append(b.subscribers, subscriberEntry{id: id, fn: fn})
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		for i, e := range b.subscribers {
+			if e.id == id {
+				b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
+				break
+			}
+		}
+		b.mu.Unlock()
+	}
 }
 
-// Publish fans out the event to every subscriber under the bus
-// mutex. If Timestamp is zero, the bus stamps it with now(). The
-// publisher does not see subscriber errors — subscribers that
-// fail silently swallow.
+// Publish fans out the event to every subscriber. If Timestamp is
+// zero, the bus stamps it with now(). The publisher does not see
+// subscriber errors — subscribers that fail silently swallow.
+//
+// Fan-out runs OUTSIDE the bus mutex so a slow subscriber doesn't
+// block Subscribe / other Publishes. The slice copy below gives a
+// stable snapshot.
 func (b *OperatorBus) Publish(e OperatorEvent) {
+	b.mu.RLock()
 	if e.Timestamp.IsZero() {
 		e.Timestamp = b.now()
 	}
-	b.mu.RLock()
 	subs := make([]OperatorEventSubscriber, len(b.subscribers))
-	copy(subs, b.subscribers)
+	for i, entry := range b.subscribers {
+		subs[i] = entry.fn
+	}
 	b.mu.RUnlock()
-	// Fan out OUTSIDE the lock so a slow subscriber doesn't block
-	// Subscribe / other Publishes. The slice copy above gives a
-	// stable snapshot.
 	for _, sub := range subs {
 		sub(e)
 	}
@@ -176,3 +203,8 @@ func (b *OperatorBus) SubscriberCount() int {
 	defer b.mu.RUnlock()
 	return len(b.subscribers)
 }
+
+// Gate-2 CONC-H-4: docstring drift correction. The original
+// comment claimed "publishers hold the bus mutex during fanout"
+// which is and was false (Publish snapshots then releases). The
+// implementation is intentional — recursive Publish is safe.

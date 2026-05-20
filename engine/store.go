@@ -197,16 +197,21 @@ func (s *Store) ensureUnitColumns() error {
 		{"hint_json", `ALTER TABLE attestations ADD COLUMN hint_json TEXT NOT NULL DEFAULT '{}'`},
 	}
 
-	existing, err := s.attestationColumns()
-	if err != nil {
-		return fmt.Errorf("v4 migration: read columns: %w", err)
-	}
-
+	// Gate-2 CORR-A-24: read the column set INSIDE the migration
+	// transaction so the existence check + ALTERs see the same
+	// snapshot. SQLite serializes writers, but the inside-tx read
+	// closes the residual race window if shared-writer mode is
+	// ever enabled.
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("v4 migration: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	existing, err := attestationColumnsTx(tx)
+	if err != nil {
+		return fmt.Errorf("v4 migration: read columns in tx: %w", err)
+	}
 
 	for _, col := range cols {
 		if _, present := existing[col.name]; present {
@@ -223,9 +228,37 @@ func (s *Store) ensureUnitColumns() error {
 	return nil
 }
 
+// attestationColumnsTx is the tx-bound variant of
+// attestationColumns. Gate-2 CORR-A-24 — keeps the existence
+// check + DDL inside one transaction so the snapshot is
+// internally consistent.
+func attestationColumnsTx(tx *sql.Tx) (map[string]struct{}, error) {
+	rows, err := tx.Query(`PRAGMA table_info(attestations)`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	cols := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = struct{}{}
+	}
+	return cols, rows.Err()
+}
+
 // attestationColumns returns the set of column names currently
-// on the attestations table. Used by ensureUnitColumns for
-// idempotent migration.
+// on the attestations table. DEPRECATED post-gate-2 CORR-A-24:
+// the in-tx variant attestationColumnsTx is now the production
+// path. Kept as a build-time symbol for callers that don't have
+// a tx handy.
+//
+//nolint:unused
 func (s *Store) attestationColumns() (map[string]struct{}, error) {
 	rows, err := s.db.Query(`PRAGMA table_info(attestations)`)
 	if err != nil {

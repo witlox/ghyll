@@ -62,6 +62,13 @@ func REPL(sess *Session, input io.Reader) {
 				Reason:      "shutdown",
 			})
 		}
+		// Gate-2 CONC-M-4: signal handler now calls sess.Close
+		// (which cancels sessionCtx, unsubscribes the modal
+		// driver, closes the line reader, drains the journal,
+		// and closes the engine) before os.Exit. The previous
+		// path went straight to os.Exit, leaking in-flight
+		// goroutines + losing journal-buffered events.
+		sess.Close()
 		os.Exit(0)
 	}()
 
