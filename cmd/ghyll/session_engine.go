@@ -92,6 +92,13 @@ type engineRuntime struct {
 	// folds these into the recovery banner.
 	catchUpOverrideEvents []runner.OperatorEvent
 
+	// tier1FallbackMigrated is set when LoadFromTree failed but
+	// LoadFromJSONL succeeded — a Tier 1 → Tier 2 upgrade boot
+	// (gate-2 CORR-A-3). attachJournal then re-emits each record
+	// through the tree primary writer so the next boot reads from
+	// the tree as authoritative.
+	tier1FallbackMigrated bool
+
 	lifecycleMu     sync.Mutex
 	replayDone      bool
 	journalAttached bool
@@ -181,8 +188,31 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 	// not the flat file. The tree is the authoritative audit
 	// surface post-Tier-2; the flat aggregate is a forward-only
 	// Observer that we never read at boot.
+	//
+	// Gate-2 CORR-A-3: Tier 1 → Tier 2 migration. When the tree is
+	// absent but the flat file exists (project predates Tier 2),
+	// fall back to the flat file as the load source so the in-
+	// memory store catches up to the audit reality. The tree gets
+	// materialized AFTER attachJournal wires the tree writer as
+	// primary — see attachJournal.
 	treeRoot := filepath.Join(filepath.Dir(dbPath), "attestations")
 	loaded, truncated, loadErr := rt.attestations.LoadFromTree(treeRoot, attCount > 0)
+	if loadErr != nil && errors.Is(loadErr, runner.ErrAttestationAuditLost) {
+		// Tree-load lost — try the flat audit file as a Tier-1
+		// fallback before giving up.
+		flatPath := filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
+		if _, statErr := os.Stat(flatPath); statErr == nil {
+			loaded2, truncated2, flatErr := rt.attestations.LoadFromJSONL(flatPath, attCount > 0)
+			if flatErr == nil {
+				loaded, truncated, loadErr = loaded2, truncated2, nil
+				rt.tier1FallbackMigrated = true
+				if logger != nil {
+					logger.Info("engine: tier-1 → tier-2 attestation migration",
+						"flat", flatPath, "loaded", loaded2)
+				}
+			}
+		}
+	}
 	if loadErr != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("load attestation tree: %w", loadErr)
@@ -398,6 +428,38 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		if r.jsonlTruncated {
 			if err := r.treeWriter.TruncateTrailingPartialAll(""); err != nil {
 				logger.Warn("engine: tree truncate failed", "err", err)
+			}
+		}
+		// Gate-2 CORR-A-3: Tier 1 → Tier 2 migration. Re-emit
+		// every flat-loaded record through the tree primary writer
+		// so the tree becomes authoritative for next boot. Tier 1
+		// records carry empty PassID/Context/Stratum; synthesize
+		// "_legacy" placeholders so EncodeAttestationPath produces
+		// a stable tree location. The in-memory record's missing
+		// fields are NOT mutated — only the tree-write copy.
+		if r.tier1FallbackMigrated {
+			tw := r.treeWriter.PrimaryWriter()
+			migrated := 0
+			for _, rec := range r.attestations.All() {
+				if rec.PassID == "" {
+					rec.PassID = "migrated-" + rec.ID
+				}
+				if rec.Context == "" {
+					rec.Context = "_legacy"
+				}
+				if rec.Stratum == "" {
+					rec.Stratum = "_legacy"
+				}
+				if err := tw(rec); err != nil {
+					logger.Warn("engine: tier-1 → tier-2 re-emit failed",
+						"id", rec.ID, "err", err)
+					continue
+				}
+				migrated++
+			}
+			if logger != nil {
+				logger.Info("engine: tier-1 → tier-2 tree rematerialized",
+					"migrated", migrated)
 			}
 		}
 	} else if r.jsonlWriter != nil {
