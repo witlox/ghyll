@@ -362,6 +362,23 @@ type AttestationStore struct {
 	// CORR-A-10 / F-24). atomic.Int64 so callers can re-tune
 	// from a config-reload goroutine without taking s.mu.
 	residueNoteMaxBytes atomic.Int64
+
+	// pathMismatches accumulates SEC-H-4 path-vs-payload
+	// divergences observed during LoadFromTree. Surface via
+	// PathMismatches() to the verifier. Not reset across loads
+	// — callers inspecting per-session use Reset.
+	pathMismatches []string
+}
+
+// PathMismatches returns a snapshot of the SEC-H-4 divergences
+// detected so far (file-on-disk path vs EncodeAttestationPath of
+// the contained record). Tier 3 / gate-2 SEC-H-4 polish.
+func (s *AttestationStore) PathMismatches() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.pathMismatches))
+	copy(out, s.pathMismatches)
+	return out
 }
 
 // NewAttestationStore returns an empty store. The engine layer
@@ -820,18 +837,28 @@ func (s *AttestationStore) LoadFromTree(root string, engineHasRows bool) (loaded
 		if !strings.HasSuffix(path, ".jsonl") {
 			return nil
 		}
-		fileLoaded, fileTruncated, loadErr := s.loadOneTreeFile(path)
+		fileLoaded, fileTruncated, recs, loadErr := s.loadOneTreeFile(path)
 		if loadErr != nil {
 			return loadErr
 		}
-		// Gate-2 SEC-H-4: verify the file's path on disk matches
-		// EncodeAttestationPath(rec) for at least one of the
-		// records inside. This catches an attacker who dropped
-		// valid JSONL under a misleading directory hierarchy
-		// (e.g. to hide records from the verifier).
+		// Tier 3 / gate-2 SEC-H-4: verify each record's
+		// EncodeAttestationPath matches the file's actual location
+		// on disk. Mismatch indicates an attacker dropped a
+		// valid JSONL under a misleading hierarchy. Counted via
+		// pathMismatchCount; LoadFromTree surfaces via the
+		// returned err if any mismatch detected.
 		relPath, rerr := filepath.Rel(root, path)
 		if rerr == nil {
-			s.assertPathMatchesRecords(relPath)
+			for _, rec := range recs {
+				expected, _, encErr := EncodeAttestationPath(rec)
+				if encErr != nil {
+					continue
+				}
+				if filepath.Clean(expected) != filepath.Clean(relPath) {
+					s.pathMismatches = append(s.pathMismatches,
+						fmt.Sprintf("%s: payload encodes to %s", relPath, expected))
+				}
+			}
 		}
 		loaded += fileLoaded
 		if fileTruncated {
@@ -845,36 +872,24 @@ func (s *AttestationStore) LoadFromTree(root string, engineHasRows bool) (loaded
 	return loaded, truncated, nil
 }
 
-// assertPathMatchesRecords is the gate-2 SEC-H-4 defense: a
-// loaded JSONL file lives at a tree path that EncodeAttestationPath
-// should reproduce from at least one of the file's records. Mismatch
-// is logged (and recorded as a side flag) — strict refusal would
-// break legacy migrations + hash-truncated paths, so we surface
-// via a divergence count consumable by the verifier rather than
-// erroring the load.
-//
-// For Tier 2 minimal: track count only; verifier reports.
-func (s *AttestationStore) assertPathMatchesRecords(relPath string) {
-	// Defense-in-depth scaffolding. The verifier already
-	// performs ID-based divergence checks via
-	// VerifyAggregateConsistencyVs; adding a path-vs-payload
-	// match here would require re-encoding every loaded record
-	// (expensive on large trees) and would false-positive when
-	// safeSegment hash-substituted a component (path on disk
-	// has h-<sha> but EncodeAttestationPath of the rec emits
-	// h-<sha> too — consistent only if we round-trip). Keep
-	// the hook present so a Tier 3 polish pass can wire the
-	// full check; current behavior is documentation-only.
-	_ = relPath
-}
+// (gate-2 SEC-H-4 scaffold removed; the real check is now
+// inlined into LoadFromTree's walk callback via the records
+// returned from loadOneTreeFile + comparison against the
+// filepath.Rel(root, path). Mismatches accumulate in
+// s.pathMismatches and are exposed via PathMismatches().)
 
 // loadOneTreeFile reads a single per-pass JSONL file and feeds
 // each valid record through recordReplay. Mirrors LoadFromJSONL's
 // per-line logic.
-func (s *AttestationStore) loadOneTreeFile(path string) (loaded int, truncated bool, err error) {
+//
+// Tier 3 / gate-2 SEC-H-4: also returns the loaded records so
+// the caller can verify each record's path matches the file's
+// path on disk. A mismatch indicates an attacker dropped the
+// file under a misleading directory hierarchy.
+func (s *AttestationStore) loadOneTreeFile(path string) (loaded int, truncated bool, recs []AttestationRecord, err error) {
 	f, openErr := os.Open(path)
 	if openErr != nil {
-		return 0, false, fmt.Errorf("open %s: %w", path, openErr)
+		return 0, false, nil, fmt.Errorf("open %s: %w", path, openErr)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -895,22 +910,23 @@ func (s *AttestationStore) loadOneTreeFile(path string) (loaded int, truncated b
 			}
 			var rec jsonlRecord
 			if jerr := json.Unmarshal([]byte(line), &rec); jerr != nil {
-				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, jerr)
+				return loaded, false, recs, fmt.Errorf("%s line %d: %w", path, lineNo, jerr)
 			}
 			attRec := jsonlRecordToAttRec(rec)
 			if rerr := s.recordReplay(attRec); rerr != nil {
-				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, rerr)
+				return loaded, false, recs, fmt.Errorf("%s line %d: %w", path, lineNo, rerr)
 			}
 			loaded++
+			recs = append(recs, attRec)
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return loaded, truncated, nil
+				return loaded, truncated, recs, nil
 			}
-			return loaded, false, fmt.Errorf("read %s: %w", path, readErr)
+			return loaded, false, recs, fmt.Errorf("read %s: %w", path, readErr)
 		}
 	}
-	return loaded, truncated, nil
+	return loaded, truncated, recs, nil
 }
 
 // ComputeAttestationID returns the deterministic ID for an

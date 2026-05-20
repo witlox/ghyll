@@ -31,6 +31,7 @@ func main() {
 			"       ghyll engine recover [--dry-run] [--dir <path>]",
 			"       ghyll engine verify-attestations [--dir <path>]",
 			"       ghyll arrow show <arrow-id> [--dir <path>]",
+			"       ghyll init attest --op-id <id> [--dir <path>]",
 			"       ghyll version",
 		)
 		os.Exit(1)
@@ -66,6 +67,11 @@ func main() {
 		}
 	case "arrow":
 		if err := cmdArrowMain(args[1:]); err != nil {
+			ui.Errorf("%v", err)
+			os.Exit(1)
+		}
+	case "init":
+		if err := cmdInitMain(args[1:]); err != nil {
 			ui.Errorf("%v", err)
 			os.Exit(1)
 		}

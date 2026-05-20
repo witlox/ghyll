@@ -112,7 +112,12 @@ func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 // Tier 2 (ADR-016) bumps from 3 to 4 for 7 new attestation columns:
 // pass_id, context, stratum, adversary_role, unit, unit_payload_json,
 // hint_json (default '{}').
-const schemaVersion = 4
+// Tier 3 (gate-2 CORR-A-27) bumps from 4 to 5 for the
+// CHECK (pass_id != ”) constraint added via table-rebuild
+// migration. SQLite ALTER TABLE can't add CHECK on its own; the
+// migration recreates the attestations table with the constraint
+// in a single transaction.
+const schemaVersion = 5
 
 // ErrEngineSchemaMismatch is returned when a DB written by a newer
 // ghyll binary is opened by an older one. The operator-friendly
@@ -159,6 +164,15 @@ func (s *Store) ensureSchemaVersion() error {
 	// failure rolls back cleanly.
 	if err := s.ensureUnitColumns(); err != nil {
 		return fmt.Errorf("v4 migration: %w", err)
+	}
+
+	// v4 → v5 migration: table-rebuild adds CHECK (pass_id != '')
+	// to attestations. SQLite ALTER TABLE can't add CHECK; the
+	// rebuild is wrapped in a single transaction so a failure
+	// rolls back to v4. Idempotent: skips when the constraint
+	// is already present.
+	if err := s.ensurePassIDCheck(); err != nil {
+		return fmt.Errorf("v5 migration: %w", err)
 	}
 
 	_, err = s.db.Exec(`
@@ -250,6 +264,119 @@ func attestationColumnsTx(tx *sql.Tx) (map[string]struct{}, error) {
 		cols[name] = struct{}{}
 	}
 	return cols, rows.Err()
+}
+
+// ensurePassIDCheck runs the v4 → v5 table-rebuild migration that
+// adds CHECK (pass_id != ”) to the attestations table. SQLite
+// ALTER TABLE can't add a CHECK; we recreate the table inside one
+// transaction and copy the rows over.
+//
+// Idempotent: detects the constraint via PRAGMA-foreign-key-list
+// /sqlite_master and skips the rebuild if already present.
+//
+// Tolerates legacy rows with empty pass_id by first updating them
+// to a placeholder ('legacy-<id>') so the new CHECK doesn't reject
+// the migration itself. This matches the bootstrap-time
+// "_legacy"/"migrated-<id>" pattern from gate-2 CORR-A-3.
+func (s *Store) ensurePassIDCheck() error {
+	// Detect existing constraint via the table's CREATE SQL.
+	var ddl string
+	err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='attestations'`,
+	).Scan(&ddl)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Table doesn't exist yet — fresh schema includes it.
+			return nil
+		}
+		return fmt.Errorf("v5: read attestations DDL: %w", err)
+	}
+	if strings.Contains(ddl, "pass_id <> ''") || strings.Contains(ddl, "pass_id != ''") {
+		return nil // already migrated
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("v5: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// First: backfill any rows with empty pass_id so the new
+	// CHECK accepts the migration's INSERT.
+	if _, err := tx.Exec(
+		`UPDATE attestations SET pass_id = 'legacy-' || attestation_id WHERE pass_id = ''`,
+	); err != nil {
+		return fmt.Errorf("v5: backfill pass_id: %w", err)
+	}
+
+	// Recreate the table with the new constraint.
+	if _, err := tx.Exec(`
+		CREATE TABLE attestations_new (
+			attestation_id     TEXT PRIMARY KEY,
+			kind               TEXT NOT NULL,
+			arrow_id           TEXT NOT NULL,
+			clause_id          TEXT,
+			op_id              TEXT NOT NULL,
+			attested_by_role   TEXT NOT NULL,
+			source_role        TEXT NOT NULL DEFAULT '',
+			target_role        TEXT NOT NULL DEFAULT '',
+			verdict            TEXT NOT NULL,
+			reason             TEXT NOT NULL DEFAULT '',
+			timestamp          INTEGER NOT NULL,
+			grid_version       INTEGER NOT NULL,
+			pass_id            TEXT NOT NULL DEFAULT '',
+			context            TEXT NOT NULL DEFAULT '',
+			stratum            TEXT NOT NULL DEFAULT '',
+			adversary_role     TEXT NOT NULL DEFAULT '',
+			unit               TEXT NOT NULL DEFAULT '',
+			unit_payload_json  TEXT NOT NULL DEFAULT '',
+			hint_json          TEXT NOT NULL DEFAULT '{}',
+			CHECK (kind IN ('depth-type', 'on-the-spot')),
+			CHECK ((kind = 'on-the-spot' AND clause_id IS NULL)
+			    OR (kind = 'depth-type'  AND clause_id IS NOT NULL)),
+			CHECK (verdict IN ('pass', 'fail', 'insufficient-basis')),
+			CHECK (source_role = '' OR attested_by_role <> source_role),
+			CHECK (target_role = '' OR attested_by_role <> target_role),
+			-- Tier 3 / gate-2 CORR-A-27: pass_id must be non-empty.
+			CHECK (pass_id <> '')
+		)
+	`); err != nil {
+		return fmt.Errorf("v5: create attestations_new: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO attestations_new
+		SELECT attestation_id, kind, arrow_id, clause_id, op_id,
+		       attested_by_role, source_role, target_role, verdict,
+		       reason, timestamp, grid_version,
+		       pass_id, context, stratum, adversary_role,
+		       unit, unit_payload_json, hint_json
+		FROM   attestations
+	`); err != nil {
+		return fmt.Errorf("v5: copy rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE attestations`); err != nil {
+		return fmt.Errorf("v5: drop old: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE attestations_new RENAME TO attestations`); err != nil {
+		return fmt.Errorf("v5: rename: %w", err)
+	}
+	// Re-create the indexes (DROP TABLE removed them).
+	if _, err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_attestations_arrow
+			ON attestations(arrow_id)
+	`); err != nil {
+		return fmt.Errorf("v5: index arrow: %w", err)
+	}
+	if _, err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_attestations_clause
+			ON attestations(clause_id) WHERE clause_id IS NOT NULL
+	`); err != nil {
+		return fmt.Errorf("v5: index clause: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("v5: commit: %w", err)
+	}
+	return nil
 }
 
 // attestationColumns returns the set of column names currently
@@ -506,6 +633,16 @@ CREATE TABLE IF NOT EXISTS attestations (
 	reason             TEXT NOT NULL DEFAULT '',
 	timestamp          INTEGER NOT NULL,
 	grid_version       INTEGER NOT NULL,
+	-- Tier 2 (ADR-016) columns. ensureUnitColumns ALTERs these in
+	-- on upgrade from v3; CREATE TABLE bakes them in for fresh v4+
+	-- databases.
+	pass_id            TEXT NOT NULL DEFAULT '',
+	context            TEXT NOT NULL DEFAULT '',
+	stratum            TEXT NOT NULL DEFAULT '',
+	adversary_role     TEXT NOT NULL DEFAULT '',
+	unit               TEXT NOT NULL DEFAULT '',
+	unit_payload_json  TEXT NOT NULL DEFAULT '',
+	hint_json          TEXT NOT NULL DEFAULT '{}',
 	CHECK (kind IN ('depth-type', 'on-the-spot')),
 	CHECK ((kind = 'on-the-spot' AND clause_id IS NULL)
 	    OR (kind = 'depth-type'  AND clause_id IS NOT NULL)),
@@ -518,7 +655,11 @@ CREATE TABLE IF NOT EXISTS attestations (
 	-- Empty source/target columns (the default '') skip the check
 	-- since the runner did not record those identities.
 	CHECK (source_role = '' OR attested_by_role <> source_role),
-	CHECK (target_role = '' OR attested_by_role <> target_role)
+	CHECK (target_role = '' OR attested_by_role <> target_role),
+	-- Tier 3 / gate-2 CORR-A-27: pass_id must be non-empty.
+	-- Fresh databases (created at v4+) include the constraint
+	-- directly; v4→v5 ensurePassIDCheck rebuilds older tables.
+	CHECK (pass_id <> '')
 );
 CREATE INDEX IF NOT EXISTS idx_attestations_arrow
 	ON attestations(arrow_id);
