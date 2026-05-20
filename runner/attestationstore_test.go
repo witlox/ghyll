@@ -50,7 +50,7 @@ func TestScenario_AttestationStore_RecordAndLookup_Roundtrip(t *testing.T) {
 	if !ok {
 		t.Fatal("Lookup miss after Record")
 	}
-	if got != rec {
+	if !AttestationRecordsEqual(got, rec) {
 		t.Fatalf("Lookup returned %+v; want %+v", got, rec)
 	}
 	if s.Len() != 1 || s.Version() != 1 {
@@ -151,7 +151,7 @@ func TestScenario_AttestationStore_OnTheSpot_HappyPath(t *testing.T) {
 		t.Fatalf("on-the-spot Record: %v", err)
 	}
 	got, ok := s.Lookup(rec.ID)
-	if !ok || got != rec {
+	if !ok || !AttestationRecordsEqual(got, rec) {
 		t.Fatalf("Lookup returned %+v ok=%v; want %+v true", got, ok, rec)
 	}
 }
@@ -227,7 +227,7 @@ func TestScenario_AttestationStore_Observer_FiresOnRecord(t *testing.T) {
 	if observed[0].Kind != AttestationEventRecord {
 		t.Fatalf("event kind = %q; want %q", observed[0].Kind, AttestationEventRecord)
 	}
-	if observed[0].Record != rec {
+	if !AttestationRecordsEqual(observed[0].Record, rec) {
 		t.Fatalf("event record %+v != recorded %+v", observed[0].Record, rec)
 	}
 }
@@ -299,5 +299,53 @@ func TestScenario_AttestationStore_BusyErrorIncludesIDs(t *testing.T) {
 	err := s.Record(conflicting)
 	if !strings.Contains(err.Error(), rec.ID) {
 		t.Fatalf("duplicate error %q should name the ID %q", err, rec.ID)
+	}
+}
+
+func TestScenario_ValidateUnitPayload_Confirm(t *testing.T) {
+	if err := ValidateUnitPayload(VerdictUnitConfirm, VerdictUnitPayload{}, 0); err != nil {
+		t.Errorf("empty confirm: %v", err)
+	}
+	if err := ValidateUnitPayload(VerdictUnitConfirm, VerdictUnitPayload{Residue: "x"}, 0); !errors.Is(err, ErrVerdictUnitMissingField) {
+		t.Errorf("confirm with residue: got %v, want ErrVerdictUnitMissingField", err)
+	}
+	if err := ValidateUnitPayload(VerdictUnitConfirm, VerdictUnitPayload{Inspected: []string{"x"}}, 0); !errors.Is(err, ErrVerdictUnitMissingField) {
+		t.Errorf("confirm with inspected: got %v", err)
+	}
+}
+
+func TestScenario_ValidateUnitPayload_RecordLocations(t *testing.T) {
+	if err := ValidateUnitPayload(VerdictUnitRecordLocationsInspected, VerdictUnitPayload{}, 0); !errors.Is(err, ErrVerdictInspectedEmpty) {
+		t.Errorf("empty inspected: got %v", err)
+	}
+	if err := ValidateUnitPayload(VerdictUnitRecordLocationsInspected, VerdictUnitPayload{Inspected: []string{"f:1-2"}}, 0); err != nil {
+		t.Errorf("non-empty inspected: %v", err)
+	}
+}
+
+func TestScenario_ValidateUnitPayload_WriteResidueNote(t *testing.T) {
+	if err := ValidateUnitPayload(VerdictUnitWriteResidueNote, VerdictUnitPayload{}, 0); !errors.Is(err, ErrVerdictUnitMissingField) {
+		t.Errorf("empty residue: got %v", err)
+	}
+	if err := ValidateUnitPayload(VerdictUnitWriteResidueNote, VerdictUnitPayload{Residue: "ok"}, 100); err != nil {
+		t.Errorf("residue under cap: %v", err)
+	}
+	long := strings.Repeat("a", 200)
+	if err := ValidateUnitPayload(VerdictUnitWriteResidueNote, VerdictUnitPayload{Residue: long}, 100); !errors.Is(err, ErrVerdictResidueTooLong) {
+		t.Errorf("residue over cap: got %v", err)
+	}
+}
+
+func TestScenario_ValidateUnitPayload_Invalid(t *testing.T) {
+	if err := ValidateUnitPayload(VerdictUnit("nope"), VerdictUnitPayload{}, 0); !errors.Is(err, ErrVerdictUnitInvalid) {
+		t.Errorf("invalid unit: got %v", err)
+	}
+}
+
+func TestScenario_ValidateUnitPayload_EmptyUnit_Tolerated(t *testing.T) {
+	// Pre-Tier-2 records have Unit="". Validation skips per the
+	// "Tier 1 callers — Unit optional" branch.
+	if err := ValidateUnitPayload(VerdictUnit(""), VerdictUnitPayload{Residue: "anything"}, 0); err != nil {
+		t.Errorf("empty unit: %v", err)
 	}
 }

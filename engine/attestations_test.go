@@ -60,10 +60,10 @@ func TestEngineAttestations_InsertAndList_RoundtripPreservesAllFields(t *testing
 		t.Fatalf("listAttestations returned %d rows; want 2", len(rows))
 	}
 	// ORDER BY timestamp ASC — depth (earlier) first, then ots.
-	if rows[0] != depth {
+	if !runner.AttestationRecordsEqual(rows[0], depth) {
 		t.Errorf("rows[0] = %+v; want %+v", rows[0], depth)
 	}
-	if rows[1] != ots {
+	if !runner.AttestationRecordsEqual(rows[1], ots) {
 		t.Errorf("rows[1] = %+v; want %+v", rows[1], ots)
 	}
 }
@@ -278,7 +278,7 @@ func TestEngineAttestations_Journal_AttachAttestations_PersistsRecord(t *testing
 	if len(rows) != 1 {
 		t.Fatalf("after Record + Flush, listAttestations returned %d rows; want 1", len(rows))
 	}
-	if rows[0] != rec {
+	if !runner.AttestationRecordsEqual(rows[0], rec) {
 		t.Errorf("persisted row %+v != recorded %+v", rows[0], rec)
 	}
 }
@@ -324,7 +324,7 @@ func TestEngineAttestations_Replay_CountsPreLoadedRunnerStore(t *testing.T) {
 	}
 	if got, ok := targets.Attestations.Lookup("att-A1-C1-v1"); !ok {
 		t.Fatal("Lookup miss after replay")
-	} else if got != sampleDepthTypeRecord() {
+	} else if !runner.AttestationRecordsEqual(got, sampleDepthTypeRecord()) {
 		t.Errorf("Lookup mismatch: %+v", got)
 	}
 }

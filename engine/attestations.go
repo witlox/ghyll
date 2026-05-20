@@ -66,7 +66,7 @@ func (s *Store) insertAttestation(ctx context.Context, rec runner.AttestationRec
 	if err != nil {
 		return fmt.Errorf("attestation conflict probe %s: %w", rec.ID, err)
 	}
-	if existing == rec {
+	if runner.AttestationRecordsEqual(existing, rec) {
 		return nil // idempotent re-insert with identical content
 	}
 	return fmt.Errorf("%w: id=%s", ErrAttestationConflict, rec.ID)
@@ -252,7 +252,7 @@ func (s *Store) upsertAttestationInTx(
 	if err != nil {
 		return false, false, err
 	}
-	if existing == rec {
+	if runner.AttestationRecordsEqual(existing, rec) {
 		return false, false, nil // idempotent — same content
 	}
 	// JSONL wins on conflict (H-3 / G2-F-7).

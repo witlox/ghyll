@@ -109,7 +109,10 @@ func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 // when a migration that can't be expressed by `CREATE ... IF NOT
 // EXISTS` ships. Validation-pass-10 C7. Tier 1 (ADR-015) bumps
 // from 2 to 3 for the evaluation_runs.recovery_source ALTER.
-const schemaVersion = 3
+// Tier 2 (ADR-016) bumps from 3 to 4 for 7 new attestation columns:
+// pass_id, context, stratum, adversary_role, unit, unit_payload_json,
+// hint_json (default '{}').
+const schemaVersion = 4
 
 // ErrEngineSchemaMismatch is returned when a DB written by a newer
 // ghyll binary is opened by an older one. The operator-friendly
@@ -151,6 +154,13 @@ func (s *Store) ensureSchemaVersion() error {
 		return fmt.Errorf("v3 migration: %w", err)
 	}
 
+	// v3 → v4 migration: 7 new attestation columns (Tier 2 / ADR-016).
+	// Wrapped in a single transaction (gate-1 F-10) so a partial
+	// failure rolls back cleanly.
+	if err := s.ensureUnitColumns(); err != nil {
+		return fmt.Errorf("v4 migration: %w", err)
+	}
+
 	_, err = s.db.Exec(`
 		INSERT INTO engine_meta(key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -160,6 +170,84 @@ func (s *Store) ensureSchemaVersion() error {
 		return fmt.Errorf("engine_meta write: %w", err)
 	}
 	return nil
+}
+
+// ensureUnitColumns runs the Tier 2 (ADR-016 Part A) migration:
+// adds 7 columns to the attestations table inside a single
+// transaction (gate-1 F-10). Idempotent — PRAGMA-checks each
+// column's existence and skips already-present columns.
+//
+// Columns added (default ” unless noted):
+//
+//	pass_id, context, stratum, adversary_role,
+//	unit, unit_payload_json,
+//	hint_json (default '{}' per gate-1 F-25)
+func (s *Store) ensureUnitColumns() error {
+	type column struct {
+		name  string
+		alter string
+	}
+	cols := []column{
+		{"pass_id", `ALTER TABLE attestations ADD COLUMN pass_id TEXT NOT NULL DEFAULT ''`},
+		{"context", `ALTER TABLE attestations ADD COLUMN context TEXT NOT NULL DEFAULT ''`},
+		{"stratum", `ALTER TABLE attestations ADD COLUMN stratum TEXT NOT NULL DEFAULT ''`},
+		{"adversary_role", `ALTER TABLE attestations ADD COLUMN adversary_role TEXT NOT NULL DEFAULT ''`},
+		{"unit", `ALTER TABLE attestations ADD COLUMN unit TEXT NOT NULL DEFAULT ''`},
+		{"unit_payload_json", `ALTER TABLE attestations ADD COLUMN unit_payload_json TEXT NOT NULL DEFAULT ''`},
+		{"hint_json", `ALTER TABLE attestations ADD COLUMN hint_json TEXT NOT NULL DEFAULT '{}'`},
+	}
+
+	existing, err := s.attestationColumns()
+	if err != nil {
+		return fmt.Errorf("v4 migration: read columns: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("v4 migration: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, col := range cols {
+		if _, present := existing[col.name]; present {
+			continue
+		}
+		if _, err := tx.Exec(col.alter); err != nil {
+			return fmt.Errorf("v4 migration: ALTER %s: %w", col.name, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("v4 migration: commit: %w", err)
+	}
+	return nil
+}
+
+// attestationColumns returns the set of column names currently
+// on the attestations table. Used by ensureUnitColumns for
+// idempotent migration.
+func (s *Store) attestationColumns() (map[string]struct{}, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(attestations)`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			ctype        string
+			notnull      int
+			defaultValue sql.NullString
+			pk           int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 // ensureRecoverySourceColumn adds evaluation_runs.recovery_source if

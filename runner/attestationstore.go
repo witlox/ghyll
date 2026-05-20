@@ -56,6 +56,144 @@ type AttestationRecord struct {
 	Reason         string
 	Timestamp      int64 // unix nanos
 	GridVersion    uint64
+
+	// Tier 2 additions (ADR-016 + gate-1 remediation):
+
+	// PassID links the verdict to its pass. Required on every
+	// Tier 2-produced record; '' tolerated only for pre-Tier-2
+	// rows (legacy load path). Empty PassID at Record-write time
+	// rejects with ErrAttestationPassIDEmpty (gate-1 F-6).
+	PassID string
+
+	// Context + Stratum are stamped by the dispatcher at
+	// record-construction time so EncodeAttestationPath is a
+	// pure function (gate-1 F-2). For init arrows both are the
+	// literal "init".
+	Context string
+	Stratum string
+
+	// AdversaryRole is non-empty only when the verdict was
+	// captured during an adversary-phase pass (gate-1 F-3). The
+	// orchestrator stamps it. Empty otherwise. §12.2 self-cert
+	// check extends to forbid AdversaryRole == SourceRole or
+	// TargetRole and the literal "__".
+	AdversaryRole string
+
+	// Unit names the shape of the operator's evidence. Empty for
+	// pre-Tier-2 rows.
+	Unit VerdictUnit
+
+	// UnitPayload is the typed payload per Unit. Marshaled to
+	// UnitPayloadJSON at Record time.
+	UnitPayload VerdictUnitPayload
+
+	// UnitPayloadJSON is the canonical JSON serialization of
+	// UnitPayload persisted on disk. The Record write path sets
+	// this from UnitPayload via json.Marshal so callers can
+	// either fill the typed struct or the JSON string (the typed
+	// struct wins if both are set).
+	UnitPayloadJSON string
+
+	// HintJSON is the dispatcher-synthesized hint shown to the
+	// operator in the verdict modal. Default '{}' (gate-1 F-25)
+	// so the verifier's json.Unmarshal parses pre-Tier-2 rows.
+	HintJSON string
+}
+
+// VerdictUnit names the shape of the operator's evidence
+// (ADR-016 Part C).
+type VerdictUnit string
+
+const (
+	VerdictUnitConfirm                  VerdictUnit = "confirm"
+	VerdictUnitRecordLocationsInspected VerdictUnit = "record-locations-inspected"
+	VerdictUnitWriteResidueNote         VerdictUnit = "write-residue-note"
+)
+
+// VerdictUnitPayload carries the typed shape per-unit. JSON-
+// marshaled into AttestationRecord.UnitPayloadJSON at write time.
+type VerdictUnitPayload struct {
+	// Inspected is non-empty when Unit == record-locations-inspected.
+	Inspected []string `json:"inspected,omitempty"`
+	// Residue is non-empty when Unit == write-residue-note.
+	Residue string `json:"residue,omitempty"`
+}
+
+// DefaultMaxResidueNoteBytes caps a write-residue-note payload at
+// 16 KiB by default. Operator-tunable via the grid file's
+// `residue-note-max-bytes` setting (bootstrap.GridDefaults).
+const DefaultMaxResidueNoteBytes = 16 * 1024
+
+// AttestationRecordsEqual compares two records field-by-field.
+// Direct == fails because the Tier 2 VerdictUnitPayload contains
+// a slice (Inspected). Order-sensitive comparison on Inspected
+// is fine since the runtime always constructs the slice in a
+// deterministic order.
+func AttestationRecordsEqual(a, b AttestationRecord) bool {
+	if a.ID != b.ID || a.Kind != b.Kind || a.ArrowID != b.ArrowID ||
+		a.ClauseID != b.ClauseID || a.OpID != b.OpID ||
+		a.AttestedByRole != b.AttestedByRole ||
+		a.SourceRole != b.SourceRole || a.TargetRole != b.TargetRole ||
+		a.Verdict != b.Verdict || a.Reason != b.Reason ||
+		a.Timestamp != b.Timestamp || a.GridVersion != b.GridVersion ||
+		a.PassID != b.PassID || a.Context != b.Context ||
+		a.Stratum != b.Stratum || a.AdversaryRole != b.AdversaryRole ||
+		a.Unit != b.Unit || a.UnitPayloadJSON != b.UnitPayloadJSON ||
+		a.HintJSON != b.HintJSON {
+		return false
+	}
+	if len(a.UnitPayload.Inspected) != len(b.UnitPayload.Inspected) {
+		return false
+	}
+	for i := range a.UnitPayload.Inspected {
+		if a.UnitPayload.Inspected[i] != b.UnitPayload.Inspected[i] {
+			return false
+		}
+	}
+	return a.UnitPayload.Residue == b.UnitPayload.Residue
+}
+
+// ValidateUnitPayload returns nil iff payload satisfies the
+// unit's required-field schema (ADR-016 Part C).
+//
+//	confirm                       — payload must be zero-value
+//	record-locations-inspected    — Inspected must be non-empty
+//	write-residue-note            — Residue non-empty + ≤ maxResidueBytes
+//
+// Called inside AttestationStore.Record before the primaryWriter
+// fires. maxResidueBytes is the project-configured cap (default
+// DefaultMaxResidueNoteBytes).
+func ValidateUnitPayload(u VerdictUnit, p VerdictUnitPayload, maxResidueBytes int) error {
+	if maxResidueBytes <= 0 {
+		maxResidueBytes = DefaultMaxResidueNoteBytes
+	}
+	switch u {
+	case VerdictUnitConfirm:
+		if len(p.Inspected) != 0 || p.Residue != "" {
+			return fmt.Errorf("%w: confirm payload must be empty", ErrVerdictUnitMissingField)
+		}
+		return nil
+	case VerdictUnitRecordLocationsInspected:
+		if len(p.Inspected) == 0 {
+			return fmt.Errorf("%w: inspected", ErrVerdictInspectedEmpty)
+		}
+		return nil
+	case VerdictUnitWriteResidueNote:
+		if strings.TrimSpace(p.Residue) == "" {
+			return fmt.Errorf("%w: residue", ErrVerdictUnitMissingField)
+		}
+		if len(p.Residue) > maxResidueBytes {
+			return fmt.Errorf("%w: %d > %d", ErrVerdictResidueTooLong, len(p.Residue), maxResidueBytes)
+		}
+		return nil
+	case "":
+		// Tier 1 / legacy callers — Unit is optional today; only
+		// Tier 2 modal flow requires it. Empty Unit means
+		// "no unit-payload validation".
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrVerdictUnitInvalid, u)
+	}
 }
 
 // AttestationEventKind names a mutation type. Only Record exists
@@ -118,6 +256,35 @@ var (
 	// Operator must restore from backup or run an explicit
 	// rebuild-from-engine path.
 	ErrAttestationAuditLost = errors.New("attestation-audit-lost")
+
+	// Tier 2 additions (ADR-016 + gate-1 remediation):
+
+	// ErrVerdictUnitInvalid — VerdictUnit value not in the
+	// known enum.
+	ErrVerdictUnitInvalid = errors.New("verdict-unit-invalid")
+
+	// ErrVerdictUnitMissingField — the Unit's required-field
+	// schema isn't satisfied (e.g., confirm with extra fields,
+	// write-residue-note with empty residue).
+	ErrVerdictUnitMissingField = errors.New("verdict-unit-missing-field")
+
+	// ErrVerdictResidueTooLong — write-residue-note payload
+	// exceeds ResidueNoteMaxBytes (default 16 KiB).
+	ErrVerdictResidueTooLong = errors.New("verdict-residue-too-long")
+
+	// ErrVerdictInspectedEmpty — record-locations-inspected
+	// without a non-empty Inspected list.
+	ErrVerdictInspectedEmpty = errors.New("verdict-inspected-empty")
+
+	// ErrAttestationPassIDEmpty — Tier 2 Record write path
+	// rejects records with empty PassID (gate-1 F-6).
+	ErrAttestationPassIDEmpty = errors.New("attestation-pass-id-empty")
+
+	// ErrAttestationAggregateDivergence — verifier walked
+	// both the tree and the flat aggregate and found a line
+	// in one that's missing in the other (gate-1 F-1
+	// follow-up). Audit-trail divergence.
+	ErrAttestationAggregateDivergence = errors.New("attestation-aggregate-divergence")
 )
 
 // AttestationStore is the in-memory cache of attestation records
@@ -197,7 +364,7 @@ func (s *AttestationStore) Record(rec AttestationRecord) error {
 	defer s.mu.Unlock()
 
 	if existing, ok := s.byID[rec.ID]; ok {
-		if existing == rec {
+		if AttestationRecordsEqual(existing, rec) {
 			return nil // idempotent — same content, no-op
 		}
 		return fmt.Errorf("%w: id=%s", ErrAttestationDuplicate, rec.ID)
@@ -228,7 +395,7 @@ func (s *AttestationStore) recordReplay(rec AttestationRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.byID[rec.ID]; ok {
-		if existing == rec {
+		if AttestationRecordsEqual(existing, rec) {
 			return nil
 		}
 		return fmt.Errorf("%w: id=%s", ErrAttestationDuplicate, rec.ID)
