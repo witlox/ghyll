@@ -47,6 +47,56 @@ func cleanWorkdir(workdir string) string {
 	return b.String()
 }
 
+// maxHandoffSummaryBytes caps the operator-controlled Summary
+// embedded in HandoffSummary system prompts. Tier 3 / SR C-2.
+const maxHandoffSummaryBytes = 8 * 1024
+
+// sanitizeHandoffField scrubs a checkpoint-derived field before it
+// lands in the system prompt. Tier 3 / SR C-2:
+//
+//   - Cap length at maxHandoffSummaryBytes (otherwise a poisoned
+//     checkpoint could exhaust the context window).
+//   - Strip ANSI escape sequences via stripANSI.
+//   - Drop control bytes and Unicode line separators
+//     (U+2028 / U+2029) that some terminals/parsers treat as
+//     newlines — but preserve \n / \r / \t for legibility.
+//   - Replace dialect system-prompt header markers
+//     ("--- SYSTEM", "=== SYSTEM", "\nsystem:", "\nassistant:",
+//     "\nuser:") with [REDACTED-HEADER] so a poisoned summary
+//     can't smuggle "SYSTEM OVERRIDE" into the prompt.
+func sanitizeHandoffField(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) > maxHandoffSummaryBytes {
+		s = s[:maxHandoffSummaryBytes]
+	}
+	s = stripANSI(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == 0x2028 || r == 0x2029 || r == 0x85:
+			b.WriteRune(' ')
+		case unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t':
+			// drop
+		default:
+			b.WriteRune(r)
+		}
+	}
+	cleaned := b.String()
+	for _, marker := range []string{
+		"--- SYSTEM",
+		"=== SYSTEM",
+		"\nsystem:",
+		"\nassistant:",
+		"\nuser:",
+	} {
+		cleaned = strings.ReplaceAll(cleaned, marker, "[REDACTED-HEADER]")
+	}
+	return cleaned
+}
+
 // stripANSI removes CSI escape sequences (the ESC [ ... letter form)
 // from s. Not exhaustive — does not handle DCS / OSC / etc. — but
 // covers the common terminal-corruption vectors.

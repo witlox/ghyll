@@ -61,8 +61,10 @@ func MinimaxHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []
 	if isZeroCheckpoint(cp.Turn, cp.Summary) {
 		return recentTurns
 	}
+	// Tier 3 / SR C-2: sanitize operator-controlled fields before
+	// they land in the system prompt.
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s",
-		cp.Turn, cp.ActiveModel, cp.Summary)
+		cp.Turn, sanitizeHandoffField(cp.ActiveModel), sanitizeHandoffField(cp.Summary))
 	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result

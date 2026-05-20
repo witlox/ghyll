@@ -71,8 +71,9 @@ func DeepSeekHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) [
 	if isZeroCheckpoint(cp.Turn, cp.Summary) {
 		return recentTurns
 	}
+	// Tier 3 / SR C-2: sanitize operator-controlled fields.
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s\n\nReview the context before proceeding; verify any inherited assumption against the actual code.",
-		cp.Turn, cp.ActiveModel, cp.Summary)
+		cp.Turn, sanitizeHandoffField(cp.ActiveModel), sanitizeHandoffField(cp.Summary))
 	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result

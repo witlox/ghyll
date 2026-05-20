@@ -65,8 +65,9 @@ func QwenHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []typ
 	if isZeroCheckpoint(cp.Turn, cp.Summary) {
 		return recentTurns
 	}
+	// Tier 3 / SR C-2: sanitize operator-controlled fields.
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s\n\nVerify the inherited code-style conventions before producing new code.",
-		cp.Turn, cp.ActiveModel, cp.Summary)
+		cp.Turn, sanitizeHandoffField(cp.ActiveModel), sanitizeHandoffField(cp.Summary))
 	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result

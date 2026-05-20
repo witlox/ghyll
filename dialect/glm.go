@@ -60,12 +60,17 @@ func GLMTokenCount(msgs []types.Message) int {
 
 // GLMHandoffSummary formats a checkpoint for GLM to continue from.
 // Validation-pass-8 D7: zero-checkpoint guard.
+//
+// Tier 3 / SR C-2: cp.Summary is sanitized before interpolation
+// so a poisoned checkpoint can't smuggle "SYSTEM OVERRIDE"
+// markers into the system prompt. Same for ActiveModel which
+// also lands in the formatted string.
 func GLMHandoffSummary(cp memory.Checkpoint, recentTurns []types.Message) []types.Message {
 	if isZeroCheckpoint(cp.Turn, cp.Summary) {
 		return recentTurns
 	}
 	summary := fmt.Sprintf("Continuing from checkpoint (turn %d, previously on %s):\n\n%s\n\nThis task requires deep reasoning. Review the context carefully before proceeding.",
-		cp.Turn, cp.ActiveModel, cp.Summary)
+		cp.Turn, sanitizeHandoffField(cp.ActiveModel), sanitizeHandoffField(cp.Summary))
 	result := []types.Message{{Role: "system", Content: summary}}
 	result = append(result, recentTurns...)
 	return result
