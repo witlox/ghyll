@@ -190,8 +190,22 @@ func (w *AttestationTreeWriter) TruncateTrailingPartialAll(root string) error {
 // newline in path and truncates everything after it. Mirrors
 // AttestationJSONLWriter.TruncateTrailingPartial's behavior but
 // for a path-addressed file (no writer state needed).
+//
+// Gate-2 SEC-C-2: refuse to open if `path` is a symlink. An
+// attacker who can drop a symlink under the attestations tree
+// (shared CI workspace, malicious grid-author) could cause
+// Ghyll to truncate arbitrary writable files (e.g. ~/.ssh/known_hosts)
+// at session start. The Lstat-before-Open closes that path; the
+// open itself uses O_NOFOLLOW where supported.
 func truncateTrailingPartialFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("tree-writer: refuse symlink %s", path)
+	}
+	f, err := openNoFollowRDWR(path)
 	if err != nil {
 		return err
 	}
@@ -416,14 +430,19 @@ func EncodeAttestationPath(rec AttestationRecord) (string, bool, error) {
 }
 
 // safeSegment enforces the per-component byte cap + zero-byte
-// guard. Returns the segment (possibly hash-substituted) and a
-// truncated flag.
+// guard + path-traversal guard. Returns the segment (possibly
+// hash-substituted) and a truncated flag.
 //
-// - len(s) == 0 → returns "h-" + sha256[:16] of empty string.
-// - len(s) > maxPathComponentBytes → same hash substitution.
-// - Otherwise s passes through.
+//   - len(s) == 0 → returns "h-" + sha256[:16] of empty string.
+//   - len(s) > maxPathComponentBytes → same hash substitution.
+//   - s ∈ {".", ".."} → same hash substitution (gate-2 SEC-C-1:
+//     `..` passes sanitizePathSegment's whitelist since `.` is
+//     allowed; filepath.Join then normalizes the path and cancels
+//     the parent. Substitute via hash so attacker-supplied Context
+//     or Stratum cannot escape the v<N> subtree).
+//   - Otherwise s passes through.
 func safeSegment(s string) (string, bool) {
-	if s == "" || len(s) > maxPathComponentBytes {
+	if s == "" || len(s) > maxPathComponentBytes || s == "." || s == ".." {
 		sum := sha256.Sum256([]byte(s))
 		return "h-" + hex.EncodeToString(sum[:8]), true
 	}
