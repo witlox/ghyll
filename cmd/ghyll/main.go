@@ -32,6 +32,7 @@ func main() {
 			"       ghyll engine recover [--dry-run] [--dir <path>]",
 			"       ghyll engine verify-attestations [--dir <path>]",
 			"       ghyll arrow show <arrow-id> [--dir <path>]",
+			"       ghyll init --op-id <id> [project-dir]",
 			"       ghyll init attest --op-id <id> [--dir <path>]",
 			"       ghyll version",
 		)

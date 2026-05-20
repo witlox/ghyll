@@ -25,18 +25,27 @@ import (
 // JSONL via the standard Record path, so they're indistinguishable
 // from modal-flow records once on disk.
 
-const initUsage = "usage: ghyll init attest --op-id <id> [--dir <path>]"
+const initUsage = "usage: ghyll init [--op-id <id>] [project-dir]\n" +
+	"       ghyll init attest --op-id <id> [--dir <path>]"
 
+// cmdInitMain dispatches the `ghyll init` family. Two production
+// entry points coexist:
+//
+//   - `ghyll init attest`: emits one init AttestationRecord per arrow
+//     in an already-written grid (existing gate-2 producer).
+//   - `ghyll init` (no subcommand): runs the bootstrap pipeline that
+//     PRODUCES the grid in the first place (integrator finding C-1).
+//
+// The router distinguishes the two by inspecting args[0]: the literal
+// "attest" is the only reserved subcommand. Any other first arg (a
+// flag like "--op-id" or a positional project dir) routes to the
+// bootstrap path. Empty args also routes to bootstrap (the bootstrap
+// path tolerates zero args and uses cwd as the project dir).
 func cmdInitMain(args []string) error {
-	if len(args) < 1 {
-		return errors.New(initUsage)
-	}
-	switch args[0] {
-	case "attest":
+	if len(args) >= 1 && args[0] == "attest" {
 		return cmdInitAttest(args[1:])
-	default:
-		return fmt.Errorf("ghyll init: unknown subcommand %q", args[0])
 	}
+	return cmdInitBootstrap(args)
 }
 
 func cmdInitAttest(args []string) error {
