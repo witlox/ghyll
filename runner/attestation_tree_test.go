@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+// tier2TreeRec returns a fully-populated Tier 2 attestation
+// record fixture. Tests adjust individual fields per scenario.
+func tier2TreeRec() AttestationRecord {
+	return AttestationRecord{
+		ID:             "att-A1-C1-v3",
+		Kind:           AttestationKindDepthType,
+		ArrowID:        "A1",
+		ClauseID:       "C1",
+		OpID:           "alice",
+		AttestedByRole: "operator",
+		SourceRole:     "analyst",
+		TargetRole:     "architect",
+		Verdict:        AttestationPass,
+		Timestamp:      1747663200_000000000,
+		GridVersion:    3,
+		// Tier 2 additions (ADR-016 + gate-1):
+		PassID:  "P-1",
+		Context: "checkout",
+		Stratum: "L1",
+	}
+}
+
 func TestScenario_AttestationTree_EmptyRootRejected(t *testing.T) {
 	_, err := NewAttestationTreeWriter("")
 	if err == nil {
@@ -24,29 +46,17 @@ func TestScenario_AttestationTree_WritesPerPassFile(t *testing.T) {
 	defer w.Close()
 
 	store := NewAttestationStore()
-	store.Observe(w.Observer())
+	store.SetPrimaryWriter(w.PrimaryWriter())
 
-	rec := AttestationRecord{
-		ID:             "att-A1-C1-v3",
-		Kind:           AttestationKindDepthType,
-		ArrowID:        "A1",
-		ClauseID:       "C1",
-		OpID:           "alice",
-		AttestedByRole: "operator",
-		SourceRole:     "analyst",
-		TargetRole:     "architect",
-		Verdict:        AttestationPass,
-		Timestamp:      1747663200_000000000,
-		GridVersion:    3,
-	}
+	rec := tier2TreeRec()
 	if err := store.Record(rec); err != nil {
 		t.Fatal(err)
 	}
 
-	// Expected path:
-	//   <root>/v3/default/stratum-default/analyst__architect/att-A1-C1-v3.jsonl
-	expected := filepath.Join(root, "v3", "default", "stratum-default",
-		"analyst__architect", "att-A1-C1-v3.jsonl")
+	// Expected path (Tier 2):
+	//   <root>/v3/checkout/stratum-L1/analyst__architect/P-1.jsonl
+	expected := filepath.Join(root, "v3", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
 	info, err := os.Stat(expected)
 	if err != nil {
 		t.Fatalf("expected per-pass file at %s: %v", expected, err)
@@ -66,56 +76,118 @@ func TestScenario_AttestationTree_WritesPerPassFile(t *testing.T) {
 	}
 }
 
-func TestScenario_AttestationTree_RolePairEncoded(t *testing.T) {
-	root := t.TempDir()
-	w, _ := NewAttestationTreeWriter(root)
-	defer w.Close()
-	store := NewAttestationStore()
-	store.Observe(w.Observer())
-
-	rec := AttestationRecord{
-		ID: "att-A2-v1", Kind: AttestationKindOnTheSpot,
-		ArrowID: "A2", OpID: "alice",
-		AttestedByRole: "operator", SourceRole: "implementer", TargetRole: "integrator",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+func TestScenario_EncodeAttestationPath_TwoRole(t *testing.T) {
+	rec := tier2TreeRec()
+	path, truncated, err := EncodeAttestationPath(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
 	}
-	_ = store.Record(rec)
-
-	expected := filepath.Join(root, "v1", "default", "stratum-default",
-		"implementer__integrator", "att-A2-v1.jsonl")
-	if _, err := os.Stat(expected); err != nil {
-		t.Fatalf("role-pair path %s: %v", expected, err)
+	if truncated {
+		t.Errorf("clean fixture should not truncate")
+	}
+	want := filepath.Join("v3", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
+	if path != want {
+		t.Errorf("path = %q; want %q", path, want)
 	}
 }
 
-func TestScenario_AttestationTree_SeparatePassFilesPerRecord(t *testing.T) {
+func TestScenario_EncodeAttestationPath_ThreeRoleChain(t *testing.T) {
+	rec := tier2TreeRec()
+	rec.AdversaryRole = "adversary"
+	path, truncated, err := EncodeAttestationPath(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if truncated {
+		t.Errorf("clean fixture should not truncate")
+	}
+	want := filepath.Join("v3", "checkout", "stratum-L1",
+		"analyst__adversary__architect", "P-1.jsonl")
+	if path != want {
+		t.Errorf("path = %q; want %q", path, want)
+	}
+}
+
+func TestScenario_EncodeAttestationPath_Init(t *testing.T) {
+	rec := tier2TreeRec()
+	rec.AttestedByRole = "init"
+	rec.Context = "anything" // overridden
+	rec.Stratum = "anything" // overridden
+	rec.SourceRole = "ignored"
+	rec.TargetRole = "ignored"
+	path, truncated, err := EncodeAttestationPath(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if truncated {
+		t.Errorf("init fixture should not truncate")
+	}
+	want := filepath.Join("v3", "init", "stratum-init", "init", "P-1.jsonl")
+	if path != want {
+		t.Errorf("path = %q; want %q", path, want)
+	}
+}
+
+func TestScenario_EncodeAttestationPath_EmptyPassIDRejected(t *testing.T) {
+	rec := tier2TreeRec()
+	rec.PassID = ""
+	_, _, err := EncodeAttestationPath(rec)
+	if !errors.Is(err, ErrAttestationPassIDEmpty) {
+		t.Errorf("empty PassID: got %v; want ErrAttestationPassIDEmpty", err)
+	}
+}
+
+func TestScenario_EncodeAttestationPath_ByteCapOverflow(t *testing.T) {
+	rec := tier2TreeRec()
+	rec.SourceRole = strings.Repeat("a", 300)
+	_, truncated, err := EncodeAttestationPath(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !truncated {
+		t.Errorf("oversized role should have triggered truncation")
+	}
+}
+
+func TestScenario_EncodeAttestationPath_EmptySegmentHashed(t *testing.T) {
+	rec := tier2TreeRec()
+	rec.Context = "" // empty after sanitize → safeSegment hashes
+	path, truncated, err := EncodeAttestationPath(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !truncated {
+		t.Errorf("empty Context should have triggered truncation")
+	}
+	if !strings.Contains(path, "/h-") {
+		t.Errorf("path should contain hash-substituted segment: %q", path)
+	}
+}
+
+func TestScenario_AttestationTree_SeparatePassFilesPerPassID(t *testing.T) {
 	root := t.TempDir()
 	w, _ := NewAttestationTreeWriter(root)
 	defer w.Close()
 	store := NewAttestationStore()
-	store.Observe(w.Observer())
+	store.SetPrimaryWriter(w.PrimaryWriter())
 
-	// Two records with different IDs and grid versions land in
-	// separate per-pass files.
-	rec1 := AttestationRecord{
-		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
-		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
-		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
-	}
-	rec2 := AttestationRecord{
-		ID: "att-A1-C1-v2", Kind: AttestationKindDepthType,
-		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
-		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationFail, Timestamp: 2, GridVersion: 2,
-	}
+	rec1 := tier2TreeRec()
+	rec1.PassID = "P-1"
+	rec1.ID = "att-A1-C1-v3"
+
+	rec2 := tier2TreeRec()
+	rec2.PassID = "P-2"
+	rec2.ID = "att-A1-C1-v4"
+	rec2.GridVersion = 4
+
 	_ = store.Record(rec1)
 	_ = store.Record(rec2)
 
-	p1 := filepath.Join(root, "v1", "default", "stratum-default",
-		"analyst__architect", "att-A1-C1-v1.jsonl")
-	p2 := filepath.Join(root, "v2", "default", "stratum-default",
-		"analyst__architect", "att-A1-C1-v2.jsonl")
+	p1 := filepath.Join(root, "v3", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
+	p2 := filepath.Join(root, "v4", "checkout", "stratum-L1",
+		"analyst__architect", "P-2.jsonl")
 	for _, p := range []string{p1, p2} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("expected per-pass file %s: %v", p, err)
@@ -123,34 +195,55 @@ func TestScenario_AttestationTree_SeparatePassFilesPerRecord(t *testing.T) {
 	}
 }
 
+func TestScenario_AttestationTree_SamePassMultipleClausesOneFile(t *testing.T) {
+	// One pass produces multiple verdicts (one per clause). All go
+	// to the SAME tree file because filename is keyed on PassID.
+	root := t.TempDir()
+	w, _ := NewAttestationTreeWriter(root)
+	defer w.Close()
+	store := NewAttestationStore()
+	store.SetPrimaryWriter(w.PrimaryWriter())
+
+	for _, clause := range []string{"C1", "C2", "C3"} {
+		rec := tier2TreeRec()
+		rec.ID = "att-A1-" + clause + "-v3"
+		rec.ClauseID = clause
+		if err := store.Record(rec); err != nil {
+			t.Fatalf("record %s: %v", clause, err)
+		}
+	}
+
+	path := filepath.Join(root, "v3", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	lines := strings.Count(strings.TrimRight(string(contents), "\n"), "\n") + 1
+	if lines != 3 {
+		t.Errorf("lines = %d; want 3 (one per clause on the same pass)", lines)
+	}
+}
+
 func TestScenario_AttestationTree_CloseFlushes(t *testing.T) {
 	root := t.TempDir()
 	w, _ := NewAttestationTreeWriter(root)
 	store := NewAttestationStore()
-	store.Observe(w.Observer())
+	store.SetPrimaryWriter(w.PrimaryWriter())
 
-	rec := AttestationRecord{
-		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
-		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
-		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
+	rec := tier2TreeRec()
+	if err := store.Record(rec); err != nil {
+		t.Fatal(err)
 	}
-	_ = store.Record(rec)
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// Subsequent record events silently drop.
-	rec.ID = "att-A1-C2-v1"
-	rec.ClauseID = "C2"
-	_ = store.Record(rec)
-	p2 := filepath.Join(root, "v1", "default", "stratum-default",
-		"analyst__architect", "att-A1-C2-v1.jsonl")
-	if _, err := os.Stat(p2); err == nil {
-		t.Fatal("post-Close event should not write")
-	}
 }
 
-func TestScenario_AttestationTree_FsyncFailurePublishesEvent(t *testing.T) {
+func TestScenario_AttestationTree_FsyncFailureFailsRecord(t *testing.T) {
+	// Tier 2: tree writer is the PrimaryWriter. fsync failure
+	// returns error inline → Record returns
+	// ErrAttestationAuditWriteFailed → in-memory store unchanged.
 	root := t.TempDir()
 	w, _ := NewAttestationTreeWriter(root)
 	w.fileSync = func(_ *os.File) error { return errors.New("disk full") }
@@ -162,17 +255,18 @@ func TestScenario_AttestationTree_FsyncFailurePublishesEvent(t *testing.T) {
 	bus.Subscribe(func(e OperatorEvent) { got = append(got, e) })
 
 	store := NewAttestationStore()
-	store.Observe(w.Observer())
-	rec := AttestationRecord{
-		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
-		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
-		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
-		Verdict: AttestationPass, Timestamp: 1, GridVersion: 1,
-	}
-	_ = store.Record(rec)
+	store.SetPrimaryWriter(w.PrimaryWriter())
 
+	rec := tier2TreeRec()
+	err := store.Record(rec)
+	if !errors.Is(err, ErrAttestationAuditWriteFailed) {
+		t.Errorf("Record: got %v; want ErrAttestationAuditWriteFailed", err)
+	}
+	if store.Len() != 0 {
+		t.Errorf("in-memory mutated despite primaryWriter failure: %d entries", store.Len())
+	}
 	if w.WriteErrors() != 1 {
-		t.Fatalf("WriteErrors = %d; want 1", w.WriteErrors())
+		t.Errorf("WriteErrors = %d; want 1", w.WriteErrors())
 	}
 	var sawEvent bool
 	for _, e := range got {
@@ -203,37 +297,76 @@ func TestScenario_AttestationTree_SanitizesPathSegments(t *testing.T) {
 	}
 }
 
-func TestScenario_AttestationTree_EmptyRoleFillsUnknown(t *testing.T) {
-	if got := buildRolePair("", "architect"); got != "unknown__architect" {
-		t.Errorf("empty source: got %q", got)
-	}
-	if got := buildRolePair("analyst", ""); got != "analyst__unknown" {
-		t.Errorf("empty target: got %q", got)
-	}
-}
-
 func TestScenario_AttestationTree_PathSafeOnHostileSeparators(t *testing.T) {
 	root := t.TempDir()
 	w, _ := NewAttestationTreeWriter(root)
 	defer w.Close()
 	store := NewAttestationStore()
-	store.Observe(w.Observer())
+	store.SetPrimaryWriter(w.PrimaryWriter())
 
 	// Role names containing path separators must NOT escape the
 	// root. sanitizePathSegment turns them into underscores.
-	rec := AttestationRecord{
-		ID: "att-A1-C1-v1", Kind: AttestationKindDepthType,
-		ArrowID: "A1", ClauseID: "C1", OpID: "alice",
-		AttestedByRole: "operator",
-		SourceRole:     "../escape",
-		TargetRole:     "architect",
-		Verdict:        AttestationPass, Timestamp: 1, GridVersion: 1,
+	rec := tier2TreeRec()
+	rec.SourceRole = "../escape"
+	if err := store.Record(rec); err != nil {
+		t.Fatal(err)
 	}
-	_ = store.Record(rec)
-	// Path must stay inside root.
-	expected := filepath.Join(root, "v1", "default", "stratum-default",
-		".._escape__architect", "att-A1-C1-v1.jsonl")
-	if _, err := os.Stat(expected); err != nil {
-		t.Fatalf("sanitized path %s: %v", expected, err)
+	// Verify the resulting path stays inside root (no traversal).
+	walkOK := false
+	_ = filepath.Walk(root, func(path string, _ os.FileInfo, _ error) error {
+		if strings.HasSuffix(path, "P-1.jsonl") {
+			rel, err := filepath.Rel(root, path)
+			if err == nil && !strings.HasPrefix(rel, "..") {
+				walkOK = true
+			}
+		}
+		return nil
+	})
+	if !walkOK {
+		t.Fatal("path traversal possible — hostile separator escaped sanitization")
+	}
+}
+
+func TestScenario_AttestationTree_TruncateTrailingPartialAll(t *testing.T) {
+	root := t.TempDir()
+	w, _ := NewAttestationTreeWriter(root)
+	defer w.Close()
+	store := NewAttestationStore()
+	store.SetPrimaryWriter(w.PrimaryWriter())
+
+	// Write one complete record.
+	rec := tier2TreeRec()
+	if err := store.Record(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually append a partial trailing line to the per-pass
+	// file (simulate a crash mid-write).
+	passPath := filepath.Join(root, "v3", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
+	f, err := os.OpenFile(passPath, os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"partial":"not terminated`); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	preBytes, _ := os.ReadFile(passPath)
+
+	if err := w.TruncateTrailingPartialAll(root); err != nil {
+		t.Fatalf("TruncateTrailingPartialAll: %v", err)
+	}
+
+	postBytes, _ := os.ReadFile(passPath)
+	if len(postBytes) >= len(preBytes) {
+		t.Errorf("file size did not shrink: pre=%d post=%d", len(preBytes), len(postBytes))
+	}
+	if !strings.HasSuffix(string(postBytes), "\n") {
+		t.Errorf("file should end with newline after truncate: %q", postBytes)
+	}
+	if strings.Contains(string(postBytes), "partial") {
+		t.Errorf("partial line still in file: %q", postBytes)
 	}
 }

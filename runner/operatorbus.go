@@ -72,6 +72,40 @@ const (
 	OpEventRecoveryAttestationRepublished OperatorEventKind = "recovery-attestation-republished"
 	OpEventRecoveryAttestationReplay      OperatorEventKind = "recovery-attestation-replay"
 	OpEventRecoveryJSONLTruncated         OperatorEventKind = "recovery-jsonl-truncated"
+
+	// Tier 2 events (ADR-016 + gate-1 remediation).
+
+	// OpEventClauseFailVerdict — operator submitted verdict=fail
+	// on an attested clause. Subscribed by the producer-fix
+	// signal path so the upstream role gets a remediation
+	// trigger.
+	OpEventClauseFailVerdict OperatorEventKind = "clause-fail-verdict"
+
+	// OpEventEscalationPresented — the modal showed an
+	// escalation prompt to the operator. Audit-trail only.
+	OpEventEscalationPresented OperatorEventKind = "escalation-presented"
+
+	// OpEventEscalationResolved — operator chose option 1
+	// (accepted-risk) or option 2 (route-upstream) on the
+	// escalation prompt. Detail carries the choice.
+	OpEventEscalationResolved OperatorEventKind = "escalation-resolved"
+
+	// OpEventModalSkipped — operator typed `skip` on the
+	// verdict modal; the clause stays pending. Lock token
+	// released so the dispatcher can move on; the next REPL
+	// turn re-presents on OpEventAttestationRequested
+	// republish.
+	OpEventModalSkipped OperatorEventKind = "modal-skipped"
+
+	// OpEventModalBackpressure — modal driver dropped an
+	// OnEvent because its pending queue is at
+	// ModalPendingMaxLen (gate-1 F-8).
+	OpEventModalBackpressure OperatorEventKind = "modal-backpressure"
+
+	// OpEventPathTruncated — EncodeAttestationPath produced
+	// a path with one or more hash-substituted segments
+	// (gate-1 F-17). Audit-trail; the write still succeeded.
+	OpEventPathTruncated OperatorEventKind = "attestation-path-truncated"
 )
 
 // OperatorEventSubscriber receives events in publish order. Slow

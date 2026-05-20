@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,36 +21,28 @@ import (
 // where:
 //
 //	<N>          = grid version
-//	<context>    = bounded-context-id
-//	<S>          = stratum
-//	<role-pair>  = source-role + "__" + target-role (e.g.
-//	               "analyst__architect"). For roles like the
-//	               synthetic adversary, the spec allows
-//	               three-role chains separated by "__"
-//	               (e.g., "analyst__adversary__architect"); the
-//	               encoder accepts arbitrary role chains.
-//	<pass-id>    = pass identifier
+//	<context>    = bounded-context-id (literal "init" for init arrows)
+//	<S>          = stratum (literal "init" for init arrows)
+//	<role-pair>  = source-role + "__" + target-role for 2-role arrows,
+//	               source + "__" + adversary + "__" + target for
+//	               adversary-augmented 3-role chains (Tier 2 / gate-1 F-3),
+//	               literal "init" for init arrows (gate-1 F-18)
+//	<pass-id>    = pass identifier (required; gate-1 F-6 rejects empty)
 //
-// The tree complements the existing flat
-// `.ghyll/attestations.jsonl` (which is the session-wide audit
-// trail). Each per-pass file is a localized audit so reviewers
-// can find every verdict for one pass without grepping the
-// whole flat log.
+// Tier 2 (ADR-016 Part B) promotes this writer to the
+// AttestationStore primaryWriter — the inline-blocking audit
+// surface. The flat .ghyll/attestations.jsonl steps down to an
+// Observer-only fanout for aggregate tail.
 //
 // Concurrency: an internal mutex serializes file-handle opens
 // + writes. Per-pass files are opened lazily on first
 // attestation for that pass and held open until Close.
 //
-// Failure model: same as AttestationJSONLWriter — open / write /
-// fsync errors are counted via WriteErrors() and surfaced via
-// the optional OperatorBus event
-// (OpEventAttestationAuditDurabilityFailed).
+// File open flags: O_RDWR | O_CREATE | O_APPEND (gate-1 F-11) so
+// TruncateTrailingPartial can ReadAt to find the last newline.
 type AttestationTreeWriter struct {
 	mu sync.Mutex
 
-	// root is the absolute path to the project's tree root —
-	// typically `<workdir>/.ghyll/attestations`. The tree is
-	// created lazily under root.
 	root string
 
 	// files caches the per-pass open file handles so we don't
@@ -89,69 +83,164 @@ func (w *AttestationTreeWriter) WithBus(bus *OperatorBus) *AttestationTreeWriter
 	return w
 }
 
-// Observer returns an AttestationObserver that routes each Record
-// event into the per-pass file derived from the record's
-// (grid_version, context, stratum, source_role, target_role,
-// pass_id) tuple.
+// PrimaryWriter returns a func suitable for
+// AttestationStore.SetPrimaryWriter. Per ADR-016 Part B the tree
+// writer becomes the inline-blocking audit surface; failure
+// returns the error inline so AttestationStore.Record fails
+// closed (in-memory unchanged, no fanout to other observers).
 //
-// The pass_id is read from a separate context object the runtime
-// stitches onto the AttestationRecord at observation time. Since
-// AttestationRecord does not currently carry pass_id (the runtime
-// associates the operator verdict with a clause + arrow, not
-// directly with a pass), the tree writer derives pass_id from the
-// attestation_id's deterministic shape — `att-<arrow>-<clause>-v<N>`
-// becomes the per-pass file name. This is a deliberate choice:
-// in the operator-attestation flow, one pass produces one set of
-// attested clauses, and the attestation_id is unique per pass
-// because grid_version uniquely identifies the pass's grid view.
+// The PrimaryWriter publishes ErrPathComponentTooLong via the
+// bus on path-truncation overflow (gate-1 F-17); the write
+// still proceeds with the hash-substituted segment so the
+// verdict is not lost.
+func (w *AttestationTreeWriter) PrimaryWriter() func(AttestationRecord) error {
+	return func(rec AttestationRecord) error {
+		path, truncated, err := EncodeAttestationPath(rec)
+		if err != nil {
+			return fmt.Errorf("tree-writer: encode path: %w", err)
+		}
+		if truncated && w.bus != nil {
+			w.bus.Publish(OperatorEvent{
+				Kind:    OpEventPathTruncated,
+				ArrowID: rec.ArrowID,
+				PassID:  rec.PassID,
+				Detail:  "path components hash-substituted; rec.Reason annotated",
+			})
+		}
+		absPath := filepath.Join(w.root, path)
+
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.closed {
+			return errors.New("tree-writer: closed")
+		}
+		f, ferr := w.openCached(absPath)
+		if ferr != nil {
+			w.recordTreeFailure(rec, fmt.Errorf("open %s: %w", absPath, ferr))
+			return fmt.Errorf("open %s: %w", absPath, ferr)
+		}
+		line, jerr := jsonlMarshal(newJsonlRecord(rec))
+		if jerr != nil {
+			w.recordTreeFailure(rec, fmt.Errorf("marshal: %w", jerr))
+			return fmt.Errorf("marshal: %w", jerr)
+		}
+		if _, werr := f.Write(line); werr != nil {
+			w.recordTreeFailure(rec, fmt.Errorf("write %s: %w", absPath, werr))
+			return fmt.Errorf("write %s: %w", absPath, werr)
+		}
+		if w.fileSync != nil {
+			if serr := w.fileSync(f); serr != nil {
+				w.recordTreeFailure(rec, fmt.Errorf("fsync %s: %w", absPath, serr))
+				return fmt.Errorf("fsync %s: %w", absPath, serr)
+			}
+		}
+		return nil
+	}
+}
+
+// Observer returns an AttestationObserver that mirrors the
+// PrimaryWriter's write path but cannot fail the Record call
+// (the AttestationObserver contract has no error return).
+// Used as a fallback when SetPrimaryWriter isn't wired (e.g.,
+// legacy tests). Production session.openEngine uses
+// PrimaryWriter, not Observer.
 func (w *AttestationTreeWriter) Observer() AttestationObserver {
 	return func(e AttestationEvent) {
 		if e.Kind != AttestationEventRecord {
 			return
 		}
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if w.closed {
-			return
-		}
-
-		// Resolve the per-pass file path.
-		ctxName := contextFromArrow(e.Record)
-		stratum := stratumFromArrow(e.Record)
-		rolePair := buildRolePair(e.Record.SourceRole, e.Record.TargetRole)
-		passFileName := e.Record.ID + ".jsonl"
-		passPath := filepath.Join(w.root,
-			fmt.Sprintf("v%d", e.Record.GridVersion),
-			sanitizePathSegment(ctxName),
-			"stratum-"+sanitizePathSegment(stratum),
-			sanitizePathSegment(rolePair),
-			sanitizePathSegment(passFileName),
-		)
-
-		f, ferr := w.openCached(passPath)
-		if ferr != nil {
-			w.recordTreeFailure(e.Record, fmt.Errorf("open %s: %w", passPath, ferr))
-			return
-		}
-		line, jerr := jsonlMarshal(newJsonlRecord(e.Record))
-		if jerr != nil {
-			w.recordTreeFailure(e.Record, fmt.Errorf("marshal: %w", jerr))
-			return
-		}
-		if _, werr := f.Write(line); werr != nil {
-			w.recordTreeFailure(e.Record, fmt.Errorf("write %s: %w", passPath, werr))
-			return
-		}
-		if w.fileSync != nil {
-			if serr := w.fileSync(f); serr != nil {
-				w.recordTreeFailure(e.Record, fmt.Errorf("fsync %s: %w", passPath, serr))
-			}
-		}
+		_ = w.PrimaryWriter()(e.Record)
 	}
 }
 
+// TruncateTrailingPartialAll walks every <root>/v*/<ctx>/stratum-*/<role-pair>/<pass-id>.jsonl
+// and trims any trailing partial line. Called by
+// session.openEngineWithOptions after LoadFromTree returns
+// truncated=true (gate-1 F-11). Errors on individual files are
+// counted (via writeErrors) but don't abort the walk.
+func (w *AttestationTreeWriter) TruncateTrailingPartialAll(root string) error {
+	abs := root
+	if abs == "" {
+		abs = w.root
+	}
+	return filepath.Walk(abs, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // no tree yet; nothing to truncate
+			}
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		if err := truncateTrailingPartialFile(path); err != nil {
+			w.mu.Lock()
+			w.writeErrors++
+			w.lastErr = err
+			w.mu.Unlock()
+		}
+		return nil
+	})
+}
+
+// truncateTrailingPartialFile scans backward for the last
+// newline in path and truncates everything after it. Mirrors
+// AttestationJSONLWriter.TruncateTrailingPartial's behavior but
+// for a path-addressed file (no writer state needed).
+func truncateTrailingPartialFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := stat.Size()
+	if size == 0 {
+		return nil
+	}
+	const chunk int64 = 64 * 1024
+	for end := size; end > 0; {
+		readFrom := end - chunk
+		if readFrom < 0 {
+			readFrom = 0
+		}
+		buf := make([]byte, end-readFrom)
+		if _, err := f.ReadAt(buf, readFrom); err != nil {
+			return err
+		}
+		for i := len(buf) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				cutAt := readFrom + int64(i) + 1
+				if cutAt == size {
+					return nil
+				}
+				if err := f.Truncate(cutAt); err != nil {
+					return err
+				}
+				return f.Sync()
+			}
+		}
+		if readFrom == 0 {
+			// No newline anywhere → whole file is a partial.
+			if err := f.Truncate(0); err != nil {
+				return err
+			}
+			return f.Sync()
+		}
+		end = readFrom
+	}
+	return nil
+}
+
 // openCached returns the cached file handle for path or opens
-// (O_CREATE|O_APPEND) a fresh one. Caller holds w.mu.
+// (O_CREATE|O_RDWR|O_APPEND per gate-1 F-11) a fresh one.
+// Caller holds w.mu.
 func (w *AttestationTreeWriter) openCached(path string) (*os.File, error) {
 	if f, ok := w.files[path]; ok {
 		return f, nil
@@ -159,7 +248,9 @@ func (w *AttestationTreeWriter) openCached(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// O_RDWR (not O_WRONLY) so future truncate operations can
+	// ReadAt to find the last newline. ADR-016 + gate-1 F-11.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -224,9 +315,7 @@ func (w *AttestationTreeWriter) LastError() error {
 }
 
 // jsonlMarshal serializes one attestation record as the JSON
-// payload + newline, in a single buffer so the file Write below
-// is one syscall (POSIX O_APPEND atomicity per the operator
-// spec).
+// payload + newline.
 func jsonlMarshal(r jsonlRecord) ([]byte, error) {
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -238,25 +327,98 @@ func jsonlMarshal(r jsonlRecord) ([]byte, error) {
 	return out, nil
 }
 
-// --- Helpers ---------------------------------------------------------
+// --- Path encoding ---------------------------------------------------
 
-// buildRolePair encodes (source, target) per the spec:
-// "source__target". Two-role pairs. Three-role chains (with
-// adversary) are not produced by the AttestationStore today —
-// when they are, the spec calls for the adversary slot to be
-// inserted between source and target: "source__adversary__target".
-// For now we stay with the two-role shape; the spec's three-role
-// form will land alongside adversary-flow plumbing.
-func buildRolePair(source, target string) string {
-	src := sanitizePathSegment(strings.TrimSpace(source))
-	tgt := sanitizePathSegment(strings.TrimSpace(target))
-	if src == "" {
-		src = "unknown"
+// maxPathComponentBytes is the per-segment byte limit on ext4 /
+// btrfs / NTFS (255). Beyond this, EncodeAttestationPath
+// substitutes a SHA-256-prefix hash and reports truncated=true.
+const maxPathComponentBytes = 255
+
+// EncodeAttestationPath computes the relative tree path for
+// a record per ADR-016 Part F (gate-1-remediated). Pure
+// function — no Grid argument (gate-1 F-2). Returns the
+// tree-root-relative path, a `truncated` flag indicating
+// whether any segment was hash-substituted (operator should
+// see ErrPathComponentTooLong via the bus), and an error.
+//
+// Algorithm:
+//
+//	v<grid_version> / <context> / stratum-<stratum> / <role-pair> / <pass-id>.jsonl
+//
+// Init arrows (rec.AttestedByRole == "init"):
+//
+//	role-pair  = "init"
+//	context    = "init"
+//	stratum    = "init"
+//
+// 3-role chain (rec.AdversaryRole != ""):
+//
+//	role-pair  = "{source}__{adversary}__{target}"
+//
+// 2-role arrow:
+//
+//	role-pair  = "{source}__{target}"
+//
+// Empty PassID rejects with ErrAttestationPassIDEmpty (gate-1 F-6).
+// Per-component overflow OR empty-after-sanitize triggers the
+// hash fallback (h-<sha256[:16]>) and sets truncated=true.
+func EncodeAttestationPath(rec AttestationRecord) (string, bool, error) {
+	if strings.TrimSpace(rec.PassID) == "" {
+		return "", false, ErrAttestationPassIDEmpty
 	}
-	if tgt == "" {
-		tgt = "unknown"
+
+	isInit := strings.EqualFold(strings.TrimSpace(rec.AttestedByRole), "init")
+
+	var (
+		context  string
+		stratum  string
+		rolePair string
+	)
+	if isInit {
+		context = "init"
+		stratum = "init"
+		rolePair = "init"
+	} else {
+		context = rec.Context
+		stratum = rec.Stratum
+		if rec.AdversaryRole != "" {
+			rolePair = strings.Join([]string{
+				rec.SourceRole, rec.AdversaryRole, rec.TargetRole,
+			}, "__")
+		} else {
+			rolePair = rec.SourceRole + "__" + rec.TargetRole
+		}
 	}
-	return src + "__" + tgt
+
+	gv := fmt.Sprintf("v%d", rec.GridVersion)
+	stratumSeg := "stratum-" + sanitizePathSegment(stratum)
+	passFile := sanitizePathSegment(rec.PassID) + ".jsonl"
+
+	gvSeg, t1 := safeSegment(gv)
+	ctxSeg, t2 := safeSegment(sanitizePathSegment(context))
+	stratumOut, t3 := safeSegment(stratumSeg)
+	roleSeg, t4 := safeSegment(sanitizePathSegment(rolePair))
+	passSeg, t5 := safeSegment(passFile)
+
+	truncated := t1 || t2 || t3 || t4 || t5
+
+	path := filepath.Join(gvSeg, ctxSeg, stratumOut, roleSeg, passSeg)
+	return path, truncated, nil
+}
+
+// safeSegment enforces the per-component byte cap + zero-byte
+// guard. Returns the segment (possibly hash-substituted) and a
+// truncated flag.
+//
+// - len(s) == 0 → returns "h-" + sha256[:16] of empty string.
+// - len(s) > maxPathComponentBytes → same hash substitution.
+// - Otherwise s passes through.
+func safeSegment(s string) (string, bool) {
+	if s == "" || len(s) > maxPathComponentBytes {
+		sum := sha256.Sum256([]byte(s))
+		return "h-" + hex.EncodeToString(sum[:8]), true
+	}
+	return s, false
 }
 
 // sanitizePathSegment makes a string safe to use as a filesystem
@@ -281,35 +443,6 @@ func sanitizePathSegment(s string) string {
 		}
 	}
 	return string(out)
-}
-
-// contextFromArrow extracts the bounded-context name. The
-// AttestationRecord doesn't carry the context directly; the
-// caller (the runtime that records the attestation) is expected
-// to encode it into the OpID or to attach it via a future
-// `Context` field. For now we return a placeholder so the path
-// always renders; callers using the tree writer should populate
-// the field via the future API extension.
-//
-// Current behavior: returns "default" if no context can be
-// derived, matching the spec's allowance for a default-context
-// project. This is a known shortcut to revisit when the
-// AttestationRecord schema gains a Context field.
-func contextFromArrow(rec AttestationRecord) string {
-	// The runtime caller (Tier-0 dispatcher / operator UI) can
-	// stitch the context onto the record's Reason field as a
-	// `ctx:<name>` prefix when the AttestationStore.Record path
-	// supports it. Until then, return "default".
-	_ = rec
-	return "default"
-}
-
-// stratumFromArrow extracts the stratum identifier. Same caveat
-// as contextFromArrow: the AttestationRecord doesn't carry it
-// today. Returns "default" placeholder.
-func stratumFromArrow(rec AttestationRecord) string {
-	_ = rec
-	return "default"
 }
 
 // File handle helpers — io.Writer compatibility for tests.

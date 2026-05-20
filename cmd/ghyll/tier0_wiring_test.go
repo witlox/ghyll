@@ -230,6 +230,11 @@ func TestScenario_Tier0_TreeWriter_WritesPerPassFile(t *testing.T) {
 		Verdict:        runner.AttestationPass,
 		Timestamp:      1747663200_000000000,
 		GridVersion:    1,
+		// Tier 2 (ADR-016 + gate-1): PassID required; Context +
+		// Stratum stamped by dispatcher (test stamps directly).
+		PassID:  "P-1",
+		Context: "checkout",
+		Stratum: "L1",
 	}
 	if err := rt.AttestationStore().Record(rec); err != nil {
 		t.Fatal(err)
@@ -237,8 +242,8 @@ func TestScenario_Tier0_TreeWriter_WritesPerPassFile(t *testing.T) {
 	rt.journal.Flush()
 
 	expected := filepath.Join(workdir, ".ghyll", "attestations",
-		"v1", "default", "stratum-default",
-		"analyst__architect", "att-A1-C1-v1.jsonl")
+		"v1", "checkout", "stratum-L1",
+		"analyst__architect", "P-1.jsonl")
 	if _, err := os.Stat(expected); err != nil {
 		t.Fatalf("per-pass file not created at %s: %v", expected, err)
 	}
