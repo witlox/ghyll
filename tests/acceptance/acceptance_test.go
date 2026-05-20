@@ -112,6 +112,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// auto-insert (adversarial.feature).
 	registerAdversarialDeferredSteps(ctx, state)
 
+	// Adversarial producer-fix-signal + accepted-risk-proposal
+	// batch — wires the typed producer-fix messages and the
+	// audit-trail of sub-activities post-Tier-2 substrate
+	// (adversarial.feature Batch 5).
+	registerAdversarialProducerFixSteps(ctx, state)
+
 	// Runner deferred batch — concurrent / refused / amendment
 	// abort / depth-gate scenarios (runner.feature).
 	registerRunnerDeferredSteps(ctx, state)

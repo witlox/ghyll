@@ -80,7 +80,6 @@ Feature: Per-arrow adversarial phase
 
   # ---- Remediation loop ----
 
-  @deferred
   Scenario: Producer fixes a finding with full re-attack
     Given finding F1 status "open" raised by adversary round R0
     When the producer addresses F1 by editing the upstream artifact
@@ -93,7 +92,6 @@ Feature: Per-arrow adversarial phase
     And if R1 reproduces F1, F1 stays "open" and another round begins
     And any new findings R1 raises are added to the open set
 
-  @deferred
   Scenario: Producer proposes accepted-risk
     Given finding F1 status "open"
     When the producer proposes accepted-risk via a typed "accepted-risk-proposal" message containing pass-id, finding-id, rationale, and inspected-context
