@@ -323,6 +323,30 @@ type ScenarioState struct {
 	ADRFinalRounds int
 	ADRMaxValid    bool
 	ADRMaxInitErr  error
+
+	// Attestation modal deferred-lift (Batch 1) — exercises the
+	// Tier 2 substrate (modal.StubModal + AttestationTreeWriter +
+	// InsufficientBasisTracker + OperatorBus) against the
+	// remaining @deferred scenarios in attestation.feature.
+	AModTempDir        string
+	AModRegistry       *bootstrap.SessionRegistry
+	AModStore          *runner.AttestationStore
+	AModTree           *runner.AttestationTreeWriter
+	AModTreeRoot       string
+	AModTracker        *runner.InsufficientBasisTracker
+	AModBus            *runner.OperatorBus
+	AModBusEvts        []runner.OperatorEvent
+	AModFindings       *runner.FindingsStore
+	AModFinding        string // last-raised finding ID
+	AModPassID         string
+	AModArrowID        string
+	AModClauseID       string
+	AModRec            runner.AttestationRecord
+	AModRecordErr      error
+	AModRounds         int
+	AModCrossed        bool
+	AModValidateErr    error
+	AModUpstreamSignal bool
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

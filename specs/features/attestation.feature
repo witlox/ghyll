@@ -21,7 +21,6 @@ Feature: Operator attestation flow
     And the session is active for subsequent verdicts
     And verdict-capture API calls without an active session are refused with "no-active-session"
 
-  @deferred
   Scenario: Multi-operator handoff in one pass
     Given operator Alice is active and attests clause C1
     When Alice ends her session
@@ -36,7 +35,6 @@ Feature: Operator attestation flow
 
   # ---- Hint presentation and verdict capture ----
 
-  @deferred
   Scenario: Operator returns pass
     Given an attestation request for clause C5 with hint { locations: [features/contextA/payment.feature:42-67], basis: "all failure-path scenarios in this region", residue: "happy-path tests not scanned" }
     And operator Alice is active
@@ -48,7 +46,6 @@ Feature: Operator attestation flow
     And the JSONL line is valid JSON with newline terminator (no trailing comma, no missing newline)
     And the component signals the state-machine engine to transition C5 to "pass" ONLY AFTER the fsync returns successfully
 
-  @deferred
   Scenario: Operator returns fail with record-locations
     Given an attestation request for clause C5
     When Alice submits verdict "fail" with unit "record-locations-inspected" and inspected list [features/contextA/payment.feature:42-50]
@@ -56,7 +53,6 @@ Feature: Operator attestation flow
     And C5's status becomes "fail"
     And the producer is notified of the failure to remediate
 
-  @deferred
   Scenario: Operator returns insufficient-basis with residue note
     Given an attestation request for clause C5
     When Alice submits verdict "insufficient-basis" with unit "write-residue-note" and residue-note "feature file is too large to manually inspect; need a deeper artifact"
@@ -67,27 +63,27 @@ Feature: Operator attestation flow
 
   # ---- Insufficient-basis escalation (insufficient-basis-rounds-max) ----
 
-  @deferred
   Scenario: Three rounds, then escalation
-    Given clause C5 has received "insufficient-basis" from rounds 1 and 2
+    Given init declared insufficient-basis-rounds-max=3 for this project
+    And clause C5 has received "insufficient-basis" from rounds 1 and 2
     And the producer has re-emitted the hint at a deeper depth tier each round
     When round 3 also returns "insufficient-basis"
     Then the component records the escalation
     And presents the operator with two options: (1) attest "accepted-risk" with "write-residue-note" recording why the basis remains insufficient, OR (2) route the artifact back upstream for deeper rework with rationale "requires-deeper-artifact"
     And neither option is the default — operator must choose
 
-  @deferred
   Scenario: Operator accepts risk on the third round
-    Given the escalation prompt
+    Given init declared insufficient-basis-rounds-max=3 for this project
+    And the escalation prompt
     When operator chooses option 1 with residue note
     Then a record is appended with unit "write-residue-note", verdict "accepted-risk", op-id, inspected list, and residue-note
     And the FINDING associated with C5 transitions to status "accepted-risk"
     And C5's CLAUSE-status transitions to "pass" once all findings on the clause are disposed (resolved or accepted-risk)
     And the round counter resets
 
-  @deferred
   Scenario: Operator routes upstream
-    Given the escalation prompt
+    Given init declared insufficient-basis-rounds-max=3 for this project
+    And the escalation prompt
     When operator chooses option 2 with rationale
     Then the component signals the runner that C5's upstream artifact requires deeper rework
     And the arrow's pass is aborted with reason "requires-deeper-artifact"
@@ -210,9 +206,9 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: oversized residue note ----
 
-  @deferred
   Scenario: Oversized residue note rejected
-    Given an escalation prompt requesting a residue note
+    Given init declared insufficient-basis-rounds-max=3 for this project
+    And an escalation prompt requesting a residue note
     When the operator submits a residue note longer than 16KB
     Then the component refuses with "residue-note-too-long" (configurable threshold)
     And re-prompts the operator
@@ -236,7 +232,6 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: multi-operator handoff edge cases ----
 
-  @deferred
   Scenario: Two operators submit verdicts on the same clause near-simultaneously
     Given Alice's session is active and Bob's session is also active
     And both submit verdicts on clause C5 within 10ms of each other

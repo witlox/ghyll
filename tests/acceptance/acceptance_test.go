@@ -128,6 +128,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// missing-required-field detection (attestation.feature
 	// @deferred lifts, ADR-016 Step 15).
 	registerTier2ModalSteps(ctx, state)
+
+	// Attestation modal deferred-lift batch — multi-operator
+	// handoff, verdict pass/fail/IB, 3-round escalation, accepted-
+	// risk, route-upstream, oversized residue, near-simultaneous
+	// verdicts (attestation.feature post-Tier-2 lifts).
+	registerAttestationModalSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

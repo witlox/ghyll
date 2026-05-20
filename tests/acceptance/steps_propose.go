@@ -456,11 +456,23 @@ func (s *ScenarioState) initRefusesSkipWith(expected string) error {
 	return nil
 }
 
-// rePromptsOperator is a narrative step: the harness should re-prompt
-// after a refused skip. Operationally, the refusal returning an error
-// without recording a verdict IS the re-prompt signal (caller loops
-// until success). Verify the verdict-not-applied state.
+// rePromptsOperator is a narrative step shared across scenarios.
+// Two contexts use it:
+//
+//   - init/propose flow (the original): a refused skip leaves the
+//     proposal pending — verify no verdict was applied.
+//   - oversized-residue flow (attestation modal): the residue cap
+//     refusal surfaces as a ValidateUnitPayload error — the
+//     refusal-without-Record IS the re-prompt signal.
+//
+// The step picks the context by which state field is set: Proposal
+// for init/propose, AModValidateErr for the modal flow.
 func (s *ScenarioState) rePromptsOperator() error {
+	if s.AModValidateErr != nil {
+		// Modal/oversized-residue path: validation errored, no Record
+		// was attempted, harness loops to re-present the escalation.
+		return nil
+	}
 	if s.Proposal == nil || len(s.Proposal.Proposed) == 0 {
 		return errors.New("no proposal to inspect")
 	}
