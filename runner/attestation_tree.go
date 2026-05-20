@@ -123,32 +123,58 @@ func (w *AttestationTreeWriter) PrimaryWriter() func(AttestationRecord) error {
 		}
 		absPath := filepath.Join(w.root, path)
 
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if w.closed {
-			return errors.New("tree-writer: closed")
-		}
-		f, ferr := w.openCached(absPath)
-		if ferr != nil {
-			w.recordTreeFailure(rec, fmt.Errorf("open %s: %w", absPath, ferr))
-			return fmt.Errorf("open %s: %w", absPath, ferr)
-		}
-		line, jerr := jsonlMarshal(newJsonlRecord(rec))
-		if jerr != nil {
-			w.recordTreeFailure(rec, fmt.Errorf("marshal: %w", jerr))
-			return fmt.Errorf("marshal: %w", jerr)
-		}
-		if _, werr := f.Write(line); werr != nil {
-			w.recordTreeFailure(rec, fmt.Errorf("write %s: %w", absPath, werr))
-			return fmt.Errorf("write %s: %w", absPath, werr)
-		}
-		if w.fileSync != nil {
-			if serr := w.fileSync(f); serr != nil {
-				w.recordTreeFailure(rec, fmt.Errorf("fsync %s: %w", absPath, serr))
-				return fmt.Errorf("fsync %s: %w", absPath, serr)
+		// Gate-2 CONC-H-2: snapshot the failure under w.mu but
+		// publish the bus event AFTER releasing. Subscribers that
+		// touch w (or AttestationStore via the journal observer)
+		// would deadlock if Publish ran inside the critical
+		// section.
+		var publishErr error
+		err = func() error {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if w.closed {
+				return errors.New("tree-writer: closed")
 			}
+			f, ferr := w.openCached(absPath)
+			if ferr != nil {
+				w.writeErrors++
+				w.lastErr = fmt.Errorf("open %s: %w", absPath, ferr)
+				publishErr = w.lastErr
+				return fmt.Errorf("open %s: %w", absPath, ferr)
+			}
+			line, jerr := jsonlMarshal(newJsonlRecord(rec))
+			if jerr != nil {
+				w.writeErrors++
+				w.lastErr = fmt.Errorf("marshal: %w", jerr)
+				publishErr = w.lastErr
+				return fmt.Errorf("marshal: %w", jerr)
+			}
+			if _, werr := f.Write(line); werr != nil {
+				w.writeErrors++
+				w.lastErr = fmt.Errorf("write %s: %w", absPath, werr)
+				publishErr = w.lastErr
+				return fmt.Errorf("write %s: %w", absPath, werr)
+			}
+			if w.fileSync != nil {
+				if serr := w.fileSync(f); serr != nil {
+					w.writeErrors++
+					w.lastErr = fmt.Errorf("fsync %s: %w", absPath, serr)
+					publishErr = w.lastErr
+					return fmt.Errorf("fsync %s: %w", absPath, serr)
+				}
+			}
+			return nil
+		}()
+		if publishErr != nil && w.bus != nil {
+			w.bus.Publish(OperatorEvent{
+				Kind:     OpEventAttestationAuditDurabilityFailed,
+				ArrowID:  rec.ArrowID,
+				ClauseID: rec.ClauseID,
+				OpID:     rec.OpID,
+				Detail:   "tree-writer: " + publishErr.Error(),
+			})
 		}
-		return nil
+		return err
 	}
 }
 
@@ -287,19 +313,15 @@ func (w *AttestationTreeWriter) openCached(path string) (*os.File, error) {
 }
 
 // recordTreeFailure is the tree writer's analog of
-// AttestationJSONLWriter.recordFailure. Caller holds w.mu.
+// AttestationJSONLWriter.recordFailure. DEPRECATED post-gate-2
+// CONC-H-2: callers now publish bus events AFTER releasing
+// w.mu directly (see PrimaryWriter). Kept for callers that
+// only mutate state; nil bus → no-op.
+//
+//nolint:unused
 func (w *AttestationTreeWriter) recordTreeFailure(rec AttestationRecord, err error) {
 	w.writeErrors++
 	w.lastErr = err
-	if w.bus != nil {
-		w.bus.Publish(OperatorEvent{
-			Kind:     OpEventAttestationAuditDurabilityFailed,
-			ArrowID:  rec.ArrowID,
-			ClauseID: rec.ClauseID,
-			OpID:     rec.OpID,
-			Detail:   "tree-writer: " + err.Error(),
-		})
-	}
 }
 
 // Close flushes and releases every cached file handle.

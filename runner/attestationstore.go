@@ -372,8 +372,12 @@ func (s *AttestationStore) SetPrimaryWriter(fn func(AttestationRecord) error) {
 	s.primaryWriter = fn
 }
 
-// emit fires all observers under the existing write lock. Caller
-// MUST hold s.mu (write lock).
+// emit was the under-lock observer fanout helper. DEPRECATED
+// after gate-2 CONC-H-3: Record now snapshots the observer list
+// + event, releases s.mu, then iterates. Kept as a build-time
+// symbol; no production callers.
+//
+//nolint:unused
 func (s *AttestationStore) emit(e AttestationEvent) {
 	for _, ob := range s.observers {
 		ob(e)
@@ -402,10 +406,20 @@ func (s *AttestationStore) Record(rec AttestationRecord) error {
 	if err := validateAttestationTier2(rec, s.ResidueNoteMaxBytes()); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
+	// Gate-2 CONC-H-3: do the byID mutation + primaryWriter call
+	// under s.mu, then SNAPSHOT the observer list and the event,
+	// release the lock, and fan out to observers WITHOUT the lock
+	// held. Observers may call back into the store (Lookup, etc.);
+	// the previous fanout-under-write-lock pattern deadlocked
+	// sync.RWMutex on re-entry.
+	var observers []AttestationObserver
+	var event AttestationEvent
+	var shouldEmit bool
+
+	s.mu.Lock()
 	if existing, ok := s.byID[rec.ID]; ok {
+		s.mu.Unlock()
 		if AttestationRecordsEqual(existing, rec) {
 			return nil // idempotent — same content, no-op
 		}
@@ -413,12 +427,22 @@ func (s *AttestationStore) Record(rec AttestationRecord) error {
 	}
 	if s.primaryWriter != nil {
 		if err := s.primaryWriter(rec); err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("%w: %w", ErrAttestationAuditWriteFailed, err)
 		}
 	}
 	s.byID[rec.ID] = rec
 	s.version++
-	s.emit(AttestationEvent{Kind: AttestationEventRecord, Record: rec})
+	observers = append([]AttestationObserver(nil), s.observers...)
+	event = AttestationEvent{Kind: AttestationEventRecord, Record: rec}
+	shouldEmit = len(observers) > 0
+	s.mu.Unlock()
+
+	if shouldEmit {
+		for _, ob := range observers {
+			ob(event)
+		}
+	}
 	return nil
 }
 

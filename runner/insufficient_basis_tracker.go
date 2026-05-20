@@ -64,36 +64,38 @@ func (t *InsufficientBasisTracker) Record(arrowID, clauseID string, verdict Atte
 	if clauseID == "" {
 		return 0, false
 	}
+	// Gate-2 CONC-H-1: snapshot the state transitions under
+	// t.mu, then release the lock BEFORE publishing on the bus.
+	// Subscribers may call back into the tracker (e.g.
+	// `IsCrossed`); publishing inside the held lock would
+	// deadlock (sync.Mutex is non-reentrant).
+	var shouldPublish bool
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if verdict != AttestationInsufficientBasis {
-		// Reset on any non-insufficient-basis verdict.
 		delete(t.counts, clauseID)
 		delete(t.crossedClauses, clauseID)
+		t.mu.Unlock()
 		return 0, false
 	}
 	t.counts[clauseID]++
 	rounds = t.counts[clauseID]
-
-	// Gate-1 F-7 (Tier 2): the crossed state is sticky. Once
-	// rounds reaches max, every subsequent IB Record on this
-	// clause re-emits the escalation event until Reset clears
-	// it. The modal driver's inFlight set dedups so the operator
-	// gets one prompt at a time.
 	_, wasCrossed := t.crossedClauses[clauseID]
 	if t.max > 0 && (rounds >= t.max || wasCrossed) {
 		crossed = true
 		if !wasCrossed {
 			t.crossedClauses[clauseID] = struct{}{}
 		}
-		if t.bus != nil {
-			t.bus.Publish(OperatorEvent{
-				Kind:     OpEventInsufficientBasisRoundsExceeded,
-				ArrowID:  arrowID,
-				ClauseID: clauseID,
-				Detail:   "max-rounds-reached",
-			})
-		}
+		shouldPublish = t.bus != nil
+	}
+	t.mu.Unlock()
+
+	if shouldPublish {
+		t.bus.Publish(OperatorEvent{
+			Kind:     OpEventInsufficientBasisRoundsExceeded,
+			ArrowID:  arrowID,
+			ClauseID: clauseID,
+			Detail:   "max-rounds-reached",
+		})
 	}
 	return rounds, crossed
 }
