@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -175,10 +176,16 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("resolve workdir: %w", err)
 	}
 
-	// 1. Load config
+	// 1. Load config — auto-write the embedded default template on
+	// first run (C-2) so a fresh install does not hard-fail before
+	// the operator has had a chance to drop endpoints in place.
 	configPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "config.toml")
-	cfg, err := config.Load(configPath)
+	cfg, err := ensureConfig(configPath)
 	if err != nil {
+		if errors.Is(err, errConfigBootstrapped) {
+			ui.Status("ℹ", "wrote default config at %s; edit the model endpoints and re-run", configPath)
+			return nil
+		}
 		return err
 	}
 
