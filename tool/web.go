@@ -3,13 +3,16 @@ package tool
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/witlox/ghyll/internal/safefile"
 	"github.com/witlox/ghyll/types"
 )
 
@@ -148,6 +151,10 @@ func WebSearch(ctx context.Context, query, backendURL string, maxResults int, ti
 	}
 }
 
+// maxSearchResponseBytes caps WebSearch's body read at 1 MiB.
+// Tier 3 / SR C-7: previously unbounded io.ReadAll.
+const maxSearchResponseBytes int64 = 1 * 1024 * 1024
+
 func webSearchImpl(ctx context.Context, query, backendURL string, maxResults int, timeout time.Duration) types.ToolResult {
 	client := &http.Client{Timeout: timeout}
 
@@ -187,7 +194,11 @@ func webSearchImpl(ctx context.Context, query, backendURL string, maxResults int
 			return types.ToolResult{Error: fmt.Sprintf("search HTTP %d", resp.StatusCode)}
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		// Tier 3 / SR C-7: cap response body at
+		// maxSearchResponseBytes (1 MiB). Previously unbounded
+		// io.ReadAll could OOM the agent on a hostile / DNS-
+		// hijacked search backend returning a multi-GB payload.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = err
@@ -234,9 +245,20 @@ var (
 	reSearchURL = regexp.MustCompile(`(?i)href="(https?://[^"]*)"`)
 )
 
+// maxHTMLBytesForRegex caps the input to the regex-based HTML
+// stripper at 256 KiB. Tier 3 / SR M-2: <script[^>]*>.*?</script>
+// non-greedy regex over MiB-class buffers can CPU-stall via
+// backtracking on hostile input (missing close tag). Truncate
+// before passing; the LimitReader at the caller already caps at
+// maxReadBytes, but defense-in-depth.
+const maxHTMLBytesForRegex = 256 * 1024
+
 // htmlToMarkdown converts HTML to a basic markdown representation.
-func htmlToMarkdown(html string) string {
-	s := html
+func htmlToMarkdown(htmlIn string) string {
+	s := htmlIn
+	if len(s) > maxHTMLBytesForRegex {
+		s = s[:maxHTMLBytesForRegex]
+	}
 	// Remove scripts, styles, comments
 	s = reScript.ReplaceAllString(s, "")
 	s = reStyle.ReplaceAllString(s, "")
@@ -287,18 +309,40 @@ func htmlToMarkdown(html string) string {
 	// Strip remaining tags
 	s = reTag.ReplaceAllString(s, "")
 
-	// Clean up whitespace
-	s = strings.ReplaceAll(s, "&amp;", "&")
-	s = strings.ReplaceAll(s, "&lt;", "<")
-	s = strings.ReplaceAll(s, "&gt;", ">")
-	s = strings.ReplaceAll(s, "&quot;", `"`)
-	s = strings.ReplaceAll(s, "&#39;", "'")
-	s = strings.ReplaceAll(s, "&nbsp;", " ")
+	// Clean up whitespace. Tier 3 / SR M-1: full html.UnescapeString
+	// covers numeric entities (&#x202E; RTL override, &#xfeff; BOM)
+	// the hand-rolled list missed. Strip any control-class runes
+	// AND U+202D/U+202E afterward — RTL-override smuggling into the
+	// model's context would otherwise reorder the prompt text
+	// invisibly.
+	s = html.UnescapeString(s)
+	s = stripDangerousRunes(s)
 	s = reMultiSp.ReplaceAllString(s, " ")
 	s = reMultiNL.ReplaceAllString(s, "\n\n")
 	s = strings.TrimSpace(s)
 
 	return s
+}
+
+// stripDangerousRunes drops C0/C1 controls (except \n/\r/\t) and
+// Unicode format characters (Cf class — RTL/LTR overrides, ZWSP,
+// ZWJ). Tier 3 / SR M-1 helper.
+func stripDangerousRunes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7F:
+			// drop
+		case unicode.Is(unicode.Cf, r):
+			// drop format runes (RTL override, ZWSP, ZWJ, BOM, …)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // parseSearchResults extracts search results from HTML response.
@@ -312,16 +356,22 @@ func parseSearchResults(html string, maxResults int) string {
 		if len(m) < 2 {
 			continue
 		}
-		url := m[1]
+		u := m[1]
 		// Skip internal/navigation links
-		if strings.Contains(url, "duckduckgo") || strings.Contains(url, "javascript:") {
+		if strings.Contains(u, "duckduckgo") || strings.Contains(u, "javascript:") {
 			continue
 		}
-		if seen[url] {
+		// Tier 3 / SR L-7: scheme allowlist — refuse data://,
+		// file://, ext::, etc. that could otherwise flow into
+		// a later WebFetch call.
+		if err := safefile.ValidateURLScheme(u, "http", "https"); err != nil {
 			continue
 		}
-		seen[url] = true
-		results = append(results, url)
+		if seen[u] {
+			continue
+		}
+		seen[u] = true
+		results = append(results, u)
 		if len(results) >= maxResults {
 			break
 		}
@@ -332,8 +382,8 @@ func parseSearchResults(html string, maxResults int) string {
 	}
 
 	var lines []string
-	for i, url := range results {
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, url))
+	for i, u := range results {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, u))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -130,7 +130,17 @@ func (c *Client) SendStream(messages []map[string]any, onDelta OnDelta) (*Respon
 
 	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := c.opts.BaseBackoffMs * (1 << (attempt - 1))
+			// Tier 3 / SR L-6: clamp shift count at 6 so
+			// attempt-1 ≤ 6 → 1 << ≤ 64. Without the cap,
+			// MaxRetries > 31 overflowed the shift to a
+			// negative duration → time.Sleep no-op → hot
+			// retry loop against a persistently-erroring
+			// endpoint.
+			shift := attempt - 1
+			if shift > 6 {
+				shift = 6
+			}
+			backoff := c.opts.BaseBackoffMs * (1 << shift)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
 		}
 
@@ -274,6 +284,25 @@ type sseToolCallDelta struct {
 	} `json:"function"`
 }
 
+// Tier 3 / SR C-5 stream-protection caps:
+//
+//   - maxSSELineBytes: per-line buffer (bufio.Scanner). Default
+//     64 KiB is too small for some events; bumped to 1 MiB.
+//   - maxStreamContentBytes: total response content budget. A
+//     malicious endpoint emitting an infinite SSE stream of small
+//     deltas previously OOMed via the unbounded contentBuilder.
+//   - maxToolCallArgsBytes: per-tool-call Arguments accumulation
+//     cap. Same OOM class via existing.Function.Arguments += ...
+const (
+	maxSSELineBytes       = 1 << 20  // 1 MiB
+	maxStreamContentBytes = 16 << 20 // 16 MiB
+	maxToolCallArgsBytes  = 1 << 20  // 1 MiB per tool call
+)
+
+// ErrStreamSizeCap is returned by parseSSEStream when the
+// response exceeds the configured byte budget.
+var ErrStreamSizeCap = errors.New("stream: response exceeds size cap")
+
 func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 	result := &Response{}
 	var contentBuilder strings.Builder
@@ -281,6 +310,8 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 	gotDone := false
 
 	scanner := bufio.NewScanner(body)
+	// Tier 3 / SR C-5: bigger buffer for fat SSE frames.
+	scanner.Buffer(make([]byte, 0, 64<<10), maxSSELineBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -306,8 +337,16 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 
 		choice := event.Choices[0]
 
-		// Accumulate content and stream delta
+		// Accumulate content and stream delta. Tier 3 / SR C-5:
+		// abort if total exceeds budget.
 		if choice.Delta.Content != "" {
+			if contentBuilder.Len()+len(choice.Delta.Content) > maxStreamContentBytes {
+				return nil, &StreamError{
+					Retryable: false,
+					Message:   "stream content exceeds cap",
+					Err:       ErrStreamSizeCap,
+				}
+			}
 			contentBuilder.WriteString(choice.Delta.Content)
 			if onDelta != nil {
 				onDelta(choice.Delta.Content)
@@ -334,6 +373,14 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 				if tc.Function.Name != "" {
 					existing.Function.Name = tc.Function.Name
 				}
+				// Tier 3 / SR C-5: cap per-tool-call args.
+				if len(existing.Function.Arguments)+len(tc.Function.Arguments) > maxToolCallArgsBytes {
+					return nil, &StreamError{
+						Retryable: false,
+						Message:   "tool call arguments exceed cap",
+						Err:       ErrStreamSizeCap,
+					}
+				}
 				existing.Function.Arguments += tc.Function.Arguments
 			}
 		}
@@ -350,6 +397,16 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 				CompletionTokens: event.Usage.CompletionTokens,
 				TotalTokens:      event.Usage.TotalTokens,
 			}
+		}
+	}
+	// Tier 3 / SR C-5: scanner.Err must be inspected — silent
+	// truncation on bufio.ErrTooLong used to disappear into a
+	// short response with no signal.
+	if err := scanner.Err(); err != nil {
+		return nil, &StreamError{
+			Retryable: false,
+			Message:   "stream scanner: " + err.Error(),
+			Err:       err,
 		}
 	}
 
