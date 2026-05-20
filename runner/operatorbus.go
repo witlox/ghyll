@@ -62,6 +62,16 @@ const (
 
 	// Audit-trail events.
 	OpEventAttestationAuditDurabilityFailed OperatorEventKind = "attestation-audit-durability-failed"
+
+	// Recovery events (Tier 1, ADR-015 Part D). Emitted by
+	// engine.Recovery into RecoveryReport.Events, NOT to the bus
+	// (per F-18: the bus has zero subscribers at recovery time).
+	// session.Open is responsible for surfacing these on the
+	// chat-loop's first iteration.
+	OpEventRecoveryPassAbortedCrash       OperatorEventKind = "recovery-pass-aborted-crash"
+	OpEventRecoveryAttestationRepublished OperatorEventKind = "recovery-attestation-republished"
+	OpEventRecoveryAttestationReplay      OperatorEventKind = "recovery-attestation-replay"
+	OpEventRecoveryJSONLTruncated         OperatorEventKind = "recovery-jsonl-truncated"
 )
 
 // OperatorEventSubscriber receives events in publish order. Slow
