@@ -225,15 +225,19 @@ caller (PrimaryWriter) appends `path-truncated:<segment>` to
 
 ### F-18: Init arrow's target_role ambiguous
 
-**Disposition**: Adopt option (b) refined. Init attestations
-use:
-- role-pair: literal `"init"` (single segment, no `__`).
-- context: literal `"init"`.
-- stratum: literal `"init"`.
-- AttestedByRole: the operator role for the init pass (set by
-  `bootstrap.Session` at op-id declare time).
+**Disposition (revised gate-2 CORR-A-7, 2026-05-20)**: aligned
+to the BDD scenario at `specs/features/attestation.feature:230-235`.
+Init attestations use:
+- role-pair: `"init__<target>"` (e.g. `"init__analyst"`).
+- context: `"_"` (placeholder — init is project-scoped, not
+  context-scoped per `components/init.md` sub-phase A).
+- stratum: `"_"` (same rationale).
+- AttestedByRole: `"init"` (the literal role-name; case-insensitive
+  trigger for the init branch in EncodeAttestationPath).
 
-Updated in ADR-016 Part F step 2b.
+The earlier disposition (literal `"init"` for ALL three segments)
+was superseded when the BDD spec was finalized; the live code
+already followed the BDD form. This entry now matches reality.
 
 ### F-19: PrimaryWriter takes *Grid argument; lifecycle coupling
 

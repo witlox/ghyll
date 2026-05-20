@@ -99,13 +99,27 @@ func (w *AttestationTreeWriter) PrimaryWriter() func(AttestationRecord) error {
 		if err != nil {
 			return fmt.Errorf("tree-writer: encode path: %w", err)
 		}
-		if truncated && w.bus != nil {
-			w.bus.Publish(OperatorEvent{
-				Kind:    OpEventPathTruncated,
-				ArrowID: rec.ArrowID,
-				PassID:  rec.PassID,
-				Detail:  "path components hash-substituted; rec.Reason annotated",
-			})
+		if truncated {
+			// Gate-2 CORR-A-19 / gate-1 F-17: annotate rec.Reason
+			// with the truncation marker BEFORE the JSONL marshal
+			// + bus publish so the persisted record carries the
+			// signal. The immutable-record invariant doesn't
+			// apply pre-write — Record() hasn't fired yet from
+			// the PrimaryWriter's perspective.
+			marker := "path-truncated"
+			if rec.Reason == "" {
+				rec.Reason = marker
+			} else if !strings.Contains(rec.Reason, marker) {
+				rec.Reason = rec.Reason + "; " + marker
+			}
+			if w.bus != nil {
+				w.bus.Publish(OperatorEvent{
+					Kind:    OpEventPathTruncated,
+					ArrowID: rec.ArrowID,
+					PassID:  rec.PassID,
+					Detail:  "path components hash-substituted; rec.Reason annotated",
+				})
+			}
 		}
 		absPath := filepath.Join(w.root, path)
 

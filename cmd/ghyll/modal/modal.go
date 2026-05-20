@@ -115,13 +115,19 @@ func (m *TermModal) PresentVerdict(ctx context.Context, hint Hint) (VerdictSubmi
 	if m.Lines == nil {
 		return VerdictSubmission{}, fmt.Errorf("modal: TermModal.Lines is nil")
 	}
+	// Gate-2 SEC-H-5: every hint field originates upstream (grid-
+	// authored Concept, dispatcher-derived AttestationRef). A
+	// malicious grid could embed ANSI escape sequences that set
+	// the terminal title, reposition the cursor, or smuggle OSC-52
+	// clipboard writes. SanitizeLine strips all control bytes and
+	// non-printables before rendering.
 	writePrompt(m.Out,
 		"\n",
 		"── attestation request ─────────────────\n",
-		fmt.Sprintf("  arrow:           %s\n", hint.ArrowID),
-		fmt.Sprintf("  clause:          %s\n", hint.ClauseID),
-		fmt.Sprintf("  concept:         %s\n", hint.Concept),
-		fmt.Sprintf("  attestation-ref: %s\n", hint.AttestationRef),
+		fmt.Sprintf("  arrow:           %s\n", SanitizeLine(hint.ArrowID)),
+		fmt.Sprintf("  clause:          %s\n", SanitizeLine(hint.ClauseID)),
+		fmt.Sprintf("  concept:         %s\n", SanitizeLine(hint.Concept)),
+		fmt.Sprintf("  attestation-ref: %s\n", SanitizeLine(hint.AttestationRef)),
 		"────────────────────────────────────────\n",
 		"verdict? [pass / fail / insufficient-basis / skip]: ",
 	)
@@ -198,8 +204,8 @@ func (m *TermModal) PresentEscalation(ctx context.Context, hint Hint) (Escalatio
 	writePrompt(m.Out,
 		"\n",
 		"── escalation: 3 insufficient-basis rounds ──\n",
-		fmt.Sprintf("  arrow:    %s\n", hint.ArrowID),
-		fmt.Sprintf("  clause:   %s\n", hint.ClauseID),
+		fmt.Sprintf("  arrow:    %s\n", SanitizeLine(hint.ArrowID)),
+		fmt.Sprintf("  clause:   %s\n", SanitizeLine(hint.ClauseID)),
 		"  options:\n",
 		"    1) accept risk     (record residue note; finding → accepted-risk)\n",
 		"    2) route upstream  (record rationale; pass aborts; deeper-tier retry)\n",

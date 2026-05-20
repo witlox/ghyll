@@ -1619,8 +1619,16 @@ func (s *Session) handleAttestationsCommand(arrowArg string) SlashCommandResult 
 		if clause == "" {
 			clause = "<arrow-scope>"
 		}
+		// Gate-2 SEC-H-2: every operator-controlled field (ID, OpID,
+		// Reason) flows through sanitizeOneLine so a tampered JSONL
+		// row with ANSI escapes / control bytes can't smuggle them
+		// into the operator's terminal via /attestations output.
 		fmt.Fprintf(&b, "  %s  arrow=%s clause=%s verdict=%s op=%s\n",
-			r.ID, r.ArrowID, clause, r.Verdict, r.OpID)
+			sanitizeOneLine(r.ID),
+			sanitizeOneLine(r.ArrowID),
+			sanitizeOneLine(clause),
+			sanitizeOneLine(string(r.Verdict)),
+			sanitizeOneLine(r.OpID))
 	}
 	return SlashCommandResult{
 		Handled: true, ContinueLoop: true,
