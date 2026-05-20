@@ -283,19 +283,24 @@ func TestEngineAttestations_Journal_AttachAttestations_PersistsRecord(t *testing
 	}
 }
 
-// TestEngineAttestations_Replay_PopulatesRunnerStore covers the
-// reverse path: persisted rows replay back into a fresh
-// runner.AttestationStore before any other replay target.
-func TestEngineAttestations_Replay_PopulatesRunnerStore(t *testing.T) {
+// TestEngineAttestations_Replay_CountsPreLoadedRunnerStore tests
+// the Tier 1 ADR-015 Part C inversion: Replay no longer loads
+// from the engine table — the JSONL is the source of truth,
+// pre-loaded by session.Open. Replay's role for attestations is
+// reduced to counting whatever's already in the in-memory store.
+func TestEngineAttestations_Replay_CountsPreLoadedRunnerStore(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	// Persist three attestations directly (simulating a prior session).
+	// Simulate post-LoadFromJSONL: the in-memory store has rows;
+	// the engine table is empty (will catch up via
+	// store.CatchUpAttestations in session.Open).
+	atts := runner.NewAttestationStore()
 	for _, rec := range []runner.AttestationRecord{
 		sampleDepthTypeRecord(),
 		sampleOnTheSpotRecord(),
 	} {
-		if err := store.insertAttestation(ctx, rec); err != nil {
+		if err := atts.Record(rec); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -305,14 +310,14 @@ func TestEngineAttestations_Replay_PopulatesRunnerStore(t *testing.T) {
 		Classifications: runner.NewClassificationsStore(),
 		Grid:            runner.NewGrid(),
 		Amendments:      runner.NewAmendmentQueue(),
-		Attestations:    runner.NewAttestationStore(),
+		Attestations:    atts,
 	}
 	counts, err := Replay(ctx, store, targets)
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 	if counts.Attestations != 2 {
-		t.Errorf("counts.Attestations = %d; want 2", counts.Attestations)
+		t.Errorf("counts.Attestations = %d; want 2 (pre-loaded count)", counts.Attestations)
 	}
 	if targets.Attestations.Len() != 2 {
 		t.Errorf("runner store has %d; want 2", targets.Attestations.Len())

@@ -181,15 +181,16 @@ func (w *AttestationJSONLWriter) LastError() error {
 	return w.lastErr
 }
 
-// TruncateAt seeks the underlying file to offset and truncates
-// everything past it. Called by session.Open once after a Recovery
-// signal that LoadFromJSONL detected a truncated trailing line
-// (F-6). The next Record overwrites the partial bytes; new
-// records append cleanly.
+// TruncateTrailingPartial scans the file backward for the last
+// newline byte and truncates everything after it. Called by
+// session.Open once after a Recovery signal that LoadFromJSONL
+// detected a truncated trailing line (F-6). The next Record
+// overwrites the partial bytes; new records append cleanly.
 //
 // No-op when the underlying writer is not an *os.File (the test-
-// only constructor uses a bytes.Buffer with no truncation surface).
-func (w *AttestationJSONLWriter) TruncateAt(offset int64) error {
+// only constructor uses a bytes.Buffer with no truncation surface)
+// or when the file has no partial trailing line.
+func (w *AttestationJSONLWriter) TruncateTrailingPartial() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -199,14 +200,57 @@ func (w *AttestationJSONLWriter) TruncateAt(offset int64) error {
 	if !ok {
 		return nil
 	}
-	if err := f.Truncate(offset); err != nil {
-		return fmt.Errorf("attestation-jsonl: truncate %s @%d: %w", w.path, offset, err)
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("attestation-jsonl: stat %s: %w", w.path, err)
 	}
-	if _, err := f.Seek(offset, 0); err != nil {
-		return fmt.Errorf("attestation-jsonl: seek %s @%d: %w", w.path, offset, err)
+	size := stat.Size()
+	if size == 0 {
+		return nil
 	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("attestation-jsonl: sync after truncate %s: %w", w.path, err)
+	// Read backward looking for the last newline. JSONL records are
+	// well under 64KB; a single 64KB read from end-N is sufficient
+	// in practice. For larger trailing partials the scan loops.
+	const chunk int64 = 64 * 1024
+	for end := size; end > 0; {
+		readFrom := end - chunk
+		if readFrom < 0 {
+			readFrom = 0
+		}
+		buf := make([]byte, end-readFrom)
+		if _, err := f.ReadAt(buf, readFrom); err != nil {
+			return fmt.Errorf("attestation-jsonl: read-back %s: %w", w.path, err)
+		}
+		// Search the buffer for the rightmost \n.
+		for i := len(buf) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				cutAt := readFrom + int64(i) + 1
+				if cutAt == size {
+					return nil // no trailing partial
+				}
+				if err := f.Truncate(cutAt); err != nil {
+					return fmt.Errorf("attestation-jsonl: truncate %s @%d: %w", w.path, cutAt, err)
+				}
+				if _, err := f.Seek(cutAt, 0); err != nil {
+					return fmt.Errorf("attestation-jsonl: seek %s @%d: %w", w.path, cutAt, err)
+				}
+				if err := f.Sync(); err != nil {
+					return fmt.Errorf("attestation-jsonl: sync %s: %w", w.path, err)
+				}
+				return nil
+			}
+		}
+		if readFrom == 0 {
+			// Whole file has no newline → whole file is a partial.
+			if err := f.Truncate(0); err != nil {
+				return fmt.Errorf("attestation-jsonl: truncate %s @0: %w", w.path, err)
+			}
+			if _, err := f.Seek(0, 0); err != nil {
+				return fmt.Errorf("attestation-jsonl: seek %s @0: %w", w.path, err)
+			}
+			return f.Sync()
+		}
+		end = readFrom
 	}
 	return nil
 }

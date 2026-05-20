@@ -76,22 +76,20 @@ func Replay(ctx context.Context, store *Store, targets ReplayTargets) (ReplayCou
 		return c, err
 	}
 
-	// 0. Attestations (ADR-010) — replay FIRST so a clause's
-	//    DepthTypeAttestationRef can be resolved through the
-	//    in-memory store as soon as the grid is loaded. Optional:
-	//    skip if targets.Attestations is nil.
+	// Attestations: Tier 1 (ADR-015 Part C) inverts ADR-010 — the
+	// JSONL audit file is the source of truth. session.Open calls
+	// AttestationStore.LoadFromJSONL BEFORE Replay; the engine
+	// table is a derived cache that catches up from the in-memory
+	// store. Replay therefore skips the engine-table → in-memory
+	// load entirely. The engine catches up via
+	// Store.CatchUpAttestations(ctx, store) called by session.Open
+	// post-Load.
+	//
+	// targets.Attestations.Version() may legitimately be > 0 at this
+	// point because LoadFromJSONL populated it; ensureEmpty no
+	// longer flags that case (see below).
 	if targets.Attestations != nil {
-		records, err := store.listAttestations(ctx)
-		if err != nil {
-			return c, fmt.Errorf("replay attestations: %w", err)
-		}
-		for _, rec := range records {
-			if err := targets.Attestations.Record(rec); err != nil {
-				c.Errors = append(c.Errors, fmt.Sprintf("attestation %s: %v", safeID(rec.ID), err))
-				continue
-			}
-			c.Attestations++
-		}
+		c.Attestations = len(targets.Attestations.All())
 	}
 
 	// 1. Grid arrows (latest version per ID).
@@ -219,10 +217,10 @@ func ensureEmpty(t ReplayTargets) error {
 	if t.Amendments.Len() != 0 {
 		return fmt.Errorf("%w: amendments", ErrReplayCachesNotEmpty)
 	}
-	// Attestations target is optional; only check when supplied.
-	if t.Attestations != nil && t.Attestations.Version() != 0 {
-		return fmt.Errorf("%w: attestations", ErrReplayCachesNotEmpty)
-	}
+	// Attestations: Tier 1 ADR-015 Part C — JSONL is source of
+	// truth, loaded BEFORE Replay, so a non-empty cache here is
+	// EXPECTED and required for Recovery's JOIN-based detection.
+	// The previous "must be empty" check is dropped.
 	return nil
 }
 

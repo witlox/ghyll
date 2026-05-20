@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
@@ -66,12 +67,26 @@ type engineRuntime struct {
 	treeWriter   *runner.AttestationTreeWriter
 
 	dbPath string
+	// jsonlPath is the path to .ghyll/attestations.jsonl (resolved
+	// once at openEngine + reused at LoadFromJSONL).
+	jsonlPath string
 	// workdir is the resolved project root; needed by the JSONL
 	// writer to land .ghyll/attestations.jsonl alongside engine.db.
 	workdir string
 	// ibRoundsMax is the configured `insufficient-basis-rounds-max`
 	// threshold (bootstrap.GridFile). Zero disables escalation.
 	ibRoundsMax int
+
+	// recoveryReport captures the engine.Recovery output for
+	// session.Open to surface to the operator on chat-loop start.
+	// Tier 1 (ADR-015 Part D). Empty when recovery was a no-op.
+	recoveryReport engine.RecoveryReport
+	// jsonlTruncated is set by openEngine's LoadFromJSONL when the
+	// audit file's trailing line was partial (F-6 lenient mode).
+	// attachJournal calls AttestationJSONLWriter.TruncateAt after
+	// the journal is wired so the next Record overwrites the bad
+	// bytes cleanly.
+	jsonlTruncated bool
 
 	lifecycleMu     sync.Mutex
 	replayDone      bool
@@ -145,6 +160,37 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 		workdir:         workdir,
 		ibRoundsMax:     ibRoundsMax,
 	}
+	rt.jsonlPath = filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
+
+	// Tier 1 (ADR-015 Part C): JSONL is source of truth. Load
+	// records from the audit file BEFORE engine.Replay so the
+	// in-memory attestations cache is authoritative; Replay then
+	// catches up the engine table from the in-memory state.
+	// engineHasRows tells LoadFromJSONL whether a missing file is
+	// fresh (count=0 OK) or fatal (count>0 → audit lost).
+	attCount, attErr := store.CountAttestations(context.Background())
+	if attErr != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("count attestations: %w", attErr)
+	}
+	loaded, truncated, loadErr := rt.attestations.LoadFromJSONL(rt.jsonlPath, attCount > 0)
+	if loadErr != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("load attestation jsonl: %w", loadErr)
+	}
+	rt.jsonlTruncated = truncated
+	if logger != nil && (loaded > 0 || truncated) {
+		logger.Info("engine: attestation jsonl loaded",
+			"path", rt.jsonlPath, "loaded", loaded, "truncated", truncated)
+	}
+	// Engine cache catches up from JSONL before Replay/Recovery
+	// (ADR-015 Part C). Recovery's JOIN-based detection consults
+	// the engine table, so the catch-up MUST happen before
+	// Recovery runs.
+	if _, err := store.CatchUpAttestations(context.Background(), rt.attestations); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("catch-up attestations: %w", err)
+	}
 
 	// JSONL audit writer is CONSTRUCTED here but NOT subscribed
 	// yet — subscription happens in attachJournal AFTER replay so
@@ -153,13 +199,12 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 	// Failure to construct the writer is non-fatal (the engine
 	// table is the source of truth per ADR-010); we surface via
 	// slog and continue with the JSONL observer disabled.
-	jsonlPath := filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
-	jw, jerr := runner.NewAttestationJSONLWriter(jsonlPath)
+	jw, jerr := runner.NewAttestationJSONLWriter(rt.jsonlPath)
 	if jerr == nil {
 		rt.jsonlWriter = jw.WithBus(rt.bus)
 	} else if logger != nil {
 		logger.Warn("engine: attestation JSONL writer unavailable",
-			"path", jsonlPath, "err", jerr)
+			"path", rt.jsonlPath, "err", jerr)
 	}
 
 	// Per-role-pair JSONL tree per the operator-attestation spec.
@@ -239,12 +284,42 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 		Amendments:      r.amendments,
 		Attestations:    r.attestations,
 	})
-	if err == nil {
-		r.lifecycleMu.Lock()
-		r.replayDone = true
-		r.lifecycleMu.Unlock()
+	if err != nil {
+		return counts, err
 	}
-	return counts, err
+	// Tier 1 (ADR-015 Part D): run Recovery immediately after a
+	// clean Replay, BEFORE attachJournal. Recovery's writes go
+	// directly to the store; without observers attached, they don't
+	// re-journal. F-13: Recovery refuses on dirty replay (counts.Errors
+	// non-empty).
+	report, recErr := engine.Recovery(ctx, engine.RecoveryDeps{
+		Store:        r.store,
+		Passes:       r.passes,
+		Attestations: r.attestations,
+		LockTable:    r.roleLocks,
+		IBTracker:    r.ibTracker,
+		JSONLPath:    r.jsonlPath,
+		Now:          time.Now,
+	}, counts)
+	if recErr != nil {
+		return counts, fmt.Errorf("engine recovery: %w", recErr)
+	}
+	r.recoveryReport = report
+
+	r.lifecycleMu.Lock()
+	r.replayDone = true
+	r.lifecycleMu.Unlock()
+	return counts, nil
+}
+
+// RecoveryReport returns the captured Recovery output from the
+// most recent replayEngine call. Empty when Recovery was a no-op
+// or has not run.
+func (r *engineRuntime) RecoveryReport() engine.RecoveryReport {
+	if r == nil {
+		return engine.RecoveryReport{}
+	}
+	return r.recoveryReport
 }
 
 // attachJournal wires the journal to every observer surface. Per
@@ -277,14 +352,23 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	// (ADR-010). Attach AFTER replay so replayed Record calls don't
 	// re-enqueue rows that are already in the table.
 	r.journal.AttachAttestations(r.attestations)
+	// Tier 1: passes persist via PassRegistry observer.
+	r.journal.AttachPasses(r.passes)
 
-	// JSONL audit writer subscribes post-replay so the replayed
-	// Record calls (which fire during replayEngine) don't double-
-	// append to the on-disk audit file. The engine table is the
-	// durable source of truth (ADR-010); the JSONL is a forward-
-	// only audit trail of THIS SESSION's verdicts.
+	// Tier 1 (ADR-015 Part C): JSONL is source of truth. Set the
+	// primaryWriter so AttestationStore.Record blocks on a JSONL
+	// fsync failure (ErrAttestationAuditWriteFailed) instead of
+	// silently mutating byID with a missing audit row. Failure
+	// modes covered: disk full, fsync error, writer closed.
 	if r.jsonlWriter != nil {
-		r.attestations.Observe(r.jsonlWriter.Observer())
+		r.attestations.SetPrimaryWriter(r.jsonlWriter.PrimaryWriter())
+		// Truncate the trailing partial line (if Load detected one)
+		// so the next Record overwrites it cleanly (F-6).
+		if r.jsonlTruncated {
+			if err := r.jsonlWriter.TruncateTrailingPartial(); err != nil {
+				logger.Warn("engine: jsonl truncate failed", "err", err)
+			}
+		}
 	}
 
 	// Per-role-pair tree writer: same post-replay subscription

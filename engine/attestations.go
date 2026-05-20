@@ -148,6 +148,29 @@ func (s *Store) listAttestations(ctx context.Context) ([]runner.AttestationRecor
 // no attestations exist on a pre-v2 schema. Upgrade is automatic
 // the next time a v2 binary opens the store via OpenStore (NOT
 // OpenStoreReadOnly), which runs the schema DDL.
+// CatchUpAttestations writes every record from the in-memory
+// AttestationStore into the engine `attestations` table via
+// insertAttestation (idempotent on conflict). Per ADR-015 Part C
+// the JSONL is the source of truth; this function keeps the
+// derived engine cache in sync at session start AFTER
+// AttestationStore.LoadFromJSONL has populated the in-memory
+// state. Called by session.Open between Load and Recovery so
+// Recovery's JOIN-based attestation-pending detection sees the
+// authoritative state.
+func (s *Store) CatchUpAttestations(ctx context.Context, src *runner.AttestationStore) (int, error) {
+	if s == nil || src == nil {
+		return 0, nil
+	}
+	count := 0
+	for _, rec := range src.All() {
+		if err := s.insertAttestation(ctx, rec); err != nil {
+			return count, fmt.Errorf("catch-up attestation %s: %w", rec.ID, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 func (s *Store) CountAttestations(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM attestations`).Scan(&n)
