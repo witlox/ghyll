@@ -184,11 +184,34 @@ func (d *modalDriver) enqueueEscalation(ev runner.OperatorEvent) {
 	// AttestationRecord which requires an ID. We derive it from
 	// (arrow, clause, grid-version) so re-presentations of the
 	// same escalation hit the dedup set.
+	//
+	// Gate-2 CONC-H-6: if arrowResolver returns false (orphan
+	// arrow, post-grid-swap), gridVer=0 would yield a ref that
+	// diverges from the dispatcher's attestation-requested ref
+	// (which uses the live grid version) → duplicate records
+	// written, dedup broken. Refuse to enqueue the escalation
+	// and publish a typed event so the operator sees the
+	// orphaned IB stall instead of getting a stale resolution
+	// modal.
 	var gridVer uint64
+	resolverOK := false
 	if d.arrowResolver != nil {
 		if r, ok := d.arrowResolver(ev.ArrowID); ok {
 			gridVer = r.GridVersion
+			resolverOK = true
 		}
+	}
+	if !resolverOK || gridVer == 0 {
+		if d.bus != nil {
+			d.bus.Publish(runner.OperatorEvent{
+				Kind:     runner.OpEventModalBackpressure,
+				ArrowID:  ev.ArrowID,
+				ClauseID: ev.ClauseID,
+				PassID:   ev.PassID,
+				Detail:   "escalation refused: arrow not in grid or gridVersion=0",
+			})
+		}
+		return
 	}
 	attRef := runner.ComputeAttestationID(
 		runner.AttestationKindDepthType,
@@ -423,6 +446,14 @@ func (d *modalDriver) handleVerdict(ctx context.Context, req modalRequest) error
 }
 
 func (d *modalDriver) handleEscalation(ctx context.Context, req modalRequest) error {
+	choice, err := d.prompt.PresentEscalation(ctx, req.hint)
+	if err != nil {
+		return err
+	}
+	// Gate-2 CONC-H-5: publish OpEventEscalationPresented AFTER
+	// PresentEscalation returns successfully so retries (ctx-cancel
+	// + requeue) don't double-publish without a matching resolved
+	// event. The "one resolved per presented" invariant now holds.
 	if d.bus != nil {
 		d.bus.Publish(runner.OperatorEvent{
 			Kind:     runner.OpEventEscalationPresented,
@@ -430,10 +461,6 @@ func (d *modalDriver) handleEscalation(ctx context.Context, req modalRequest) er
 			PassID:   req.passID,
 			ClauseID: req.clauseID,
 		})
-	}
-	choice, err := d.prompt.PresentEscalation(ctx, req.hint)
-	if err != nil {
-		return err
 	}
 	// Option 1 (accept-risk + residue) → AttestationPass with the
 	// residue note: operator decides the basis is sufficient

@@ -266,7 +266,22 @@ type AggregateResult struct {
 // Either path may be missing (fresh project) — VerifyAggregate-
 // Consistency tolerates that case and returns a zero AggregateResult
 // + nil error.
+//
+// Gate-2 SEC-H-3: legacy variant. Use VerifyAggregateConsistencyVs
+// when an engine row count is available so the verifier can
+// surface "both audit surfaces wiped, engine has rows" as a
+// hard failure (ErrAttestationAuditLost).
 func (v *AttestationVerifier) VerifyAggregateConsistency(flatPath, treeRoot string) (AggregateResult, error) {
+	return v.VerifyAggregateConsistencyVs(flatPath, treeRoot, 0)
+}
+
+// VerifyAggregateConsistencyVs is the engine-row-aware variant.
+// engineRowCount is the COUNT(*) from the attestations table at
+// verifier-run time. When both flat + tree load zero records but
+// engineRowCount > 0, returns ErrAttestationAuditLost wrapping
+// the diff summary — an attacker who wiped the audit surfaces
+// no longer gets a clean verifier report.
+func (v *AttestationVerifier) VerifyAggregateConsistencyVs(flatPath, treeRoot string, engineRowCount int) (AggregateResult, error) {
 	res := AggregateResult{}
 	flatStore := NewAttestationStore()
 	if flatPath != "" {
@@ -307,6 +322,12 @@ func (v *AttestationVerifier) VerifyAggregateConsistency(flatPath, treeRoot stri
 		if _, ok := flatByID[id]; !ok {
 			res.OnlyInTree = append(res.OnlyInTree, id)
 		}
+	}
+	// Gate-2 SEC-H-3: both surfaces empty AND engine has rows →
+	// audit lost (attacker pre-startup wiped attestations*).
+	if res.FlatLoaded == 0 && res.TreeLoaded == 0 && engineRowCount > 0 {
+		return res, fmt.Errorf("%w: flat+tree empty but engine has %d rows",
+			ErrAttestationAuditLost, engineRowCount)
 	}
 	if len(res.OnlyInFlat)+len(res.OnlyInTree)+len(res.DivergentByID) > 0 {
 		return res, fmt.Errorf("%w: only-in-flat=%d only-in-tree=%d divergent=%d",
