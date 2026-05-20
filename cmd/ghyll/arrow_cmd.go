@@ -91,6 +91,22 @@ func cmdArrowShow(args []string) error {
 	grid := runner.NewGrid()
 	amendments := runner.NewAmendmentQueue()
 	attestations := runner.NewAttestationStore()
+
+	// C-5 (G2-I-2): Tier 1 (ADR-015 Part C) makes JSONL the source
+	// of truth for attestations. engine.Replay no longer loads them
+	// from the engine table; callers must load from JSONL FIRST and
+	// optionally catch the engine cache up. cmdArrowShow only
+	// READS, so a catch-up is unnecessary — but the JSONL load is
+	// required for the "attestations: N" column to render the
+	// correct count.
+	jsonlPath := filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
+	attCount, attCountErr := store.CountAttestations(ctx)
+	if attCountErr != nil {
+		return fmt.Errorf("count attestations: %w", attCountErr)
+	}
+	if _, _, err := attestations.LoadFromJSONL(jsonlPath, attCount > 0); err != nil {
+		return fmt.Errorf("load attestation jsonl: %w", err)
+	}
 	if _, err := engine.Replay(ctx, store, engine.ReplayTargets{
 		Findings:        caches,
 		Classifications: classifications,

@@ -42,6 +42,7 @@ type RecoveryDeps struct {
 	Passes       *runner.PassRegistry
 	Attestations *runner.AttestationStore
 	LockTable    *runner.RoleContextLockTable
+	Bus          *runner.OperatorBus              // wired into Resumed *Pass so its close emits to the bus (G2-I-5)
 	IBTracker    *runner.InsufficientBasisTracker // optional
 	JSONLPath    string                           // for forensic detail; recovery itself doesn't re-read
 	Now          func() time.Time                 // F-12 idempotence injection
@@ -57,6 +58,7 @@ type RecoveryReport struct {
 	OrphansPreserved      int
 	AttestationsReplayed  int
 	EvaluationRunsFlipped int
+	JSONLTruncatedSkipped int // bytes past last complete JSONL line that were skipped at session start
 	Events                []runner.OperatorEvent
 }
 
@@ -76,6 +78,10 @@ const recoverySource = "recovery-attestation-replay"
 // MUST be called AFTER engine.Replay and BEFORE the live Journal
 // observers attach. Returns RecoveryReport with per-step counts +
 // the audit-trail events for session.Open to surface.
+//
+// Owns its own sqlite transaction. For the CLI dry-run path (which
+// rolls back its own transaction), use RecoveryInTx with an
+// external *sql.Tx.
 func Recovery(
 	ctx context.Context,
 	deps RecoveryDeps,
@@ -91,43 +97,125 @@ func Recovery(
 		deps.Now = time.Now
 	}
 
-	run := &recoveryRun{deps: deps}
-
-	// F-10: single transaction wrap so concurrent read-only CLIs
-	// see pre- or post-recovery atomically.
 	tx, err := deps.Store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RecoveryReport{}, fmt.Errorf("recovery: BeginTx: %w", err)
 	}
-	defer func() {
-		// On error / panic the deferred Rollback runs; on commit
-		// Rollback is a no-op (sql package contract).
-		_ = tx.Rollback()
-	}()
-	run.tx = tx
+	defer func() { _ = tx.Rollback() }()
 
-	orphans, err := run.orphanScan(ctx)
+	preservedSet, report, err := recoveryEngineWrites(ctx, tx, deps)
 	if err != nil {
 		return RecoveryReport{}, err
 	}
-	preserved, remaining, err := run.attestationPendingScan(ctx, orphans)
-	if err != nil {
-		return RecoveryReport{}, err
-	}
-	if err := run.preserveOpen(ctx, preserved); err != nil {
-		return RecoveryReport{}, err
-	}
-	if err := run.orphanAbort(ctx, remaining); err != nil {
-		return RecoveryReport{}, err
-	}
-	if err := run.evaluationRunReconcile(ctx); err != nil {
-		return RecoveryReport{}, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return RecoveryReport{}, fmt.Errorf("recovery: Commit: %w", err)
 	}
-	return run.report, nil
+	// H-2 (G2-F-6): in-memory PassRegistry.Resume + LockTable mutations
+	// happen AFTER the transaction commits so a transaction rollback
+	// can't leave them stranded. The engine row IS the source of
+	// truth post-commit; failure here is logged via report events
+	// but does not undo the engine state.
+	applyResumeForPreserved(deps, preservedSet, &report)
+	return report, nil
+}
+
+// RecoveryInTx runs the same scan as Recovery but against a
+// caller-supplied *sql.Tx. The caller commits or rolls back.
+// Used by the `ghyll engine recover --dry-run` CLI (G2-F-2 /
+// G2-I-1 remediation): the CLI begins a tx it ALWAYS rolls back,
+// so Recovery must not commit on its own.
+//
+// In-memory PassRegistry.Resume is NOT applied — dry-run is
+// engine-only; a real session.Open would call Recovery (not
+// RecoveryInTx) to get the post-commit Resume side effect.
+func RecoveryInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	deps RecoveryDeps,
+	replayCounts ReplayCounts,
+) (RecoveryReport, error) {
+	if len(replayCounts.Errors) > 0 {
+		return RecoveryReport{}, fmt.Errorf("%w: %d row errors", ErrRecoveryReplayDirty, len(replayCounts.Errors))
+	}
+	if tx == nil {
+		return RecoveryReport{}, errors.New("recovery-in-tx: nil tx")
+	}
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	_, report, err := recoveryEngineWrites(ctx, tx, deps)
+	return report, err
+}
+
+// recoveryEngineWrites runs the five scan steps inside the
+// provided tx and returns the set of passes that need
+// post-commit Resume. The engine writes (orphan abort,
+// preserve UPDATE, evaluation_run reconcile) are all
+// transactional. Resume itself is not — see applyResumeForPreserved.
+func recoveryEngineWrites(ctx context.Context, tx *sql.Tx, deps RecoveryDeps) (
+	preserved []preservedPass, report RecoveryReport, err error,
+) {
+	run := &recoveryRun{tx: tx, deps: deps}
+	orphans, err := run.orphanScan(ctx)
+	if err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	preservedSet, remaining, err := run.attestationPendingScan(ctx, orphans)
+	if err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	if err := run.preserveOpen(ctx, preservedSet); err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	if err := run.orphanAbort(ctx, remaining); err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	if err := run.evaluationRunReconcile(ctx); err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	return preservedSet, run.report, nil
+}
+
+// applyResumeForPreserved rebuilds the in-memory PassRegistry +
+// lock-table state for every preserved pass. Runs AFTER the
+// engine transaction commits so the engine row is durable
+// before any in-memory side effect. Failures here are emitted
+// via report.Events but do NOT undo engine state.
+func applyResumeForPreserved(deps RecoveryDeps, preserved []preservedPass, report *RecoveryReport) {
+	if deps.Passes == nil || deps.LockTable == nil {
+		return
+	}
+	now := deps.Now()
+	for _, item := range preserved {
+		openedAt, parseErr := time.Parse(time.RFC3339Nano, item.Pass.OpenedAt)
+		if parseErr != nil {
+			openedAt = now
+			report.Events = append(report.Events, runner.OperatorEvent{
+				Kind:    runner.OpEventRecoveryAttestationRepublished,
+				PassID:  item.Pass.PassID,
+				ArrowID: item.ArrowID,
+				Detail:  "WARNING unparseable opened_at; falling back to now: " + parseErr.Error(),
+			})
+		}
+		opts := runner.ResumeOptions{
+			PassID:      item.Pass.PassID,
+			Role:        item.Pass.Role,
+			Context:     item.Pass.Context,
+			ArrowID:     item.Pass.ArrowID,
+			GridVersion: item.Pass.GridVersion,
+			OpenedAt:    openedAt,
+			Bus:         deps.Bus,
+			Now:         func() time.Time { return now },
+		}
+		if _, err := deps.Passes.Resume(opts, deps.LockTable); err != nil {
+			report.Events = append(report.Events, runner.OperatorEvent{
+				Kind:    runner.OpEventRecoveryAttestationRepublished,
+				PassID:  item.Pass.PassID,
+				ArrowID: item.ArrowID,
+				Detail:  "WARNING resume failed: " + err.Error(),
+			})
+		}
+	}
 }
 
 // recoveryRun groups the in-flight transaction + accumulated
@@ -215,9 +303,10 @@ func (r *recoveryRun) attestationPendingScan(
 	return preserved, remaining, nil
 }
 
-// preserveOpen marks the preserved set with recovered_at and calls
-// PassRegistry.Resume so the live registry shows them. Emits one
-// recovery-attestation-republished event per preserved pass.
+// preserveOpen marks the preserved set with recovered_at inside
+// the transaction. In-memory PassRegistry.Resume happens later via
+// applyResumeForPreserved (H-2 / G2-F-6) so a transaction rollback
+// can't strand in-memory state.
 func (r *recoveryRun) preserveOpen(ctx context.Context, preserved []preservedPass) error {
 	if len(preserved) == 0 {
 		return nil
@@ -231,33 +320,6 @@ func (r *recoveryRun) preserveOpen(ctx context.Context, preserved []preservedPas
 			WHERE  pass_id = ? AND recovered_at = ''
 		`, stamp, item.Pass.PassID); err != nil {
 			return fmt.Errorf("preserveOpen UPDATE %s: %w", safeID(item.Pass.PassID), err)
-		}
-		// PassRegistry.Resume rebuilds the in-memory *Pass + re-
-		// acquires the lock token. Failure here is logged but the
-		// engine row is still preserved (sqlite is the source of
-		// truth for recovery decisions).
-		if r.deps.Passes != nil && r.deps.LockTable != nil {
-			openedAt, _ := time.Parse(time.RFC3339Nano, item.Pass.OpenedAt)
-			if _, err := r.deps.Passes.Resume(runner.ResumeOptions{
-				PassID:      item.Pass.PassID,
-				Role:        item.Pass.Role,
-				Context:     item.Pass.Context,
-				ArrowID:     item.Pass.ArrowID,
-				GridVersion: item.Pass.GridVersion,
-				OpenedAt:    openedAt,
-				Now:         func() time.Time { return now },
-			}, r.deps.LockTable); err != nil {
-				// Defensive: a process fresh after crash has an empty
-				// lock table; Resume should not fail. Log via the
-				// report's events slice so the operator sees it.
-				r.report.Events = append(r.report.Events, runner.OperatorEvent{
-					Kind:    runner.OpEventRecoveryAttestationRepublished,
-					ArrowID: item.ArrowID,
-					PassID:  item.Pass.PassID,
-					Detail:  "WARNING resume failed: " + err.Error(),
-				})
-				continue
-			}
 		}
 		r.report.OrphansPreserved++
 		r.report.Events = append(r.report.Events, runner.OperatorEvent{

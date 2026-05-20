@@ -87,6 +87,10 @@ type engineRuntime struct {
 	// the journal is wired so the next Record overwrites the bad
 	// bytes cleanly.
 	jsonlTruncated bool
+	// catchUpOverrideEvents captures content-conflict overrides
+	// surfaced by CatchUpAttestations (H-3 / G2-F-7). session.Open
+	// folds these into the recovery banner.
+	catchUpOverrideEvents []runner.OperatorEvent
 
 	lifecycleMu     sync.Mutex
 	replayDone      bool
@@ -186,11 +190,15 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 	// Engine cache catches up from JSONL before Replay/Recovery
 	// (ADR-015 Part C). Recovery's JOIN-based detection consults
 	// the engine table, so the catch-up MUST happen before
-	// Recovery runs.
-	if _, err := store.CatchUpAttestations(context.Background(), rt.attestations); err != nil {
+	// Recovery runs. H-3 (G2-F-7): wrapped in a transaction; on
+	// content conflict JSONL wins; override events surfaced via
+	// the recoveryReport on session.Open.
+	_, overrideEvents, err := store.CatchUpAttestations(context.Background(), rt.attestations)
+	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("catch-up attestations: %w", err)
 	}
+	rt.catchUpOverrideEvents = overrideEvents
 
 	// JSONL audit writer is CONSTRUCTED here but NOT subscribed
 	// yet — subscription happens in attachJournal AFTER replay so
@@ -297,12 +305,23 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 		Passes:       r.passes,
 		Attestations: r.attestations,
 		LockTable:    r.roleLocks,
+		Bus:          r.bus, // G2-I-5: resumed passes bridge to bus
 		IBTracker:    r.ibTracker,
 		JSONLPath:    r.jsonlPath,
 		Now:          time.Now,
 	}, counts)
 	if recErr != nil {
 		return counts, fmt.Errorf("engine recovery: %w", recErr)
+	}
+	// C-4 / G2-F-4: surface JSONL truncation through RecoveryReport
+	// so session.Open's banner picks it up; the bus has zero
+	// subscribers at this point (F-18 invariant).
+	if r.jsonlTruncated {
+		report.JSONLTruncatedSkipped = 1 // event count; the byte offset is in the writer
+		report.Events = append(report.Events, runner.OperatorEvent{
+			Kind:   runner.OpEventRecoveryJSONLTruncated,
+			Detail: "trailing partial line in " + r.jsonlPath + " skipped at load",
+		})
 	}
 	r.recoveryReport = report
 
@@ -329,6 +348,12 @@ func (r *engineRuntime) RecoveryReport() engine.RecoveryReport {
 func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	if r == nil {
 		return errors.New("engine: nil runtime")
+	}
+	// H-1 (G2-F-5): hoist the nil-logger guard so every subsequent
+	// logger.X call in attachJournal is safe even when callers
+	// (session.go:281) pass nil.
+	if logger == nil {
+		logger = slog.Default()
 	}
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()

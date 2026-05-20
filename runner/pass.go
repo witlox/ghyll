@@ -78,12 +78,13 @@ type PassOptions struct {
 
 // ErrPassRoleEmpty etc. — explicit sentinels for invalid Open.
 var (
-	ErrPassIDEmpty      = errors.New("pass-id-empty")
-	ErrPassRoleEmpty    = errors.New("pass-role-empty")
-	ErrPassContextEmpty = errors.New("pass-context-empty")
-	ErrPassArrowEmpty   = errors.New("pass-arrow-empty")
-	ErrPassLockTableNil = errors.New("pass-lock-table-nil")
-	ErrPassNotOpen      = errors.New("pass-not-open")
+	ErrPassIDEmpty            = errors.New("pass-id-empty")
+	ErrPassRoleEmpty          = errors.New("pass-role-empty")
+	ErrPassContextEmpty       = errors.New("pass-context-empty")
+	ErrPassArrowEmpty         = errors.New("pass-arrow-empty")
+	ErrPassLockTableNil       = errors.New("pass-lock-table-nil")
+	ErrPassNotOpen            = errors.New("pass-not-open")
+	ErrPassResumeInvalidState = errors.New("pass-resume-invalid-state")
 )
 
 // OpenPass acquires the per-(role, context) lock via opts.LockTable

@@ -388,33 +388,26 @@ func cmdEngineRecover(args []string) error {
 	// these writes too — but they're idempotent ON CONFLICT IGNORE
 	// so a real session.Open running afterward sees the same end-
 	// state.
-	if _, err := store.CatchUpAttestations(ctx, atts); err != nil {
+	if _, _, err := store.CatchUpAttestations(ctx, atts); err != nil {
 		return classifyCLIError(err, fl.Verbose)
 	}
 
-	// Wrap Recovery in a transaction we roll back.
-	// engine.Recovery already wraps its work in BeginTx/Commit;
-	// we don't have a public "force-rollback" hook, so the
-	// implementation choice for dry-run is: call Recovery (which
-	// commits its own transaction), then immediately reverse the
-	// writes via a counter-transaction. That's ugly. Simpler:
-	// take a sqlite SAVEPOINT before the call and ROLLBACK TO
-	// after. SQLite supports nested savepoints, and Recovery's
-	// inner BeginTx becomes a SAVEPOINT under it.
-	if _, err := store.DB().ExecContext(ctx, `SAVEPOINT recover_dryrun`); err != nil {
-		return classifyCLIError(fmt.Errorf("savepoint: %w", err), fl.Verbose)
+	// Dry-run path uses engine.RecoveryInTx (C-2 / G2-F-2 /
+	// G2-I-1 remediation): the CLI owns a single tx that is
+	// ALWAYS rolled back. RecoveryInTx writes everything inside
+	// that tx; the deferred Rollback undoes the work
+	// regardless of error path.
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return classifyCLIError(fmt.Errorf("begin tx: %w", err), fl.Verbose)
 	}
-	rep, recErr := engine.Recovery(ctx, engine.RecoveryDeps{
+	defer func() { _ = tx.Rollback() }()
+	rep, recErr := engine.RecoveryInTx(ctx, tx, engine.RecoveryDeps{
 		Store:        store,
 		Attestations: atts,
 		Now:          time.Now,
 		JSONLPath:    jsonlPath,
 	}, engine.ReplayCounts{})
-	// Always roll back to the savepoint.
-	if _, rbErr := store.DB().ExecContext(ctx, `ROLLBACK TO SAVEPOINT recover_dryrun`); rbErr != nil {
-		ui.Info("ghyll engine recover: WARNING rollback failed: %v", rbErr)
-	}
-	_, _ = store.DB().ExecContext(ctx, `RELEASE SAVEPOINT recover_dryrun`)
 	if recErr != nil {
 		return classifyCLIError(fmt.Errorf("recover: %w", recErr), fl.Verbose)
 	}

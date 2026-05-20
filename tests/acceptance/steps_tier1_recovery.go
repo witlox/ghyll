@@ -354,7 +354,7 @@ func registerTier1RecoverySteps(ctx *godog.ScenarioContext, state *ScenarioState
 		// Narrative — the in-memory record + the engine catch-up
 		// represent the post-LoadFromJSONL state. Verify the
 		// attestation is in the engine table too.
-		if _, err := state.TR1Store.CatchUpAttestations(context.Background(), state.TR1Atts); err != nil {
+		if _, _, err := state.TR1Store.CatchUpAttestations(context.Background(), state.TR1Atts); err != nil {
 			return fmt.Errorf("CatchUp: %w", err)
 		}
 		return nil

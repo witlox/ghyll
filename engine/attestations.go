@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/witlox/ghyll/runner"
@@ -149,26 +150,163 @@ func (s *Store) listAttestations(ctx context.Context) ([]runner.AttestationRecor
 // the next time a v2 binary opens the store via OpenStore (NOT
 // OpenStoreReadOnly), which runs the schema DDL.
 // CatchUpAttestations writes every record from the in-memory
-// AttestationStore into the engine `attestations` table via
-// insertAttestation (idempotent on conflict). Per ADR-015 Part C
-// the JSONL is the source of truth; this function keeps the
-// derived engine cache in sync at session start AFTER
+// AttestationStore into the engine `attestations` table. Per
+// ADR-015 Part C the JSONL is the source of truth; this function
+// keeps the derived engine cache in sync at session start AFTER
 // AttestationStore.LoadFromJSONL has populated the in-memory
 // state. Called by session.Open between Load and Recovery so
 // Recovery's JOIN-based attestation-pending detection sees the
 // authoritative state.
-func (s *Store) CatchUpAttestations(ctx context.Context, src *runner.AttestationStore) (int, error) {
+//
+// H-3 (G2-F-7) hardening:
+//   - The full catch-up runs inside ONE BeginTx. Partial failures
+//     roll back so the engine and in-memory state stay consistent.
+//   - The record list is sorted by ID for deterministic retry
+//     behavior.
+//   - On a content-conflict between an existing engine row and a
+//     JSONL record (operator hand-edited the file), the JSONL
+//     record WINS via UPDATE — per ADR-015 Part C JSONL is the
+//     source of truth. A conflict no longer refuses session
+//     start.
+//
+// Returns the count of rows written/updated and any per-row
+// override events (caller surfaces these via RecoveryReport
+// or the bus). The error return is non-nil only for transactional
+// failures (BeginTx, Commit, sqlite errors); per-row conflicts
+// are resolved silently with override + event.
+func (s *Store) CatchUpAttestations(ctx context.Context, src *runner.AttestationStore) (int, []runner.OperatorEvent, error) {
 	if s == nil || src == nil {
-		return 0, nil
+		return 0, nil, nil
 	}
-	count := 0
-	for _, rec := range src.All() {
-		if err := s.insertAttestation(ctx, rec); err != nil {
-			return count, fmt.Errorf("catch-up attestation %s: %w", rec.ID, err)
+	recs := src.All()
+	sort.Slice(recs, func(i, j int) bool { return recs[i].ID < recs[j].ID })
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("catch-up BeginTx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		count  int
+		events []runner.OperatorEvent
+	)
+	for _, rec := range recs {
+		written, override, err := s.upsertAttestationInTx(ctx, tx, rec)
+		if err != nil {
+			return count, events, fmt.Errorf("catch-up attestation %s: %w", rec.ID, err)
 		}
-		count++
+		if written {
+			count++
+		}
+		if override {
+			events = append(events, runner.OperatorEvent{
+				Kind:    runner.OpEventAttestationAuditDurabilityFailed,
+				ArrowID: rec.ArrowID,
+				Detail:  "engine row overridden by JSONL: " + rec.ID,
+			})
+		}
 	}
-	return count, nil
+	if err := tx.Commit(); err != nil {
+		return count, events, fmt.Errorf("catch-up Commit: %w", err)
+	}
+	return count, events, nil
+}
+
+// upsertAttestationInTx writes a record inside an existing tx.
+// On INSERT conflict where the existing row's content disagrees
+// with rec, UPDATEs the row to match rec (JSONL wins) and returns
+// override=true so the caller can emit an audit event.
+func (s *Store) upsertAttestationInTx(
+	ctx context.Context, tx *sql.Tx, rec runner.AttestationRecord,
+) (written bool, override bool, err error) {
+	var clauseID any
+	if rec.ClauseID == "" {
+		clauseID = nil
+	} else {
+		clauseID = rec.ClauseID
+	}
+	res, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO attestations (
+			attestation_id, kind, arrow_id, clause_id, op_id,
+			attested_by_role, source_role, target_role, verdict,
+			reason, timestamp, grid_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		rec.ID, string(rec.Kind), rec.ArrowID, clauseID, rec.OpID,
+		rec.AttestedByRole, rec.SourceRole, rec.TargetRole, string(rec.Verdict),
+		rec.Reason, rec.Timestamp, rec.GridVersion,
+	)
+	if err != nil {
+		return false, false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, false, err
+	}
+	if affected == 1 {
+		return true, false, nil
+	}
+	// Row exists; probe equality.
+	existing, err := s.readAttestationInTx(ctx, tx, rec.ID)
+	if err != nil {
+		return false, false, err
+	}
+	if existing == rec {
+		return false, false, nil // idempotent — same content
+	}
+	// JSONL wins on conflict (H-3 / G2-F-7).
+	_, err = tx.ExecContext(ctx, `
+		UPDATE attestations
+		SET    kind             = ?,
+		       arrow_id         = ?,
+		       clause_id        = ?,
+		       op_id            = ?,
+		       attested_by_role = ?,
+		       source_role      = ?,
+		       target_role      = ?,
+		       verdict          = ?,
+		       reason           = ?,
+		       timestamp        = ?,
+		       grid_version     = ?
+		WHERE  attestation_id   = ?
+	`,
+		string(rec.Kind), rec.ArrowID, clauseID, rec.OpID,
+		rec.AttestedByRole, rec.SourceRole, rec.TargetRole, string(rec.Verdict),
+		rec.Reason, rec.Timestamp, rec.GridVersion,
+		rec.ID,
+	)
+	if err != nil {
+		return false, false, err
+	}
+	return true, true, nil
+}
+
+// readAttestationInTx is the tx-bound variant of readAttestation.
+func (s *Store) readAttestationInTx(ctx context.Context, tx *sql.Tx, id string) (runner.AttestationRecord, error) {
+	var rec runner.AttestationRecord
+	var kind, verdict string
+	var clauseID sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT attestation_id, kind, arrow_id, clause_id, op_id,
+		       attested_by_role, source_role, target_role, verdict,
+		       reason, timestamp, grid_version
+		FROM   attestations
+		WHERE  attestation_id = ?
+	`, id).Scan(
+		&rec.ID, &kind, &rec.ArrowID, &clauseID, &rec.OpID,
+		&rec.AttestedByRole, &rec.SourceRole, &rec.TargetRole, &verdict,
+		&rec.Reason, &rec.Timestamp, &rec.GridVersion,
+	)
+	if err != nil {
+		return runner.AttestationRecord{}, err
+	}
+	rec.Kind = runner.AttestationKind(kind)
+	rec.Verdict = runner.AttestationVerdict(verdict)
+	if clauseID.Valid {
+		rec.ClauseID = clauseID.String
+	}
+	return rec, nil
 }
 
 func (s *Store) CountAttestations(ctx context.Context) (int, error) {

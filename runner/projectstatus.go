@@ -58,7 +58,8 @@ type FindingStatusCounts struct {
 
 // PassRegistry tracks live passes for ProjectStatus. The
 // dispatcher registers each Pass at Open and unregisters at
-// Close/Abort. Crash-recovery does NOT persist passes — open
+// Close/Abort.
+//
 // Tier 1 (ADR-015): the in-memory registry is the runtime
 // surface; the engine `passes` table is the persistence shadow.
 // Open passes from a crashed previous process are loaded back at
@@ -207,6 +208,7 @@ type ResumeOptions struct {
 	ArrowID     string
 	GridVersion uint64
 	OpenedAt    time.Time
+	Bus         *OperatorBus     // optional; G2-I-5: resumed passes' close emits to this bus too
 	Now         func() time.Time // injected for testability; defaults to time.Now
 }
 
@@ -261,6 +263,7 @@ func (r *PassRegistry) Resume(
 		openedAt:    opts.OpenedAt,
 		state:       PassStateOpen,
 		lockToken:   tok,
+		bus:         opts.Bus, // G2-I-5: resumed passes bridge to bus on close
 	}
 	// Register before stamping recoveredAt so the registry's emit
 	// for PassEventOpen sees a clean state, then markRecovered

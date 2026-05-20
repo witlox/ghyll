@@ -41,8 +41,14 @@ type Journal struct {
 
 	events   chan journalEvent
 	consumer sync.WaitGroup
-	closed   atomic.Bool
-	dropped  atomic.Uint64
+	// closeMu serializes Close vs enqueue per G2-F-1/G2-I-6: an
+	// atomic flag is racy because there's a TOCTOU window between
+	// `closed.Load()` and the subsequent `chan <- e` send. Holding
+	// closeMu as a read lock during the send and as a write lock
+	// during close+chan-close eliminates the window.
+	closeMu sync.RWMutex
+	closed  bool
+	dropped atomic.Uint64
 }
 
 // journalEvent is the type-erased payload pushed onto the consumer
@@ -111,11 +117,19 @@ func NewJournalWithClock(store *Store, logger *slog.Logger, clock func() time.Ti
 // drop their events with a log message (and a dropped counter
 // increment) rather than block. Close blocks until the consumer
 // has drained the channel.
+//
+// Holds closeMu.Lock so concurrent enqueue calls (which take
+// closeMu.RLock around their send) cannot send on a closed
+// channel. Per G2-F-1/G2-I-6 remediation.
 func (j *Journal) Close() {
-	if !j.closed.CompareAndSwap(false, true) {
+	j.closeMu.Lock()
+	if j.closed {
+		j.closeMu.Unlock()
 		return
 	}
+	j.closed = true
 	close(j.events)
+	j.closeMu.Unlock()
 	j.consumer.Wait()
 }
 
@@ -140,8 +154,15 @@ func (j *Journal) Dropped() uint64 {
 // correctness lie at next-restart Recovery ("your closed pass was
 // reported as crashed"). For this kind only, the enqueue blocks
 // indefinitely rather than honoring the 100ms budget.
+//
+// Concurrency (G2-F-1/G2-I-6): closeMu.RLock is held for the
+// duration of the send so Close (which takes closeMu.Lock) cannot
+// run between the closed-flag check and the send-to-channel. This
+// eliminates the send-on-closed-channel panic.
 func (j *Journal) enqueue(e journalEvent) {
-	if j.closed.Load() {
+	j.closeMu.RLock()
+	defer j.closeMu.RUnlock()
+	if j.closed {
 		j.dropped.Add(1)
 		return
 	}
@@ -152,7 +173,8 @@ func (j *Journal) enqueue(e journalEvent) {
 	default:
 	}
 	// F-11: pass events block indefinitely (modulo Close). Other
-	// events keep the bounded-block-then-drop semantics.
+	// events keep the bounded-block-then-drop semantics. RLock
+	// is still held so Close cannot fire concurrently.
 	if e.kind == jKindPass {
 		j.events <- e
 		return
@@ -221,8 +243,14 @@ func (j *Journal) handle(e journalEvent) {
 // mutation (e.g., session-end checkpoint).
 //
 // Returns immediately if the journal is closed.
+//
+// Per G2-N-5: same TOCTOU race as enqueue. Hold closeMu.RLock for
+// the send so a concurrent Close cannot close(j.events) between
+// the closed-check and the send.
 func (j *Journal) Flush() {
-	if j.closed.Load() {
+	j.closeMu.RLock()
+	if j.closed {
+		j.closeMu.RUnlock()
 		return
 	}
 	done := make(chan struct{})
@@ -233,6 +261,7 @@ func (j *Journal) Flush() {
 		// signals correctly.
 		j.events <- journalEvent{kind: jKindFlush, flushDone: done}
 	}
+	j.closeMu.RUnlock()
 	<-done
 }
 

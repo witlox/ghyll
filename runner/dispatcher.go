@@ -159,14 +159,15 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 
 	passID := d.PassIDGen()
 	pass, err := OpenPass(PassOptions{
-		PassID:    passID,
-		Role:      req.Role,
-		Context:   req.Context,
-		ArrowID:   req.Arrow.ID,
-		LockTable: d.LockTable,
-		LockTTL:   d.DefaultLockTTL,
-		Bus:       d.Bus,
-		Now:       now,
+		PassID:      passID,
+		Role:        req.Role,
+		Context:     req.Context,
+		ArrowID:     req.Arrow.ID,
+		GridVersion: req.GridVersion, // H-5 (G2-I-4): stamp grid_version on the engine row
+		LockTable:   d.LockTable,
+		LockTTL:     d.DefaultLockTTL,
+		Bus:         d.Bus,
+		Now:         now,
 	})
 	if err != nil {
 		// Pass through *ErrRoleContextBusy and Open-validation
@@ -231,6 +232,21 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 				// leave Status as Running so DeriveArrowStatus
 				// treats it as attestation-pending blocking.
 				input.AwaitingAttestation = true
+			}
+			// M-3 (G2-F-11): publish OpEventAttestationRequested when
+			// the dispatcher flips AwaitingAttestation on. Live
+			// subscribers (operator UI, future status CLI) see the
+			// hint. Crash recovery's republish uses a distinct kind
+			// (OpEventRecoveryAttestationRepublished) so the two
+			// surfaces are distinguishable.
+			if input.AwaitingAttestation && d.Bus != nil {
+				d.Bus.Publish(OperatorEvent{
+					Kind:     OpEventAttestationRequested,
+					ArrowID:  req.Arrow.ID,
+					PassID:   passID,
+					ClauseID: clauseID,
+					Detail:   "att-ref=" + clause.DepthTypeAttestationRef,
+				})
 			}
 		}
 		clauseInputs = append(clauseInputs, input)

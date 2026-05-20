@@ -306,6 +306,34 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 			s.output(fmt.Sprintf("  … %d more errors elided", len(counts.Errors)-maxShow))
 		}
 	}
+
+	// C-3 (G2-F-3 / G2-I-3): surface Recovery's report. The bus has
+	// no subscribers at recovery time (F-18 invariant); the report
+	// is session.Open's responsibility to render.
+	report := rt.RecoveryReport()
+	if report.OrphansAborted+report.OrphansPreserved+
+		report.EvaluationRunsFlipped+report.JSONLTruncatedSkipped > 0 ||
+		len(rt.catchUpOverrideEvents) > 0 {
+		s.output(fmt.Sprintf(
+			"⚠ crash recovery: %d orphan(s) aborted, %d preserved (attestation-pending), %d run(s) reconciled from JSONL",
+			report.OrphansAborted, report.OrphansPreserved, report.EvaluationRunsFlipped))
+		const maxRecoveryEvents = 10
+		shown := len(report.Events)
+		if shown > maxRecoveryEvents {
+			shown = maxRecoveryEvents
+		}
+		for i := 0; i < shown; i++ {
+			ev := report.Events[i]
+			s.output(fmt.Sprintf("  - %s pass=%s arrow=%s clause=%s %s",
+				ev.Kind, ev.PassID, ev.ArrowID, ev.ClauseID, sanitizeOneLine(ev.Detail)))
+		}
+		if len(report.Events) > maxRecoveryEvents {
+			s.output(fmt.Sprintf("  … %d more recovery events elided", len(report.Events)-maxRecoveryEvents))
+		}
+		for _, ev := range rt.catchUpOverrideEvents {
+			s.output(fmt.Sprintf("  - %s %s", ev.Kind, sanitizeOneLine(ev.Detail)))
+		}
+	}
 }
 
 // Close releases session resources. Idempotent (W12); safe to call
