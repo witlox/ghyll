@@ -522,6 +522,18 @@ func validateAttestation(rec AttestationRecord) error {
 	if tgt != "" && strings.EqualFold(att, tgt) {
 		return fmt.Errorf("%w: attested-by-role %q equals target-role", ErrAttestationSelfCert, att)
 	}
+	// Tier 2 (gate-1 F-3): adversary_role MUST NOT equal
+	// source/target. Only fires when AdversaryRole is set
+	// (adversary-phase records).
+	adv := strings.TrimSpace(rec.AdversaryRole)
+	if adv != "" {
+		if src != "" && strings.EqualFold(adv, src) {
+			return fmt.Errorf("%w: adversary-role %q equals source-role", ErrAttestationSelfCert, adv)
+		}
+		if tgt != "" && strings.EqualFold(adv, tgt) {
+			return fmt.Errorf("%w: adversary-role %q equals target-role", ErrAttestationSelfCert, adv)
+		}
+	}
 	return nil
 }
 
