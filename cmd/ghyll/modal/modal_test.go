@@ -13,7 +13,7 @@ import (
 func TestScenario_TermModal_PassVerdict(t *testing.T) {
 	in := strings.NewReader("pass\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	v, err := m.PresentVerdict(context.Background(), Hint{ArrowID: "A1", ClauseID: "C1"})
 	if err != nil {
 		t.Fatalf("PresentVerdict: %v", err)
@@ -32,7 +32,7 @@ func TestScenario_TermModal_PassVerdict(t *testing.T) {
 func TestScenario_TermModal_FailVerdict(t *testing.T) {
 	in := strings.NewReader("fail\nfile.go:42-50, other.go:1\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	v, err := m.PresentVerdict(context.Background(), Hint{ArrowID: "A1"})
 	if err != nil {
 		t.Fatalf("PresentVerdict: %v", err)
@@ -51,7 +51,7 @@ func TestScenario_TermModal_FailVerdict(t *testing.T) {
 func TestScenario_TermModal_InsufficientBasisVerdict(t *testing.T) {
 	in := strings.NewReader("insufficient-basis\nfeature too large\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	v, err := m.PresentVerdict(context.Background(), Hint{ArrowID: "A1"})
 	if err != nil {
 		t.Fatalf("PresentVerdict: %v", err)
@@ -67,7 +67,7 @@ func TestScenario_TermModal_InsufficientBasisVerdict(t *testing.T) {
 func TestScenario_TermModal_SkipVerdict(t *testing.T) {
 	in := strings.NewReader("skip\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	_, err := m.PresentVerdict(context.Background(), Hint{ArrowID: "A1"})
 	if !errors.Is(err, ErrModalSkipped) {
 		t.Errorf("err = %v; want ErrModalSkipped", err)
@@ -77,7 +77,7 @@ func TestScenario_TermModal_SkipVerdict(t *testing.T) {
 func TestScenario_TermModal_InvalidVerdictRejected(t *testing.T) {
 	in := strings.NewReader("yeah-sure\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	_, err := m.PresentVerdict(context.Background(), Hint{ArrowID: "A1"})
 	if err == nil || strings.Contains(err.Error(), "ErrModalSkipped") {
 		t.Errorf("unrecognized verdict should error explicitly; got %v", err)
@@ -92,7 +92,7 @@ func TestScenario_TermModal_ContextCancelAbortsRead(t *testing.T) {
 	}
 	defer func() { _ = r.Close(); _ = w.Close() }()
 	out := &bytes.Buffer{}
-	m := &TermModal{In: r, Out: out}
+	m := &TermModal{Lines: NewLineReader(r), Out: out}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 	_, err = m.PresentVerdict(ctx, Hint{})
@@ -104,7 +104,7 @@ func TestScenario_TermModal_ContextCancelAbortsRead(t *testing.T) {
 func TestScenario_TermModal_EscalationOption1(t *testing.T) {
 	in := strings.NewReader("1\nresidue text\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	c, err := m.PresentEscalation(context.Background(), Hint{ArrowID: "A1"})
 	if err != nil {
 		t.Fatalf("PresentEscalation: %v", err)
@@ -117,7 +117,7 @@ func TestScenario_TermModal_EscalationOption1(t *testing.T) {
 func TestScenario_TermModal_EscalationOption2(t *testing.T) {
 	in := strings.NewReader("2\nrationale text\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	c, err := m.PresentEscalation(context.Background(), Hint{ArrowID: "A1"})
 	if err != nil {
 		t.Fatalf("PresentEscalation: %v", err)
@@ -130,7 +130,7 @@ func TestScenario_TermModal_EscalationOption2(t *testing.T) {
 func TestScenario_TermModal_EscalationRejectsInvalidChoice(t *testing.T) {
 	in := strings.NewReader("3\n")
 	out := &bytes.Buffer{}
-	m := &TermModal{In: in, Out: out}
+	m := &TermModal{Lines: NewLineReader(in), Out: out}
 	_, err := m.PresentEscalation(context.Background(), Hint{ArrowID: "A1"})
 	if !errors.Is(err, ErrEscalationNoDefault) {
 		t.Errorf("err = %v; want ErrEscalationNoDefault", err)

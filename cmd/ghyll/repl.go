@@ -1,20 +1,50 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	gocontext "context"
+
+	"github.com/witlox/ghyll/cmd/ghyll/modal"
 	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/ui"
 )
 
 // REPL runs the interactive read-eval-print loop.
+//
+// Gate-2 CONC-C-1/C-2: the REPL no longer constructs its own
+// bufio.Scanner. It uses the session's shared LineReader so the
+// modal (which pulls from the SAME reader) can interleave reads
+// without losing buffered bytes. When the session has no shared
+// reader (test wiring with a custom modalPrompt + injected input),
+// the REPL constructs a per-call LineReader and closes it on
+// EOF — same single-scanner invariant locally.
 func REPL(sess *Session, input io.Reader) {
-	scanner := bufio.NewScanner(input)
+	// Construct the shared LineReader over `input`. If the session
+	// already has one (test that pre-installed sess.lines), reuse
+	// it. Otherwise build a fresh reader + (in production) wire the
+	// session's TermModal to share it so the modal and REPL pull
+	// from the same scanner. Gate-2 CONC-C-1/C-2.
+	var reader *modal.LineReader
+	if sess.lines != nil {
+		reader = sess.lines
+	} else {
+		reader = modal.NewLineReader(input)
+		sess.lines = reader
+		if tm, ok := sess.modalPrompt.(*modal.TermModal); ok && tm.Lines == nil {
+			tm.Lines = reader
+		}
+		defer func() {
+			reader.Close()
+			sess.lines = nil
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -44,11 +74,15 @@ func REPL(sess *Session, input io.Reader) {
 
 		ui.Print(sess.Prompt())
 
-		if !scanner.Scan() {
-			break // EOF
+		raw, err := reader.Next(sess.SessionContext())
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, gocontext.Canceled) {
+				return
+			}
+			sess.output("repl read error: " + err.Error())
+			return
 		}
-
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
@@ -96,9 +130,9 @@ func REPL(sess *Session, input io.Reader) {
 		}
 
 		// Execute turn — response is already streamed to terminal via renderer
-		_, err := sess.Turn(line)
-		if err != nil {
-			sess.renderer.RenderError(err.Error())
+		_, terr := sess.Turn(line)
+		if terr != nil {
+			sess.renderer.RenderError(terr.Error())
 			continue
 		}
 	}

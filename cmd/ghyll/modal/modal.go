@@ -92,22 +92,29 @@ var ErrEscalationNoDefault = errors.New("modal-escalation-no-default")
 
 // --- TermModal (tty interactive) ----------------------------
 
-// TermModal is the tty-interactive implementation. Reads from
-// In, writes prompts to Out. Lines are read with bufio.Scanner
-// so the operator's Enter terminates each input.
+// TermModal is the tty-interactive implementation. Lines are
+// pulled from a session-scoped LineReader (one goroutine + one
+// bufio.Scanner over stdin); prompts are written to Out.
+//
+// Gate-2 CONC-C-1/C-2: TermModal no longer holds its own
+// bufio.Scanner. The session owns a single LineReader shared
+// between REPL and TermModal so dual-scanner buffer-loss + the
+// ctx-cancel goroutine leak are both gone.
 //
 // Tier 2 minimal: prompts are plain-text Q/A. Future versions
 // may add ANSI styling, multi-line residue editing, etc.
 type TermModal struct {
-	In  io.Reader
+	// Lines is the shared line-source. Required.
+	Lines *LineReader
+	// Out is the prompt destination (typically os.Stdout).
 	Out io.Writer
 }
 
 // PresentVerdict implements OperatorModalPrompt.
 func (m *TermModal) PresentVerdict(ctx context.Context, hint Hint) (VerdictSubmission, error) {
-	scanner := bufio.NewScanner(m.In)
-	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
-
+	if m.Lines == nil {
+		return VerdictSubmission{}, fmt.Errorf("modal: TermModal.Lines is nil")
+	}
 	writePrompt(m.Out,
 		"\n",
 		"── attestation request ─────────────────\n",
@@ -122,7 +129,7 @@ func (m *TermModal) PresentVerdict(ctx context.Context, hint Hint) (VerdictSubmi
 	if err := ctx.Err(); err != nil {
 		return VerdictSubmission{}, err
 	}
-	line, err := readLineCtx(ctx, scanner)
+	line, err := m.Lines.Next(ctx)
 	if err != nil {
 		return VerdictSubmission{}, err
 	}
@@ -131,17 +138,17 @@ func (m *TermModal) PresentVerdict(ctx context.Context, hint Hint) (VerdictSubmi
 	case "skip", "s":
 		return VerdictSubmission{}, ErrModalSkipped
 	case "pass", "p":
-		return m.promptPass(ctx, scanner)
+		return m.promptPass(ctx)
 	case "fail", "f":
-		return m.promptFail(ctx, scanner)
+		return m.promptFail(ctx)
 	case "insufficient-basis", "ib", "i":
-		return m.promptInsufficientBasis(ctx, scanner)
+		return m.promptInsufficientBasis(ctx)
 	default:
 		return VerdictSubmission{}, fmt.Errorf("verdict %q: expected pass/fail/insufficient-basis/skip", line)
 	}
 }
 
-func (m *TermModal) promptPass(ctx context.Context, scanner *bufio.Scanner) (VerdictSubmission, error) {
+func (m *TermModal) promptPass(_ context.Context) (VerdictSubmission, error) {
 	// `confirm` unit has no payload.
 	return VerdictSubmission{
 		Verdict: runner.AttestationPass,
@@ -149,9 +156,9 @@ func (m *TermModal) promptPass(ctx context.Context, scanner *bufio.Scanner) (Ver
 	}, nil
 }
 
-func (m *TermModal) promptFail(ctx context.Context, scanner *bufio.Scanner) (VerdictSubmission, error) {
+func (m *TermModal) promptFail(ctx context.Context) (VerdictSubmission, error) {
 	writePrompt(m.Out, "inspected locations (comma-separated, e.g. 'file.go:42-50, other.go:1'): ")
-	line, err := readLineCtx(ctx, scanner)
+	line, err := m.Lines.Next(ctx)
 	if err != nil {
 		return VerdictSubmission{}, err
 	}
@@ -170,9 +177,9 @@ func (m *TermModal) promptFail(ctx context.Context, scanner *bufio.Scanner) (Ver
 	}, nil
 }
 
-func (m *TermModal) promptInsufficientBasis(ctx context.Context, scanner *bufio.Scanner) (VerdictSubmission, error) {
+func (m *TermModal) promptInsufficientBasis(ctx context.Context) (VerdictSubmission, error) {
 	writePrompt(m.Out, "residue note (why is the basis insufficient?): ")
-	line, err := readLineCtx(ctx, scanner)
+	line, err := m.Lines.Next(ctx)
 	if err != nil {
 		return VerdictSubmission{}, err
 	}
@@ -185,9 +192,9 @@ func (m *TermModal) promptInsufficientBasis(ctx context.Context, scanner *bufio.
 
 // PresentEscalation implements OperatorModalPrompt.
 func (m *TermModal) PresentEscalation(ctx context.Context, hint Hint) (EscalationChoice, error) {
-	scanner := bufio.NewScanner(m.In)
-	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
-
+	if m.Lines == nil {
+		return EscalationChoice{}, fmt.Errorf("modal: TermModal.Lines is nil")
+	}
 	writePrompt(m.Out,
 		"\n",
 		"── escalation: 3 insufficient-basis rounds ──\n",
@@ -203,7 +210,7 @@ func (m *TermModal) PresentEscalation(ctx context.Context, hint Hint) (Escalatio
 	if err := ctx.Err(); err != nil {
 		return EscalationChoice{}, err
 	}
-	line, err := readLineCtx(ctx, scanner)
+	line, err := m.Lines.Next(ctx)
 	if err != nil {
 		return EscalationChoice{}, err
 	}
@@ -218,7 +225,7 @@ func (m *TermModal) PresentEscalation(ctx context.Context, hint Hint) (Escalatio
 		promptText = "rationale (why deeper rework is needed): "
 	}
 	writePrompt(m.Out, promptText)
-	residue, err := readLineCtx(ctx, scanner)
+	residue, err := m.Lines.Next(ctx)
 	if err != nil {
 		return EscalationChoice{}, err
 	}
@@ -230,16 +237,21 @@ func (m *TermModal) PresentEscalation(ctx context.Context, hint Hint) (Escalatio
 
 // writePrompt writes a sequence of strings to w, ignoring write
 // errors (operator-facing prompts; a write failure typically
-// means the operator already disconnected — the next readLineCtx
-// will surface ctx.Err()).
+// means the operator already disconnected — the next Lines.Next
+// will surface ctx.Err() or io.EOF).
 func writePrompt(w io.Writer, parts ...string) {
 	for _, p := range parts {
 		_, _ = io.WriteString(w, p)
 	}
 }
 
-// readLineCtx reads one line from the scanner; cancels on ctx.
-// Returns the line text (without trailing newline) or an error.
+// readLineCtx is the legacy bufio.Scanner-per-call helper. Kept
+// only as a build-time symbol so tests that imported it directly
+// don't break; nothing in the production path uses it post-
+// CONC-C-1/C-2 remediation. Will be removed once test fixtures
+// are migrated.
+//
+//nolint:unused
 func readLineCtx(ctx context.Context, scanner *bufio.Scanner) (string, error) {
 	type readResult struct {
 		line string

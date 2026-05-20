@@ -82,9 +82,16 @@ type Session struct {
 	modalDriver *modalDriver
 
 	// modalPrompt is the user-supplied modal implementation. nil
-	// in production falls back to TermModal(os.Stdin, os.Stdout);
-	// tests inject a StubModal.
+	// in production falls back to TermModal sharing the session
+	// LineReader; tests inject a StubModal.
 	modalPrompt modal.OperatorModalPrompt
+
+	// lines is the session-scoped shared stdin line reader (gate-2
+	// CONC-C-1/C-2). REPL pulls from this instead of constructing
+	// its own bufio.Scanner so the modal can interleave reads
+	// without losing buffered bytes. nil when modalPrompt was
+	// injected (tests don't need stdin sharing).
+	lines *modal.LineReader
 
 	// sessionCtx is the session-scoped cancellation channel for
 	// long-blocking operations (currently: modal reads). /exit
@@ -164,8 +171,17 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		version:     v,
 		modalPrompt: sc.ModalPrompt,
 	}
+	// Gate-2 CONC-C-1/C-2: do NOT eagerly construct the shared
+	// LineReader here. Tests like TestScenario_REPL_* pass a
+	// strings.Reader into REPL() — if we'd already created a
+	// reader over os.Stdin, the test's input would be ignored.
+	// The REPL constructs the reader lazily (and wires the
+	// TermModal to it) when input == os.Stdin. Sessions that
+	// inject a StubModal skip this entirely.
 	if s.modalPrompt == nil {
-		s.modalPrompt = &modal.TermModal{In: os.Stdin, Out: os.Stdout}
+		// Lazy TermModal: Lines is left nil; REPL will wire it
+		// when it constructs the shared reader.
+		s.modalPrompt = &modal.TermModal{Out: os.Stdout}
 	}
 	s.sessionCtx, s.sessionCancel = gocontext.WithCancel(gocontext.Background())
 
