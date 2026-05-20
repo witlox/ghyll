@@ -115,7 +115,7 @@ func (s *Syncer) InitBranch() error {
 		origin = strings.TrimSpace(remoteURL)
 	}
 
-	// Shallow clone just to get a git repo context
+	// Shallow clone just to get a git repo context.
 	tmpRepo := filepath.Join(tmpDir, "repo")
 	cmd := exec.Command("git", "clone", "--no-checkout", "--depth=1", origin, tmpRepo)
 	cmd.Env = cleanGitEnv()
@@ -378,7 +378,10 @@ func (s *Syncer) ReadPublicKey(deviceID string) ([]byte, error) {
 }
 
 // cleanGitEnv returns env vars with GIT_DIR/GIT_WORK_TREE removed
-// to prevent leaking from parent processes (e.g., git hooks).
+// to prevent leaking from parent processes (e.g., git hooks). This
+// is correctness (a parent's GIT_DIR makes the sub-git see the
+// wrong repo), not a security control — env scrubbing for the
+// sandbox-only threat model is the sandbox's job.
 func cleanGitEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {

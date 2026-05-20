@@ -265,6 +265,10 @@ func (b *BindingEvaluator) Evaluate(ctx context.Context, c Clause) (*Result, err
 	cmd := exec.Command("sh", "-c", b.Command)
 	cmd.Env = b.buildEnv()
 	if b.WorkingDir != "" {
+		// No project-root containment: ghyll is sandbox-only;
+		// path containment is the sandbox's policy. A binding
+		// that sets WorkingDir intentionally hits exactly the
+		// dir specified.
 		cmd.Dir = b.WorkingDir
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

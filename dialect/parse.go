@@ -15,6 +15,10 @@ var ErrParseToolCall = errors.New("dialect: failed to parse tool call from respo
 // Validation-pass-8 D15: wrap underlying error via %w so operators
 // debugging a misbehaving quantized backend can see the actual
 // JSON failure.
+//
+// No tool-name shape validation: ghyll is sandbox-only by design.
+// A model-emitted tool name that doesn't match a registered tool
+// fails to dispatch downstream; ghyll doesn't gate names here.
 func parseOpenAIToolCalls(raw json.RawMessage) ([]types.ToolCall, error) {
 	var calls []types.ToolCall
 	if err := json.Unmarshal(raw, &calls); err != nil {

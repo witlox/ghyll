@@ -50,6 +50,10 @@ func ReadFile(ctx context.Context, path string, timeout time.Duration) types.Too
 
 // WriteFile writes content to a file.
 // Invariant 16: timeout enforced via context.
+//
+// No permission preservation or symlink refusal: ghyll is
+// sandbox-only. File-op semantics are the sandbox's policy,
+// not ghyll's.
 func WriteFile(ctx context.Context, path string, content string, timeout time.Duration) types.ToolResult {
 	start := time.Now()
 

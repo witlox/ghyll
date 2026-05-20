@@ -12,6 +12,11 @@ import (
 
 // Git runs a git command in the given directory.
 // Invariant 16: timeout enforced via context.
+//
+// No subcommand allowlist: ghyll is sandbox-only by design — the
+// sandbox restricts what git can touch. Any subcommand gating
+// belongs there, not in-process. The model has the full git
+// surface intentionally.
 func Git(ctx context.Context, dir string, args []string, timeout time.Duration) types.ToolResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)

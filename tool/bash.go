@@ -12,6 +12,14 @@ import (
 
 // Bash executes a shell command and returns captured output.
 // Invariant 16: timeout enforced via context.
+//
+// No env scrubbing or argument validation: ghyll is sandbox-only
+// (`CLAUDE.md`: "Tools are direct OS calls — no permission layer
+// (sandbox handles security)"). The bash tool intentionally
+// inherits parent env so the operator's interactive setup (PATH,
+// helper credentials, language locale) flows through. Any
+// secret-scrubbing or command vetting belongs in the sandbox
+// container that wraps the ghyll process, not in-process.
 func Bash(ctx context.Context, command string, timeout time.Duration) types.ToolResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)

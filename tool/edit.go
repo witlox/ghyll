@@ -52,7 +52,10 @@ func EditFile(ctx context.Context, path, oldString, newString string, timeout ti
 }
 
 func editFileImpl(path, oldString, newString string) types.ToolResult {
-	// Step 1: Read file and compute content hash
+	// Step 1: Read file and compute content hash. No symlink
+	// refusal: ghyll is sandbox-only by design; file-op semantics
+	// (follow symlinks, preserve / clobber permissions) are the
+	// sandbox's policy, not ghyll's.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return types.ToolResult{Error: fmt.Sprintf("file not found: %v", err)}
