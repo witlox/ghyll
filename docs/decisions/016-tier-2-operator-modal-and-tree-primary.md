@@ -3,6 +3,10 @@
 ## Status
 
 Accepted (2026-05-20). Tier 2 of the prod-readiness roadmap.
+Gate-1 adversarial review of this ADR produced 22 findings (6
+critical / 9 high / 7 medium); all remediated in-document.
+Disposition log:
+`specs/v2/validation-impl-pass-tier2-remediation.md`.
 
 Amends:
 
@@ -46,16 +50,34 @@ The existing `AttestationRecord` carries `attestation_id`,
 
 ### Part A: Schema extension + migration
 
+Per gate-1 F-2 / F-3 / F-6 / F-10 / F-25, the migration adds
+SEVEN columns (not four) and wraps the ALTERs in a single
+transaction:
+
 ```sql
+BEGIN;
 ALTER TABLE attestations ADD COLUMN pass_id           TEXT NOT NULL DEFAULT '';
+ALTER TABLE attestations ADD COLUMN context           TEXT NOT NULL DEFAULT '';
+ALTER TABLE attestations ADD COLUMN stratum           TEXT NOT NULL DEFAULT '';
+ALTER TABLE attestations ADD COLUMN adversary_role    TEXT NOT NULL DEFAULT '';
 ALTER TABLE attestations ADD COLUMN unit              TEXT NOT NULL DEFAULT '';
 ALTER TABLE attestations ADD COLUMN unit_payload_json TEXT NOT NULL DEFAULT '';
-ALTER TABLE attestations ADD COLUMN hint_json         TEXT NOT NULL DEFAULT '';
+ALTER TABLE attestations ADD COLUMN hint_json         TEXT NOT NULL DEFAULT '{}';
+COMMIT;
 ```
 
 - `pass_id`: which pass produced the verdict. Pre-Tier-2 rows
-  have `''`; recovery + verifier-tooling tolerate the empty
-  string.
+  have `''`; verifier-tooling tolerates the empty string;
+  Tier 2 Record path REJECTS empty PassID with
+  `ErrAttestationPassIDEmpty` (gate-1 F-6).
+- `context`, `stratum`: stamped by the dispatcher at record-
+  construction time so `EncodeAttestationPath` doesn't need a
+  Grid lookup (gate-1 F-2).
+- `adversary_role`: empty for normal records; populated by
+  `runner/adversarial.go` when a verdict is captured during an
+  adversary-phase pass (gate-1 F-3). Self-cert check extends
+  to forbid `adversary_role` equal to `source_role` or
+  `target_role`.
 - `unit`: one of `confirm` / `record-locations-inspected` /
   `write-residue-note`. Empty for pre-Tier-2 rows.
 - `unit_payload_json`: JSON object whose shape depends on
@@ -63,40 +85,68 @@ ALTER TABLE attestations ADD COLUMN hint_json         TEXT NOT NULL DEFAULT '';
   `record-locations-inspected`; `{"residue": "..."}` for
   `write-residue-note`.
 - `hint_json`: the dispatcher-synthesized hint shown to the
-  operator. JSON object: `{"arrow_id": "", "clause_id": "",
+  operator. **Default `'{}'`** (NOT empty string) so the
+  verifier's `json.Unmarshal` parses pre-Tier-2 rows cleanly
+  (gate-1 F-25). Shape: `{"arrow_id": "", "clause_id": "",
   "concept": "", "attestation_ref": ""}`. Tier 3 adds
   `locations`, `basis`, `residue`.
 
-`schemaVersion` bumps from 3 to 4. `ensureSchemaVersion` runs the
-four ALTERs idempotently (PRAGMA-based column-existence check,
-matching Tier 1's `ensureRecoverySourceColumn` pattern).
+`schemaVersion` bumps from 3 to 4. `ensureUnitColumns` wraps
+the ALTERs in `db.Begin()` / `tx.Commit()` (gate-1 F-10) so a
+partial-failure rolls back cleanly. PRAGMA-based existence
+check per column matches Tier 1's `ensureRecoverySourceColumn`
+pattern.
 
 ### Part B: Tree writer becomes primary
 
 `AttestationTreeWriter` gains:
 
 - A `PrimaryWriter() func(AttestationRecord) error` method
-  that mirrors `AttestationJSONLWriter.PrimaryWriter()`. Inline
-  marshal + write + fsync; returns the error inline so
-  `AttestationStore.Record` fails closed if the tree write fails.
-- Path encoding moves to a new
-  `EncodeAttestationPath(rec AttestationRecord) (string, error)`
-  helper. The helper:
+  that mirrors `AttestationJSONLWriter.PrimaryWriter()`. No
+  `*Grid` argument (gate-1 F-2 / F-19). Inline marshal + write
+  + fsync; returns the error inline so
+  `AttestationStore.Record` fails closed if the tree write
+  fails.
+- The file is opened `O_RDWR | O_APPEND` (gate-1 F-11) so the
+  writer can ReadAt for `TruncateTrailingPartial`.
+- A new `TruncateTrailingPartialAll(root) error` method that
+  walks every `<root>/v*/<ctx>/stratum-*/<role-pair>/<pass-id>.jsonl`
+  and calls TruncateTrailingPartial on each. Called by
+  session.openEngineWithOptions after LoadFromTree returns
+  truncated=true (gate-1 F-11).
+- A new `Observer()` method that mirrors the flat writer's
+  flow (already exists; preserved for the rare fallback).
+- Path encoding moves to a new pure function (gate-1 F-2):
+  `EncodeAttestationPath(rec AttestationRecord) (path string,
+  truncated bool, err error)`. The helper:
   - Reads `pass_id` (NOT `attestation_id`) for the file name.
-  - Reads `arrow_id` to look up source/target roles + stratum
-    + context via `Grid.Lookup(arrow_id)`.
+  - Reads `context`, `stratum`, `source_role`,
+    `adversary_role`, `target_role` directly from `rec`. No
+    Grid lookup is required — the dispatcher stamped them at
+    record-construction time.
   - Returns the tree-rooted relative path
     `v<N>/<context>/stratum-<S>/<role-pair>/<pass-id>.jsonl`.
-  - Init arrows special-case: context segment is literal
-    `init`, role-pair is `init__<source-role>`.
-  - Three-role chains: the role-pair string is computed from
-    the arrow definition's full chain (e.g.,
-    `analyst__adversary__architect`).
-  - Per-component byte length is capped at 255; on overflow,
-    the offending component is replaced with a 16-byte hex
-    digest of its SHA-256 (`ErrPathComponentTooLong` is
-    surfaced via the bus but the write succeeds with the
-    truncated path).
+  - **Init arrows** special-case (gate-1 F-18): role-pair =
+    literal `"init"`, context = literal `"init"`, stratum =
+    literal `"init"`. No `__` separator.
+  - **Three-role chain**: when `rec.AdversaryRole != ""`,
+    role-pair = `"{source}__{adversary}__{target}"` (gate-1
+    F-3). Self-cert: AdversaryRole MUST NOT equal SourceRole
+    or TargetRole and MUST NOT contain `__`.
+  - **Empty PassID** rejects with `ErrAttestationPassIDEmpty`
+    (gate-1 F-6).
+  - **Empty segment** (sanitize produced empty string) also
+    triggers the byte-cap fallback to a `h-<sha256[:16]>`
+    name; truncated=true.
+  - Per-component byte length capped at 255 (gate-1 F-17):
+    overflow returns `truncated=true` AND the PrimaryWriter
+    appends `path-truncated:<segment>` to
+    `AttestationRecord.Reason` AND publishes
+    `ErrPathComponentTooLong` via the bus. The write proceeds
+    with the hash-substituted segment so the verdict is not
+    lost.
+  - Step 7 formatting: `fmt.Sprintf("v%d", rec.GridVersion)`
+    (gate-1 F-26).
 
 `session_engine.attachJournal` swaps the primaryWriter:
 
@@ -110,9 +160,26 @@ r.attestations.SetPrimaryWriter(r.treeWriter.PrimaryWriter())
 r.attestations.Observe(r.jsonlWriter.Observer())
 ```
 
-The flat writer's `Observer()` is the existing path. The tree
-writer's `Observer()` path stays as backup but is unused once
-PrimaryWriter is wired.
+**Boot-time loader also swaps** (gate-1 F-1 / F-27): Tier 2's
+`session.openEngineWithOptions` calls
+`r.attestations.LoadFromTree(treeRoot, attCount > 0)` INSTEAD
+of `LoadFromJSONL(flatPath, ...)`. The tree is the
+authoritative source post-Tier 2. The flat file is
+forward-only (Observer writes append; no Tier 2 path reads
+from it). Tier 1's `LoadFromJSONL` stays in place for
+backward-compat tests but isn't called from the production
+session-open path.
+
+`LoadFromTree` walks `<root>/v*/<ctx>/stratum-*/<role-pair>/<pass-id>.jsonl`
+and unions every JSONL line into `byID` via `recordReplay`
+(same idempotency contract as `LoadFromJSONL`). Truncation
+behavior mirrors Tier 1: `(loaded, truncated, err)` return;
+truncated=true triggers a `TruncateTrailingPartialAll` pass.
+
+`ghyll engine verify-attestations` is extended to walk BOTH
+the tree AND the flat aggregate; any divergence (a tree line
+not in the flat, or vice versa) is reported with
+`ErrAttestationAggregateDivergence`.
 
 ### Part C: Verdict-unit schema + validation
 

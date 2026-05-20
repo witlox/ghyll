@@ -6,6 +6,11 @@ and function signature below traces to an invariant in
 decision in `docs/decisions/016-tier-2-operator-modal-and-tree-primary.md`.
 No method bodies — implementer fills those.
 
+**Gate-1 adversary review** (2026-05-20) produced 22 findings;
+all remediated in this document, the spec, and the ADR. See
+`specs/v2/validation-impl-pass-tier2-remediation.md` for the
+disposition log; F-N refs below cite the finding being addressed.
+
 ---
 
 ## `engine/store.go` — schema bump + migration
@@ -13,9 +18,11 @@ No method bodies — implementer fills those.
 ```go
 const schemaVersion = 4 // was 3 (Tier 1)
 
-// ensureUnitColumns adds pass_id / unit / unit_payload_json /
-// hint_json to attestations if they don't exist yet. Idempotent;
-// matches the ensureRecoverySourceColumn pattern.
+// ensureUnitColumns adds the 7 Tier 2 columns to attestations
+// inside a single transaction (gate-1 F-10):
+//   pass_id, context, stratum, adversary_role,
+//   unit, unit_payload_json, hint_json (default '{}')
+// Idempotent; PRAGMA-checks existence per column.
 func (s *Store) ensureUnitColumns() error
 ```
 
@@ -29,13 +36,20 @@ The `passes` table is unchanged.
 type AttestationRecord struct {
     // ... existing Tier-1 fields ...
 
-    // Tier 2 additions:
-    PassID          string              // links a verdict to its pass; '' for pre-Tier-2 rows
+    // Tier 2 additions (gate-1 remediation expanded the original
+    // 4 fields to 7):
+    PassID          string              // gate-1 F-6: REQUIRED at write; '' rejects
+    Context         string              // gate-1 F-2: stamped by dispatcher; pure path-encode input
+    Stratum         string              // gate-1 F-2: stamped by dispatcher; pure path-encode input
+    AdversaryRole   string              // gate-1 F-3: populated only during adversary-phase verdicts
     Unit            VerdictUnit         // confirm | record-locations-inspected | write-residue-note
     UnitPayload     VerdictUnitPayload  // typed; serialized to UnitPayloadJSON at write
     UnitPayloadJSON string              // canonical JSON form persisted on disk
-    HintJSON        string              // dispatcher-synthesized hint
+    HintJSON        string              // dispatcher-synthesized hint; default '{}' (gate-1 F-25)
 }
+
+var ErrAttestationPassIDEmpty       = errors.New("attestation-pass-id-empty")
+var ErrAttestationAggregateDivergence = errors.New("attestation-aggregate-divergence")
 
 type VerdictUnit string
 
@@ -87,32 +101,55 @@ primaryWriter, with the project's configured cap (default
 // the tree writer becomes the inline-blocking audit surface;
 // the flat writer steps down to Observer.
 //
-// Path encoding lives in EncodeAttestationPath (below).
-func (w *AttestationTreeWriter) PrimaryWriter(grid *Grid) func(AttestationRecord) error
-
-// EncodeAttestationPath computes the per-pass JSONL path for
-// rec under root. Returns ErrPathComponentTooLong (via the bus,
-// not as an error return — the function falls back to a
-// SHA-256-prefixed component and continues).
+// No Grid argument (gate-1 F-2 / F-19): EncodeAttestationPath
+// reads all data from `rec` (context/stratum/source/adversary/
+// target/pass-id are stamped at record construction).
 //
-// Algorithm (ADR-016 Part F):
+// On gate-1 F-17: when EncodeAttestationPath returns
+// truncated=true (a component overflowed 255 bytes or was
+// empty), PrimaryWriter appends "path-truncated:<segment>" to
+// rec.Reason BEFORE the JSONL marshal, publishes
+// ErrPathComponentTooLong via the bus, and proceeds with the
+// hash-substituted segment.
+func (w *AttestationTreeWriter) PrimaryWriter() func(AttestationRecord) error
+
+// TruncateTrailingPartialAll walks every per-pass JSONL file
+// under root and calls TruncateTrailingPartial on each.
+// Called by session.openEngineWithOptions after LoadFromTree
+// returns truncated=true (gate-1 F-11).
+func (w *AttestationTreeWriter) TruncateTrailingPartialAll(root string) error
+
+// EncodeAttestationPath is a pure function of rec (gate-1 F-2).
+//
+// Algorithm (ADR-016 Part F, gate-1-remediated):
 //   v<grid_version> / <context> / stratum-<stratum> / <role-pair> / <pass-id>.jsonl
 //
 // Role-pair construction:
-//   init arrow:        "init__{target_role}"
-//   2-role arrow:      "{source}__{target}"
-//   3-role chain:      "{source}__{adversary}__{target}"
+//   init arrow (rec.AttestedByRole == "init"):
+//     role-pair  = "init"
+//     context    = "init"
+//     stratum    = "init"
+//   3-role chain (rec.AdversaryRole != ""):
+//     role-pair  = "{source}__{adversary}__{target}"
+//   2-role arrow:
+//     role-pair  = "{source}__{target}"
 //
-// Context segment:
-//   init arrow:        "init" (literal; project-scoped)
-//   non-init:          arrow.Context, filesystem-sanitized
+// Empty rec.PassID returns ErrAttestationPassIDEmpty (gate-1 F-6).
 //
-// Per-component byte cap:
-//   any segment > 255 bytes → replace with "h-" + sha256[:16] hex
-//   AND emit ErrPathComponentTooLong via the bus.
-func EncodeAttestationPath(root string, rec AttestationRecord, grid *Grid) (string, error)
+// Per-component byte cap (255 bytes ext4 / btrfs / NTFS code units):
+//   any segment > 255 bytes OR empty after sanitize → replace with
+//   "h-" + first 16 hex bytes of sha256(original). Sets
+//   truncated=true; the PrimaryWriter publishes
+//   ErrPathComponentTooLong via the bus.
+//
+// Step 7 formatting (gate-1 F-26):
+//   gv segment = fmt.Sprintf("v%d", rec.GridVersion).
+func EncodeAttestationPath(rec AttestationRecord) (path string, truncated bool, err error)
 
-var ErrPathComponentTooLong = errors.New("attestation-path-component-too-long")
+var (
+    ErrPathComponentTooLong = errors.New("attestation-path-component-too-long")
+    ErrAttestationGridNotAvailable = errors.New("attestation-grid-not-available") // gate-1 F-19
+)
 ```
 
 The tree writer's existing `Observer()` method stays but is no
@@ -125,6 +162,30 @@ the same file. The existing `openCached` LRU stays; cache keys
 are file paths so this naturally consolidates.
 
 ---
+
+## `runner/attestationstore.go` — boot loader from tree
+
+Tier 2 (gate-1 F-1 / F-27 remediation): the tree is the
+authoritative load surface, not the flat aggregate.
+
+```go
+// LoadFromTree walks <root>/v*/<ctx>/stratum-*/<role-pair>/<pass-id>.jsonl
+// and populates byID via recordReplay. Mirrors LoadFromJSONL's
+// LoadResult shape; truncated=true triggers a
+// TruncateTrailingPartialAll(root) sweep at the caller side
+// (session.openEngineWithOptions).
+//
+// engineHasRows distinguishes the fresh-project case (no tree,
+// no engine rows = OK) from the broken-audit case (no tree but
+// the engine has attestation rows = ErrAttestationAuditLost).
+//
+// The flat aggregate (.ghyll/attestations.jsonl) is NOT read
+// at boot post-Tier-2; it's a forward-only Observer surface.
+func (s *AttestationStore) LoadFromTree(root string, engineHasRows bool) (LoadResult, error)
+```
+
+The pre-existing `LoadFromJSONL` stays for backward-compat
+tests; production session-open path uses `LoadFromTree`.
 
 ## `runner/dispatcher.go` — hint synthesis
 
@@ -231,20 +292,56 @@ type modalRequest struct {
 }
 
 // newModalDriver constructs + subscribes to the bus.
+//
+// opIDProvider (gate-1 F-20) returns the active op-id at
+// CALL TIME (NOT enqueue time). Implementations typically
+// inject `func() string { return s.opID }`. AttestationRecord.OpID
+// is populated from this provider inside PresentVerdict /
+// PresentEscalation (i.e. at the moment the operator
+// submits, not at modal enqueue).
+//
+// findings (gate-1 F-23) is consulted by the hint synthesizer
+// when an escalation modal needs to surface the specific
+// finding being attested.
 func newModalDriver(prompt modal.OperatorModalPrompt,
     store *runner.AttestationStore, passes *runner.PassRegistry,
-    bus *runner.OperatorBus, ib *runner.InsufficientBasisTracker) *modalDriver
+    bus *runner.OperatorBus, ib *runner.InsufficientBasisTracker,
+    findings *runner.FindingsStore,
+    opIDProvider func() string) *modalDriver
 
 // OnEvent is the bus subscriber. Filters for
 // OpEventAttestationRequested + OpEventInsufficientBasisRoundsExceeded
 // and enqueues a modalRequest.
+//
+// Gate-1 F-12 dedup: the driver maintains an inFlight set
+// keyed on the AttestationRecord.ID; OnEvent drops events
+// for an already-in-flight ref.
 func (d *modalDriver) OnEvent(ev runner.OperatorEvent)
+
+// EnqueueFromRecovery folds the post-Recovery event list into
+// the modal driver's pending queue (gate-1 F-4). Called from
+// session.go:initEngine after attachJournal + bus.Subscribe
+// have completed. Filters for OpEventRecoveryAttestationRepublished;
+// constructs Hints from ArrowID + ClauseID + Detail att-ref
+// embed.
+func (d *modalDriver) EnqueueFromRecovery(events []runner.OperatorEvent)
 
 // DrainPending blocks until every queued request has been
 // presented + answered. Each verdict turns into an
 // AttestationStore.Record call; each escalation drives
 // finding-status transitions + pass-abort signals.
+//
+// Gate-1 F-5 / F-8 remediation: DrainPending takes a snapshot
+// of `pending` under d.mu, drops the lock, iterates the
+// snapshot. New OnEvent enqueues to a fresh list; after one
+// snapshot drains, re-snapshot. Cap at 8 drain rounds per
+// turn; over-cap returns ErrModalDrainCapExceeded.
 func (d *modalDriver) DrainPending(ctx context.Context) error
+
+var (
+    ErrModalDrainCapExceeded = errors.New("modal-drain-cap-exceeded")
+    ErrOpIDInvalidCharacters = errors.New("op-id-invalid-characters") // gate-1 F-13
+)
 ```
 
 `Session.Run` (the chat loop) calls `s.modalDriver.DrainPending(ctx)`
@@ -257,19 +354,32 @@ handoff, F-1).
 
 ---
 
-## `bootstrap/grid.go` — residue-note cap config
+## `bootstrap/grid.go` — residue-note cap config + modal queue cap
 
 ```go
 type GridDefaults struct {
     // ... existing fields ...
-    ResidueNoteMaxBytes int `yaml:"residue-note-max-bytes"` // default 16384
+    ResidueNoteMaxBytes int `yaml:"residue-note-max-bytes"` // default 16384 (gate-1 F-9)
+    ModalPendingMaxLen  int `yaml:"modal-pending-max-len"`  // default 64    (gate-1 F-8)
 }
 ```
 
-`DefaultGridDefaults()` sets `ResidueNoteMaxBytes:
-DefaultMaxResidueNoteBytes` (16 KiB). `validate()` rejects
-negative values. The session_engine plumbs the cap through to
-`AttestationStore.SetResidueNoteMaxBytes(n)` at open.
+`DefaultGridDefaults()` sets:
+- `ResidueNoteMaxBytes: DefaultMaxResidueNoteBytes` (16 KiB).
+- `ModalPendingMaxLen: 64`.
+
+`validate()` rejects `<= 0` for both (gate-1 F-9). Existing v1
+/ v2 grid files lack these YAML keys; the YAML decoder produces
+a zero value; the existing `bootstrap/grid.go:108` post-decode
+normalize step substitutes the default. No breakage on legacy
+files.
+
+The session_engine plumbs both caps through:
+- `AttestationStore.SetResidueNoteMaxBytes(n)` — backed by
+  `atomic.Int64` (gate-1 F-24); set-once at open, multiple
+  calls overwrite atomically without torn reads.
+- modal driver constructed with the queue cap (gate-1 F-8);
+  overflow drops + publishes OpEventModalBackpressure.
 
 ---
 
@@ -286,7 +396,8 @@ func (s *AttestationStore) SetResidueNoteMaxBytes(n int)
 
 ## OperatorBus event kinds
 
-Tier 2 adds:
+Tier 2 adds (post gate-1, two additions for backpressure +
+path-overflow):
 
 ```go
 const (
@@ -310,26 +421,63 @@ const (
     // turn re-presents on OpEventAttestationRequested
     // republish.
     OpEventModalSkipped OperatorEventKind = "modal-skipped"
+
+    // OpEventModalBackpressure — modal driver dropped an
+    // OnEvent because its pending queue is at
+    // ModalPendingMaxLen (gate-1 F-8).
+    OpEventModalBackpressure OperatorEventKind = "modal-backpressure"
+
+    // OpEventPathTruncated — EncodeAttestationPath produced
+    // a path with one or more hash-substituted segments
+    // (gate-1 F-17). Audit-trail; the write still succeeded.
+    OpEventPathTruncated OperatorEventKind = "attestation-path-truncated"
 )
 ```
 
 ---
 
-## Enforcement map (invariants → enforcement points)
+## Enforcement map (invariants → enforcement points, gate-1-remediated)
 
 | Invariant | Enforcement |
 |---|---|
-| 1. Modal blocks the turn | `Session.Run` calls `modalDriver.DrainPending` pre-model. DrainPending blocks until every queued request resolves. |
-| 2. Tree JSONL is primary | `attachJournal` calls `attestations.SetPrimaryWriter(treeWriter.PrimaryWriter(grid))`; the flat writer becomes Observer-only. |
-| 3. Unit-conditional schema enforced | `AttestationStore.Record` calls `ValidateUnitPayload` before the primaryWriter. |
-| 4. Multi-operator handoff is serial | The op-id is mutated only via `/op-id`; `modalDriver` reads the current op-id from `s.opID` at each PresentVerdict; AttestationRecord.OpID = current. |
-| 5. Escalation prompt is final | `modalDriver.OnEvent` detects `OpEventInsufficientBasisRoundsExceeded`; the next presentation is `PresentEscalation` (not PresentVerdict). |
-| 6. Session-ends-mid-attestation preserves the request | Tier 1's `evaluation_runs.depth_type_attestation_ref` is the persistent signal. modalDriver's `DrainPending` consults the engine table at session start to re-queue pending requests. |
-| 7. Path encoding deterministic | `EncodeAttestationPath` is a pure function of (root, rec, grid). Tests verify the four-rule encoding (init, 2-role, 3-role, byte cap). |
+| 1. Modal blocks the turn | `Session.Run` calls `modalDriver.DrainPending` pre-model. Snapshot-then-iterate; 8-round cap; ctx-cancel returns context.Canceled (gate-1 F-5, F-14). |
+| 2. Tree JSONL is primary AND boot loader | `attachJournal` calls `attestations.SetPrimaryWriter(treeWriter.PrimaryWriter())` (no Grid arg per F-2). `openEngineWithOptions` calls `LoadFromTree` at boot (NOT `LoadFromJSONL` of the flat file) per gate-1 F-1 / F-27. |
+| 3. Unit-conditional schema enforced | `AttestationStore.Record` calls `ValidateUnitPayload` before the primaryWriter; verifier extension validates per-unit payload (gate-1 F-21). |
+| 4. Multi-operator handoff is serial | The op-id is mutated only via `/op-id`; `modalDriver` calls `opIDProvider()` at PresentVerdict-call time (gate-1 F-20); AttestationRecord.OpID = current. ValidateOpID rejects path-unsafe characters (gate-1 F-13). |
+| 5. Escalation prompt is final | `InsufficientBasisTracker.crossedClauses` is a sticky set (gate-1 F-7); every IB Record on a crossed clause re-emits OpEventInsufficientBasisRoundsExceeded. modalDriver dedups via inFlight set (gate-1 F-12) so the operator sees one prompt at a time. |
+| 6. Session-ends-mid-attestation preserves the request | Tier 1's `evaluation_runs.depth_type_attestation_ref` persists across crash. session.go:initEngine calls `modalDriver.EnqueueFromRecovery(rt.RecoveryReport().Events)` after attachJournal (gate-1 F-4) so the modal driver explicitly consumes the recovery events. |
+| 7. Path encoding deterministic | `EncodeAttestationPath` is a pure function of `rec` (no Grid arg per gate-1 F-2). Tests verify: init special-case (gate-1 F-18), 2-role, 3-role chain (gate-1 F-3), empty-PassID rejection (gate-1 F-6), empty-segment hash fallback (gate-1 F-6/F-17), byte cap (gate-1 F-17). |
+
+---
+
+## Verifier extension (gate-1 F-21)
+
+`runner/attestation_verifier.go` extends to validate Tier 2
+columns:
+
+- If `unit == "record-locations-inspected"`: validate
+  `unit_payload_json` parses to `{"inspected": [...]}` with
+  non-empty array; error: `ErrVerifyMissingInspected`.
+- If `unit == "write-residue-note"`: validate
+  `unit_payload_json` parses to `{"residue": "..."}` with
+  non-empty, ≤ ResidueNoteMaxBytes string; error:
+  `ErrVerifyResidueOversizedOrEmpty`.
+- If `unit == "confirm"`: validate `unit_payload_json` is
+  `'{}'` or `''` (back-compat with pre-Tier-2 empty); error:
+  `ErrVerifyConfirmHasPayload`.
+- If `unit == ""`: pre-Tier-2 row; skip unit validation.
+
+Tree-vs-flat divergence detection (gate-1 F-1 follow-up):
+`AttestationVerifier.VerifyAll(treeRoot, flatPath)
+(VerifyResult, error)` walks both surfaces; emits
+`ErrAttestationAggregateDivergence` when a line exists in one
+but not the other.
 
 ---
 
 ## Required unit tests
+
+Gate-1 remediation added the bottom 10 (T-12 onward):
 
 - `TestVerdictUnit_ValidateConfirm_AcceptsEmpty` + `RejectsExtraFields`
 - `TestVerdictUnit_ValidateRecordLocations_AcceptsList` + `RejectsEmpty`
@@ -345,6 +493,19 @@ const (
 - `TestModalDriver_DrainPending_PresentsAndRecords`
 - `TestModalDriver_OnEvent_EscalationOverridesVerdict`
 - `TestSchemaMigration_V3ToV4` (PRAGMA shows new columns)
+- `TestSchemaMigration_V3ToV4_PartialFailureRollsBack` (gate-1 F-10)
+- `TestEncodeAttestationPath_EmptyPassIDRejected` (gate-1 F-6)
+- `TestEncodeAttestationPath_AdversaryRoleSelfCertRejected` (gate-1 F-3)
+- `TestLoadFromTree_WalksAllVersions` (gate-1 F-1)
+- `TestLoadFromTree_TruncatedTrailingLine` (gate-1 F-11)
+- `TestTreeWriter_TruncateTrailingPartialAll` (gate-1 F-11)
+- `TestModalDriver_EnqueueFromRecovery_DeduplicatesAgainstBusEvent` (gate-1 F-12, F-4)
+- `TestModalDriver_DrainPendingCapped` (gate-1 F-5)
+- `TestInsufficientBasisTracker_StickyCrossed` (gate-1 F-7)
+- `TestValidateOpID_RejectsPathTraversal` (gate-1 F-13)
+- `TestModalAtExit_ContextCancellation` (gate-1 F-14)
+- `TestResidueNoteMaxBytes_AtomicSetOnce` (gate-1 F-24)
+- `TestEngineVerifyAttestations_DetectsAggregateDivergence` (gate-1 F-1 follow-up)
 - BDD bindings for the 12 attestation.feature scenarios (in
   `tests/acceptance/steps_tier2_modal.go`).
 

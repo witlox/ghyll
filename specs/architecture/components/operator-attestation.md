@@ -76,7 +76,7 @@ roadmap. Builds on Tier 1's persistence + recovery substrate
 | **Operator session** | An in-process record of the currently-active operator: `op_id` + `started_at` + `ended_at`. Bound to the chat-session lifetime. Handoff = ending one session and starting another in the same REPL. |
 | **Verdict modal** | The chat REPL's interactive interruption when the dispatcher flips AwaitingAttestation. Blocks the turn until the operator submits a verdict OR explicitly defers ("`skip` — leave pending"). |
 | **Verdict unit** | The shape of the operator's evidence. Three values: `confirm` (no payload), `record-locations-inspected` (requires `inspected` array of file:line refs), `write-residue-note` (requires `residue` string, max 16KB). |
-| **Verdict record** | The persisted JSONL line. Carries: `attestation_id`, `kind`, `arrow_id`, `clause_id`, `op_id`, `attested_by_role`, `verdict`, `unit`, `unit_payload` (per-unit JSON), `timestamp`, `grid_version`, `reason`. |
+| **Verdict record** | The persisted JSONL line. Carries: `attestation_id`, `kind`, `arrow_id`, `clause_id`, `op_id`, `attested_by_role`, `source_role`, `target_role`, `adversary_role` (gate-1 F-3), `context` (gate-1 F-2), `stratum` (gate-1 F-2), `pass_id` (gate-1 F-6), `verdict`, `unit`, `unit_payload_json` (per-unit JSON), `hint_json` (gate-1 F-25, default `'{}'`), `timestamp`, `grid_version`, `reason`. |
 | **Hint** | The dispatcher-synthesized payload presented to the operator inside the modal. Minimal in Tier 2: `{arrow_id, clause_id, concept, attestation_ref}`. |
 | **Escalation prompt** | The modal variant presented when `InsufficientBasisTracker` fires `OpEventInsufficientBasisRoundsExceeded`. Two options: `accepted-risk` (with residue note) OR `route-upstream` (with rationale). The operator must choose; no default. |
 | **Tree JSONL** | Per-pass file at `<workdir>/.ghyll/attestations/v<N>/<context>/stratum-<S>/<role-pair>/<pass-id>.jsonl`. One row per verdict. Path encoding: `__` between role segments. Init arrows use `init__analyst`; the role-pair `<context>` for init is `init` (project-scoped, not context-scoped). |
@@ -93,12 +93,19 @@ roadmap. Builds on Tier 1's persistence + recovery substrate
    `insufficient-basis` / `skip`). The dispatcher's
    per-pass lock token stays held during the modal so a
    concurrent re-Dispatch cannot race.
-2. **Tree JSONL is primary.** Verdicts append to the per-pass
-   tree file FIRST, with fsync, before the in-memory
-   AttestationStore mutates. The flat JSONL is a fanout
-   secondary — Tier 1's `PrimaryWriter` invariant
-   (ErrAttestationAuditWriteFailed) lifts to the tree
-   writer; the flat writer becomes an Observer.
+2. **Tree JSONL is primary AND the boot loader.** Verdicts
+   append to the per-pass tree file FIRST, with fsync,
+   before the in-memory AttestationStore mutates. Tier 1's
+   `PrimaryWriter` invariant (ErrAttestationAuditWriteFailed)
+   lifts to the tree writer; the flat writer becomes an
+   Observer. **At session start, AttestationStore.LoadFromTree
+   reads the per-pass tree files** (NOT the flat aggregate);
+   Recovery's `evaluationRunReconcile` works against the
+   tree-populated in-memory store (F-1 / F-27 remediation).
+   The flat aggregate is forward-only (written via Observer,
+   never read at boot); `ghyll engine verify-attestations`
+   walks both surfaces and reports any divergence with
+   `ErrAttestationAggregateDivergence`.
 3. **Unit-conditional schema is enforced at the write
    boundary.** A `record-locations-inspected` verdict with
    no `inspected` array rejects with
@@ -126,14 +133,24 @@ roadmap. Builds on Tier 1's persistence + recovery substrate
    chat REPL re-presents the modal at the first turn.
    `recovered_at` distinguishes preserved-via-Tier-1-recovery
    from fresh.
-7. **Path encoding is deterministic.** Tree JSONL paths are
-   computed via `EncodeAttestationPath(grid_version,
-   context, stratum, role_pair, pass_id)`. The role_pair
-   uses `__` as a separator. Init's role_pair is
-   `init__analyst`; init's context segment is the literal
-   `init` (project-scoped). A three-role chain (e.g.,
-   analyst→adversary→architect) renders as
-   `analyst__adversary__architect`.
+7. **Path encoding is deterministic and pure.**
+   `EncodeAttestationPath(rec AttestationRecord) (path
+   string, truncated bool, err error)` is a pure function
+   of the record. AttestationRecord carries every field
+   needed (GridVersion, Context, Stratum, SourceRole,
+   AdversaryRole, TargetRole, PassID); no Grid lookup is
+   required (F-2 remediation). The role_pair separator
+   is `__`. Init arrows use the LITERAL "init" segment
+   for role-pair AND context AND stratum (F-18
+   remediation). A three-role chain (e.g.,
+   `analyst→adversary→architect`) renders as
+   `analyst__adversary__architect` iff `AdversaryRole`
+   is populated on the record (F-3 remediation). Empty
+   `PassID` rejects with `ErrAttestationPassIDEmpty`
+   (F-6 remediation). Per-component byte cap of 255
+   bytes; overflow returns `truncated=true` AND emits
+   `ErrPathComponentTooLong` (F-17 remediation), but the
+   write still proceeds with the hash-substituted segment.
 
 ---
 
