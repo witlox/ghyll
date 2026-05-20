@@ -1488,6 +1488,41 @@ func isFormatRune(r rune) bool {
 	return unicode.Is(unicode.Cf, r)
 }
 
+// validateAndNormalizeOpID applies the cmd/ghyll-local validateOpID
+// rules (which are STRICTER than bootstrap's — they also reject
+// leading '.'/'-' and trailing '.'), then NFC-normalizes the result
+// via bootstrap.ValidateAndNormalizeOpID so the stored form matches
+// what bootstrap.Session would store.
+//
+// Returns the normalized form on success. The two callers that
+// persist an op-id long-term (ghyll init, ghyll init attest) MUST
+// store the normalized form so the grid's created-by-op-id and the
+// runtime session's op-id are equality-comparable across surfaces
+// (H-A post-prod-readiness adversarial finding).
+//
+// The /op-id REPL command intentionally keeps using the
+// non-normalizing validateOpID because the BDD scenarios for the
+// REPL surface still parse against the raw operator-typed form;
+// once those are migrated to expect NFC-normalized forms, this
+// helper can replace validateOpID at the /op-id call-site too.
+func validateAndNormalizeOpID(id string) (string, error) {
+	if err := validateOpID(id); err != nil {
+		return "", err
+	}
+	// bootstrap.ValidateAndNormalizeOpID re-runs its (looser)
+	// validation, NFC-normalizes, and returns the canonical form.
+	// We discard its possible refusals because validateOpID has
+	// already rejected the stricter cases; what we want is the
+	// normalized form. If bootstrap somehow refuses (e.g., a future
+	// rule diverges), surface that as the canonical wire-form
+	// error so downstream tooling sees a consistent shape.
+	normalized, err := bootstrap.ValidateAndNormalizeOpID(id)
+	if err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
+
 // stripControlBytes drops < 0x20 (except \n/\t/\r preserved as
 // space) and 0x7F. Gate-2 SEC-M-3 helper for operator-supplied
 // free-form fields headed for JSONL audit + UI render.

@@ -162,7 +162,20 @@ func (s *Session) handleRunArrowCommand(arg string) SlashCommandResult {
 	// pass-opened / pass-closed / IB-rounds-exceeded fired during
 	// the synchronous dispatch. Subscriber is removed on return so
 	// nothing leaks past the slash-command lifetime.
+	//
+	// H-C post-prod-readiness adversarial: nil-guard `bus` even
+	// though `s.engine != nil` is already checked above. The
+	// engineRuntime.Bus() contract returns nil only on a nil
+	// receiver today, but a future refactor that splits engine
+	// open from bus wiring would silently nil-deref here. Surface
+	// a clean error instead.
 	bus := s.engine.Bus()
+	if bus == nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: "✗ /run-arrow: operator bus unavailable (engine not fully initialized)",
+		}
+	}
 	var (
 		mu     sync.Mutex
 		events []runner.OperatorEvent

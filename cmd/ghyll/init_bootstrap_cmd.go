@@ -78,9 +78,15 @@ func cmdInitBootstrap(args []string) error {
 	if opID == "" {
 		return errors.New("ghyll init: --op-id is required")
 	}
-	if err := validateOpID(opID); err != nil {
+	// H-A post-prod-readiness adversarial: normalize the op-id to
+	// NFC before stamping it into the grid so the grid's
+	// created-by-op-id is equality-comparable with what
+	// bootstrap.Session would later record.
+	normalizedOpID, err := validateAndNormalizeOpID(opID)
+	if err != nil {
 		return fmt.Errorf("ghyll init: %w", err)
 	}
+	opID = normalizedOpID
 
 	if projectDir == "" {
 		projectDir = "."

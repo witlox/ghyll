@@ -72,9 +72,14 @@ func cmdInitAttest(args []string) error {
 	if opID == "" {
 		return errors.New("ghyll init attest: --op-id is required")
 	}
-	if err := validateOpID(opID); err != nil {
+	// H-A post-prod-readiness adversarial: normalize op-id to NFC so
+	// emitted AttestationRecords carry the canonical form (matches
+	// what bootstrap.Session and the grid's created-by-op-id store).
+	normalizedOpID, err := validateAndNormalizeOpID(opID)
+	if err != nil {
 		return fmt.Errorf("ghyll init attest: %w", err)
 	}
+	opID = normalizedOpID
 
 	abs, err := filepath.Abs(dir)
 	if err != nil {

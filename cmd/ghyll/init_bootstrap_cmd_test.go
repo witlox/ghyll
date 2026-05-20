@@ -116,6 +116,43 @@ func TestScenario_CmdInitBootstrap_RejectsInvalidOpID(t *testing.T) {
 	}
 }
 
+// TestScenario_CmdInitBootstrap_NormalizesOpIDToNFC covers H-A
+// post-prod-readiness adversarial remediation: ghyll init must store
+// the NFC-normalized form of the operator's op-id so the grid's
+// created-by-op-id equals what bootstrap.Session would record from
+// the same input via a different encoding form.
+//
+// Decomposed "café" is constructed via explicit byte sequence to
+// keep the test robust against editor / source-formatter Unicode
+// normalization (which would silently make decomposed == composed
+// in the source file). Composed form is built the same way for
+// symmetry.
+func TestScenario_CmdInitBootstrap_NormalizesOpIDToNFC(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Decomposed: c, a, f, e (U+0065), combining acute (U+0301).
+	// UTF-8 bytes: 0x63 0x61 0x66 0x65 0xCC 0x81.
+	decomposed := string([]byte{0x63, 0x61, 0x66, 0x65, 0xCC, 0x81})
+	// Composed: c, a, f, é (U+00E9). UTF-8 bytes: 0x63 0x61 0x66 0xC3 0xA9.
+	composed := string([]byte{0x63, 0x61, 0x66, 0xC3, 0xA9})
+	if decomposed == composed {
+		t.Fatal("test fixture bug: decomposed and composed byte sequences must differ")
+	}
+
+	if err := cmdInitBootstrap([]string{"--op-id", decomposed, dir}); err != nil {
+		t.Fatalf("cmdInitBootstrap (decomposed): %v", err)
+	}
+	g, err := bootstrap.Read(dir)
+	if err != nil {
+		t.Fatalf("bootstrap.Read: %v", err)
+	}
+	if g.CreatedByOpID != composed {
+		t.Errorf("CreatedByOpID = %q; want NFC-normalized %q", g.CreatedByOpID, composed)
+	}
+}
+
 // TestScenario_CmdInitMain_RoutesAttestVsBootstrap verifies the
 // router: `ghyll init attest ...` reaches the existing attest
 // command; `ghyll init ...` (no subcommand) reaches the bootstrap

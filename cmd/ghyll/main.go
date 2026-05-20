@@ -187,6 +187,10 @@ func cmdRun(args []string) error {
 			ui.Status("ℹ", "wrote default config at %s; edit the model endpoints and re-run", configPath)
 			return nil
 		}
+		if errors.Is(err, errConfigBootstrapRace) {
+			ui.Status("ℹ", "another ghyll process is initializing %s; retry shortly", configPath)
+			return nil
+		}
 		return err
 	}
 
