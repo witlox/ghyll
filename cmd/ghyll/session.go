@@ -457,7 +457,15 @@ func (s *Session) Close() {
 	// Gate-2 CONC-H-4: drop the modal driver's bus subscription
 	// BEFORE the engine + bus go away. Without Stop the bus
 	// retains a callback pointing at a torn-down driver.
+	//
+	// Gate-2 CONC-M-3: also drain any in-flight modal requests
+	// via the cancelled sessionCtx — DrainPending sees
+	// context.Canceled and returns immediately, re-queuing items
+	// for next-session. No write-after-close on the tree.
 	if s.modalDriver != nil {
+		if s.sessionCtx != nil {
+			_ = s.modalDriver.DrainPending(s.sessionCtx)
+		}
 		s.modalDriver.Stop()
 	}
 	// Gate-2 CONC-C-1/C-2: close the shared stdin reader so its

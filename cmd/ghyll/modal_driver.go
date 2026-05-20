@@ -290,6 +290,12 @@ func (d *modalDriver) appendRequest(req modalRequest) {
 // after attachJournal + bus.Subscribe have completed. Filters
 // for OpEventRecoveryAttestationRepublished; constructs modal
 // requests from the event's payload.
+//
+// Gate-2 CORR-A-26: deliberately ignores
+// OpEventRecoveryAttestationReplay — replay events are
+// informational (the AttestationRecord is already in the store),
+// so re-presenting the modal would double-prompt. Only the
+// "republished" kind requires operator action.
 func (d *modalDriver) EnqueueFromRecovery(events []runner.OperatorEvent) {
 	for _, ev := range events {
 		if ev.Kind != runner.OpEventRecoveryAttestationRepublished {

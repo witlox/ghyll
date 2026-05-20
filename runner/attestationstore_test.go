@@ -344,11 +344,19 @@ func TestScenario_ValidateUnitPayload_Invalid(t *testing.T) {
 	}
 }
 
-func TestScenario_ValidateUnitPayload_EmptyUnit_Tolerated(t *testing.T) {
-	// Pre-Tier-2 records have Unit="". Validation skips per the
-	// "Tier 1 callers — Unit optional" branch.
-	if err := ValidateUnitPayload(VerdictUnit(""), VerdictUnitPayload{Residue: "anything"}, 0); err != nil {
-		t.Errorf("empty unit: %v", err)
+func TestScenario_ValidateUnitPayload_EmptyUnit_RejectsNonEmptyPayload(t *testing.T) {
+	// Gate-2 SEC-L-3: empty Unit must NOT carry payload. Previously
+	// (Tier 1 compat) we tolerated this; an attacker could craft a
+	// JSONL line with empty unit + 64 MiB residue that loaded
+	// unchecked into memory.
+	err := ValidateUnitPayload(VerdictUnit(""), VerdictUnitPayload{Residue: "anything"}, 0)
+	if !errors.Is(err, ErrVerdictUnitMissingField) {
+		t.Errorf("empty unit + non-empty residue: err = %v; want ErrVerdictUnitMissingField", err)
+	}
+	// Empty unit + empty payload still tolerated for true legacy
+	// rows.
+	if err := ValidateUnitPayload(VerdictUnit(""), VerdictUnitPayload{}, 0); err != nil {
+		t.Errorf("empty unit + empty payload: %v", err)
 	}
 }
 

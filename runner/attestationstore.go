@@ -227,6 +227,15 @@ func ValidateUnitPayload(u VerdictUnit, p VerdictUnitPayload, maxResidueBytes in
 		// Tier 1 / legacy callers — Unit is optional today; only
 		// Tier 2 modal flow requires it. Empty Unit means
 		// "no unit-payload validation".
+		//
+		// Gate-2 SEC-L-3: when Unit is empty, payload MUST also
+		// be zero. Without this, a tampered JSONL row with
+		// Unit="" but a 64 MiB Residue loaded into memory
+		// unchecked. The unit-was-omitted contract is
+		// "no payload was recorded."
+		if len(p.Inspected) != 0 || p.Residue != "" {
+			return fmt.Errorf("%w: empty unit must carry empty payload", ErrVerdictUnitMissingField)
+		}
 		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrVerdictUnitInvalid, u)

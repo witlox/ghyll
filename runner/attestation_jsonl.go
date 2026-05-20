@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -158,9 +159,22 @@ func (w *AttestationJSONLWriter) Observer() AttestationObserver {
 // recordFailure is called under w.mu. Increments the error
 // counter, captures the last error, and publishes a typed bus
 // event so operator-facing surfaces see the failure in real time.
+//
+// Gate-2 SEC-M-4: failure ALSO logs via slog.Error
+// unconditionally, even when bus is nil. Without this, callers
+// that don't WithBus(...) silently lose the failure signal — a
+// classic configure-or-lose footgun. The bus publish stays for
+// live-ops surfaces; slog is the durable record.
 func (w *AttestationJSONLWriter) recordFailure(rec AttestationRecord, err error) {
 	w.writeErrors++
 	w.lastErr = err
+	slog.Error("attestation-jsonl: write failed",
+		"path", w.path,
+		"arrow_id", rec.ArrowID,
+		"clause_id", rec.ClauseID,
+		"op_id", rec.OpID,
+		"err", err.Error(),
+	)
 	if w.bus != nil {
 		w.bus.Publish(OperatorEvent{
 			Kind:     OpEventAttestationAuditDurabilityFailed,

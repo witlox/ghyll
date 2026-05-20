@@ -27,6 +27,14 @@ type LineReader struct {
 	done      chan struct{}
 }
 
+// defaultLineMaxBytes caps a single operator-typed line at 64
+// KiB. Gate-2 SEC-M-1: the previous 1 MiB cap let the scanner
+// buffer pre-validation residue notes much larger than the
+// downstream ValidateUnitPayload cap (typically 16 KiB). Tighten
+// at the reader so the rejection fires earlier (no megabyte
+// allocations for an over-cap residue).
+const defaultLineMaxBytes = 64 * 1024
+
 // NewLineReader constructs and starts a LineReader over src.
 // The reader goroutine runs until src returns EOF or Close() is
 // called. Caller MUST call Close() before src is closed.
@@ -41,7 +49,7 @@ func NewLineReader(src io.Reader) *LineReader {
 
 func (r *LineReader) readLoop(src io.Reader) {
 	scanner := bufio.NewScanner(src)
-	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 4096), defaultLineMaxBytes)
 	for scanner.Scan() {
 		select {
 		case r.lines <- scanner.Text():

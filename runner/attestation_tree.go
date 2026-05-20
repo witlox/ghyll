@@ -479,8 +479,12 @@ func EncodeAttestationPath(rec AttestationRecord) (string, bool, error) {
 //   - Otherwise s passes through.
 func safeSegment(s string) (string, bool) {
 	if s == "" || len(s) > maxPathComponentBytes || s == "." || s == ".." {
+		// Gate-2 SEC-L-4: 16 hex chars = 64 bits; birthday-bound
+		// collision feasible at ~10⁹ records. Bump to 32 hex
+		// (128 bits) so the hash truncation isn't load-bearing
+		// when paths land in operator-visible diagnostics.
 		sum := sha256.Sum256([]byte(s))
-		return "h-" + hex.EncodeToString(sum[:8]), true
+		return "h-" + hex.EncodeToString(sum[:16]), true
 	}
 	return s, false
 }
