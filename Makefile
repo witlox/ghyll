@@ -53,8 +53,8 @@ coverage:
 coverage-check: coverage
 	@COVERAGE=$$(go tool cover -func=coverage.out | grep total | awk '{print $$3}' | tr -d '%'); \
 	echo "Coverage: $${COVERAGE}%"; \
-	if [ $$(echo "$${COVERAGE} < 70" | bc -l) -eq 1 ]; then \
-		echo "FAIL: coverage below 70%"; exit 1; \
+	if [ $$(echo "$${COVERAGE} < 78" | bc -l) -eq 1 ]; then \
+		echo "FAIL: coverage below 78% (Tier 3 floor; aim 80%)"; exit 1; \
 	fi
 
 verify-scenarios:

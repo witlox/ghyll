@@ -92,3 +92,15 @@ func TestEngineCoverage_OpenStoreReadOnly_FreshDB(t *testing.T) {
 	}
 	_ = ro.Close()
 }
+
+// TestScenario_NewNullString_RoundTrip — Tier 3 coverage push.
+func TestScenario_NewNullString_RoundTrip(t *testing.T) {
+	ns := newNullString("hello")
+	if !ns.Valid || ns.String != "hello" {
+		t.Errorf("non-empty: %+v; want Valid+hello", ns)
+	}
+	empty := newNullString("")
+	if empty.Valid {
+		t.Errorf("empty: Valid=true; want false (NULL)")
+	}
+}
