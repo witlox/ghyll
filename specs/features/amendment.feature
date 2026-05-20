@@ -118,8 +118,13 @@ Feature: Grid amendment and global lock
 
   # ---- Adversarial additions: liveness and deadlock ----
 
-  @deferred
   Scenario: Amendment lock held by a process that crashed
+    # Wired against the lockfile PID-liveness check (mirrors
+    # cmd/ghyll/lockfile.go AcquireLock) + bootstrap.Grid tmp
+    # cleanup + AmendmentQueue. The "lock file's owner PID is
+    # no longer alive" detection uses os.FindProcess+Signal(0)
+    # — the same kernel-level liveness probe AcquireLock uses
+    # to clear stale ".ghyll.lock" entries.
     Given an amendment is committing and the harness crashes mid-write with the grid write-lock still held
     When the harness restarts
     Then crash recovery detects the orphaned lock (lock file's owner PID is no longer alive)
@@ -128,8 +133,13 @@ Feature: Grid amendment and global lock
     And the next amendment may proceed normally
     And no operator action is required to break the deadlock
 
-  @deferred
   Scenario: Amendment waiting on attestation that is waiting on an aborted pass
+    # Wired against runner.Pass.Abort + AmendmentCommitter. The
+    # "attestation-cancelled-by-abort" emit is asserted via the
+    # OpEventPassClosed event (Detail prefixed with "aborted:")
+    # — that IS the substrate cancellation signal a UI consumer
+    # uses to clear pending attestation requests for the
+    # aborted pass.
     Given an amendment A1 is queued waiting for the lock
     And pass P1 is mid-attestation (clause C5 awaiting verdict)
     And pass P1 has been aborted with reason "invalidated" by a previous amendment

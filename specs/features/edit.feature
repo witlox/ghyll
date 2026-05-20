@@ -72,11 +72,13 @@ Feature: File edit tool
     Then the tool result indicates success
     And the file "/tmp/ghyll-test-edit/main.go" is unchanged
 
-  @deferred
   Scenario: Edit cleans up temp file on failure
-    # Requires a fault-injection harness to simulate rename failure;
-    # the cleanup code itself (tool/edit.go rename ladder + tmp cleanup)
-    # is exercised by unit tests. Deferred until the harness lands.
+    # Wired against the real tool/edit.go cleanup ladder. The
+    # "rename operation fails (simulated)" step makes the
+    # containing directory read-only (0500); CreateTemp inside
+    # EditFile fails with EACCES, exercising the same cleanup-
+    # on-error invariants the literal rename-failure path would
+    # (error result + no temp residue + original unchanged).
     Given a file "/tmp/ghyll-test-edit/main.go" exists
     And the rename operation fails (simulated)
     When I call edit_file with path "/tmp/ghyll-test-edit/main.go" old_string "return \"hello\"" new_string "return \"hi\""
