@@ -1396,29 +1396,40 @@ func (s *Session) handleOpIDCommand(arg string) SlashCommandResult {
 //   - cannot start with '.' or '-' (no dotfiles or flag-likes)
 const maxOpIDBytes = 256
 
+// op-id wire-form sentinel errors (gate-2 CORR-A-12). The BDD
+// spec at specs/features/attestation.feature:175-186 requires the
+// wire forms "op-id-required" / "op-id-too-long" /
+// "op-id-invalid-characters" so downstream tooling can parse on
+// error names rather than English strings.
+var (
+	ErrOpIDRequired          = errors.New("op-id-required")
+	ErrOpIDTooLong           = errors.New("op-id-too-long")
+	ErrOpIDInvalidCharacters = errors.New("op-id-invalid-characters")
+)
+
 func validateOpID(id string) error {
 	if id == "" {
-		return errors.New("empty")
+		return ErrOpIDRequired
 	}
 	if len(id) > maxOpIDBytes {
-		return fmt.Errorf("too long (%d > %d bytes)", len(id), maxOpIDBytes)
+		return fmt.Errorf("%w: %d > %d bytes", ErrOpIDTooLong, len(id), maxOpIDBytes)
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
 		switch {
 		case c < 0x20 || c == 0x7F:
-			return fmt.Errorf("contains control byte at offset %d (0x%02x)", i, c)
+			return fmt.Errorf("%w: control byte at offset %d (0x%02x)", ErrOpIDInvalidCharacters, i, c)
 		case c == '/' || c == '\\' || c == 0:
-			return fmt.Errorf("contains path-separator at offset %d (%q)", i, string(c))
+			return fmt.Errorf("%w: path-separator at offset %d (%q)", ErrOpIDInvalidCharacters, i, string(c))
 		case c == ' ' || c == '\t':
-			return fmt.Errorf("contains whitespace at offset %d", i)
+			return fmt.Errorf("%w: whitespace at offset %d", ErrOpIDInvalidCharacters, i)
 		}
 	}
 	if strings.Contains(id, "..") {
-		return errors.New(`contains ".." (path-traversal guard)`)
+		return fmt.Errorf(`%w: contains ".." (path-traversal guard)`, ErrOpIDInvalidCharacters)
 	}
 	if id[0] == '.' || id[0] == '-' {
-		return fmt.Errorf("must not start with %q", string(id[0]))
+		return fmt.Errorf("%w: must not start with %q", ErrOpIDInvalidCharacters, string(id[0]))
 	}
 	return nil
 }
@@ -1498,6 +1509,21 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 			Output: fmt.Sprintf("✗ /attest: no live pass owns %q: %v (use the modal flow during a session)", ref, lookupErr),
 		}
 	}
+	// Gate-2 CORR-A-11: synthesize the Tier 2 Unit + payload from
+	// the verdict + reason. The /attest CLI is a power-user escape
+	// hatch — the reason string carries both the human-readable
+	// note AND (for fail / insufficient-basis) the typed payload:
+	//
+	//   pass               → Unit=confirm, empty payload
+	//   fail               → Unit=record-locations-inspected, reason
+	//                        becomes a singleton Inspected entry
+	//                        (real modal flow collects comma-separated
+	//                        locations; /attest treats reason as one
+	//                        location)
+	//   insufficient-basis → Unit=write-residue-note, reason becomes
+	//                        the Residue text
+	unit, payload := synthesizeAttestUnitPayload(verdict, reason)
+
 	rec := runner.AttestationRecord{
 		ID:             ref,
 		Kind:           parsed.kind,
@@ -1512,12 +1538,20 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 		Timestamp:      time.Now().UnixNano(),
 		GridVersion:    parsed.gridVersion,
 		// Tier 2 fields:
-		PassID:  passID,
-		Context: gridArrow.Context,
-		Stratum: gridArrow.Stratum,
+		PassID:      passID,
+		Context:     gridArrow.Context,
+		Stratum:     gridArrow.Stratum,
+		Unit:        unit,
+		UnitPayload: payload,
 		// HintJSON stays at the default '{}'; the /attest CLI is
 		// a power-user replay path, no modal interaction.
 		HintJSON: "{}",
+	}
+	// Marshal the typed payload to UnitPayloadJSON so the JSONL
+	// audit line and engine row carry the canonical serialization
+	// (matches the modal driver's buildRecord behavior).
+	if payloadJSON, jerr := json.Marshal(payload); jerr == nil {
+		rec.UnitPayloadJSON = string(payloadJSON)
 	}
 	if err := s.engine.AttestationStore().Record(rec); err != nil {
 		return SlashCommandResult{
@@ -1529,6 +1563,30 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 		Handled: true, ContinueLoop: true,
 		Output: fmt.Sprintf("✓ attestation %s recorded: verdict=%s by op-id=%s",
 			ref, verdict, s.opID),
+	}
+}
+
+// synthesizeAttestUnitPayload picks the Tier 2 Unit + typed
+// payload for the /attest CLI based on the operator's verdict.
+// Mirrors the modal driver's per-verdict shape so /attest-recorded
+// rows are indistinguishable from modal-flow records once on
+// disk. Gate-2 CORR-A-11.
+func synthesizeAttestUnitPayload(verdict runner.AttestationVerdict, reason string) (runner.VerdictUnit, runner.VerdictUnitPayload) {
+	switch verdict {
+	case runner.AttestationPass:
+		return runner.VerdictUnitConfirm, runner.VerdictUnitPayload{}
+	case runner.AttestationFail:
+		inspected := []string{}
+		if reason != "" {
+			inspected = append(inspected, reason)
+		}
+		return runner.VerdictUnitRecordLocationsInspected,
+			runner.VerdictUnitPayload{Inspected: inspected}
+	case runner.AttestationInsufficientBasis:
+		return runner.VerdictUnitWriteResidueNote,
+			runner.VerdictUnitPayload{Residue: reason}
+	default:
+		return "", runner.VerdictUnitPayload{}
 	}
 }
 
