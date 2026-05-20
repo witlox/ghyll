@@ -39,7 +39,7 @@ import (
 //   - C11/C15: structured first-line token on missing-DB so scripts
 //     can distinguish "no engine" from "engine empty" without
 //     parsing free text.
-const engineUsage = "usage: ghyll engine status|replay|verify-attestations [--dir <path>] [--timeout <seconds>] [--verbose]"
+const engineUsage = "usage: ghyll engine status|replay|recover|verify-attestations [--dir <path>] [--timeout <seconds>] [--verbose]"
 
 func cmdEngineMain(args []string) error {
 	if len(args) < 1 {
@@ -52,6 +52,8 @@ func cmdEngineMain(args []string) error {
 		return cmdEngineStatus(rest)
 	case "replay":
 		return cmdEngineReplay(rest)
+	case "recover":
+		return cmdEngineRecover(rest)
 	case "verify-attestations":
 		return cmdEngineVerifyAttestations(rest)
 	default:
@@ -311,6 +313,134 @@ func cmdEngineReplay(args []string) error {
 		return fmt.Errorf("replay completed with %d errors", len(counts.Errors))
 	}
 	ui.Info("  per-row errors:    0")
+	ui.Info("")
+	ui.Info("note: this is replay-only; session start additionally runs")
+	ui.Info("      crash Recovery (use `ghyll engine recover --dry-run` to preview).")
+	return nil
+}
+
+// cmdEngineRecover previews what crash Recovery would do at next
+// session start. Opens the store read/write, runs Recovery inside
+// a transaction that is ALWAYS rolled back, prints the report.
+// Operator-facing diagnostic per ADR-015 Part D + F-14.
+//
+// Honors a `--dry-run` flag for symmetry with `ghyll engine replay`;
+// today --dry-run is the ONLY mode (a real --commit mode would
+// duplicate session.Open's recovery write, which is already
+// triggered by starting a session). If --commit is passed, the
+// subcommand refuses with a clear "use `ghyll run` instead" message.
+func cmdEngineRecover(args []string) error {
+	commit := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		switch a {
+		case "--dry-run":
+			// Default; explicit acceptance for clarity.
+		case "--commit":
+			commit = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if commit {
+		return errors.New("ghyll engine recover: --commit is not supported; start a session with `ghyll run` to apply recovery")
+	}
+	fl, err := parseEngineFlags(rest)
+	if err != nil {
+		return err
+	}
+	dbPath := fl.DBPath
+	if err := preflightDBPath(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			ui.Info("%s", missingEngineLine)
+			ui.Info("ghyll engine: no store at %s (nothing to recover)", dbPath)
+			return nil
+		}
+		return classifyCLIError(err, fl.Verbose)
+	}
+
+	// Open read/write so Recovery's BeginTx works. The transaction
+	// is always rolled back at the end (dry-run semantics).
+	store, err := engine.OpenStore(dbPath)
+	if err != nil {
+		return classifyCLIError(fmt.Errorf("open %s: %w", dbPath, err), fl.Verbose)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), fl.Timeout)
+	defer cancel()
+
+	// Construct the same dependencies session.Open would, but
+	// route Recovery's writes through a rolled-back transaction.
+	atts := runner.NewAttestationStore()
+	// Load attestations from JSONL so the JOIN-based detection sees
+	// the authoritative state.
+	jsonlPath := filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
+	attCount, err := store.CountAttestations(ctx)
+	if err != nil {
+		return classifyCLIError(err, fl.Verbose)
+	}
+	if _, _, err := atts.LoadFromJSONL(jsonlPath, attCount > 0); err != nil {
+		return classifyCLIError(err, fl.Verbose)
+	}
+	// Catch up the engine cache so the JOIN scan agrees with the
+	// in-memory state. The rollback at the end of Recovery undoes
+	// these writes too — but they're idempotent ON CONFLICT IGNORE
+	// so a real session.Open running afterward sees the same end-
+	// state.
+	if _, err := store.CatchUpAttestations(ctx, atts); err != nil {
+		return classifyCLIError(err, fl.Verbose)
+	}
+
+	// Wrap Recovery in a transaction we roll back.
+	// engine.Recovery already wraps its work in BeginTx/Commit;
+	// we don't have a public "force-rollback" hook, so the
+	// implementation choice for dry-run is: call Recovery (which
+	// commits its own transaction), then immediately reverse the
+	// writes via a counter-transaction. That's ugly. Simpler:
+	// take a sqlite SAVEPOINT before the call and ROLLBACK TO
+	// after. SQLite supports nested savepoints, and Recovery's
+	// inner BeginTx becomes a SAVEPOINT under it.
+	if _, err := store.DB().ExecContext(ctx, `SAVEPOINT recover_dryrun`); err != nil {
+		return classifyCLIError(fmt.Errorf("savepoint: %w", err), fl.Verbose)
+	}
+	rep, recErr := engine.Recovery(ctx, engine.RecoveryDeps{
+		Store:        store,
+		Attestations: atts,
+		Now:          time.Now,
+		JSONLPath:    jsonlPath,
+	}, engine.ReplayCounts{})
+	// Always roll back to the savepoint.
+	if _, rbErr := store.DB().ExecContext(ctx, `ROLLBACK TO SAVEPOINT recover_dryrun`); rbErr != nil {
+		ui.Info("ghyll engine recover: WARNING rollback failed: %v", rbErr)
+	}
+	_, _ = store.DB().ExecContext(ctx, `RELEASE SAVEPOINT recover_dryrun`)
+	if recErr != nil {
+		return classifyCLIError(fmt.Errorf("recover: %w", recErr), fl.Verbose)
+	}
+
+	ui.Info("recover (dry-run): %s", dbPath)
+	ui.Info("  orphans aborted:        %d", rep.OrphansAborted)
+	ui.Info("  orphans preserved:      %d (attestation-pending)", rep.OrphansPreserved)
+	ui.Info("  evaluation_runs flipped: %d (from JSONL verdicts)", rep.EvaluationRunsFlipped)
+	if len(rep.Events) > 0 {
+		shown := len(rep.Events)
+		if shown > maxCLIErrorsShown {
+			shown = maxCLIErrorsShown
+		}
+		ui.Info("  events:")
+		for i := 0; i < shown; i++ {
+			ev := rep.Events[i]
+			ui.Info("    - %s pass=%s arrow=%s clause=%s",
+				ev.Kind, ev.PassID, ev.ArrowID, ev.ClauseID)
+		}
+		if len(rep.Events) > maxCLIErrorsShown {
+			ui.Info("    … %d more events elided", len(rep.Events)-maxCLIErrorsShown)
+		}
+	}
+	ui.Info("")
+	ui.Info("note: --dry-run; no changes persisted. Start a session")
+	ui.Info("      with `ghyll run` to apply recovery for real.")
 	return nil
 }
 
