@@ -347,6 +347,63 @@ type ScenarioState struct {
 	AModCrossed        bool
 	AModValidateErr    error
 	AModUpstreamSignal bool
+
+	// runner.feature @deferred lifts (Batch 2) — exercises the
+	// machine-evaluation / attested-clause / verification-auto-insert
+	// surfaces against the Tier 2 substrate (BindingEvaluator +
+	// SynthesizeHint + AttestationStore + FindingsStore +
+	// VerificationAutoInsert + Adversary single-shot).
+	R2ProjectDir   string
+	R2Registry     *runner.Registry
+	R2Runner       *runner.Runner
+	R2Run          *runner.EvaluationRun
+	R2RunErr       error
+	R2Clause       runner.Clause
+	R2ClauseInput  runner.ClauseDeriveInput
+	R2ArrowStatus  runner.ArrowStatus
+	R2AttStore     *runner.AttestationStore
+	R2AttRecord    runner.AttestationRecord
+	R2Hint         runner.Hint
+	R2Findings     *runner.FindingsStore
+	R2FindingID    string
+	R2AutoInserted []runner.Clause
+	R2AdvFindings  *runner.FindingsStore
+	R2AdvClassif   *runner.ClassificationsStore
+	R2AdvReport    *runner.AttackReport
+	R2AdvErr       error
+
+	// amendment.feature lock-recovery + aborted-pass deferred
+	// lifts (Batch 4) — exercises the lockfile PID-liveness
+	// check + Grid tmp cleanup + Pass.Abort interaction with
+	// AmendmentCommitter.
+	ALRWorkdir      string
+	ALRGhyllDir     string
+	ALRGridDir      string
+	ALRStaleLockPID int
+	ALRLockReleased bool
+	ALRTmpUnlinked  bool
+	ALRPostQueue    *runner.AmendmentQueue
+	ALRPostCommit   *runner.AmendmentCommitter
+	ALRPostGrid     *runner.Grid
+	ALRPostPasses   *runner.PassRegistry
+	ALRPostBus      *runner.OperatorBus
+	ALRPostEvents   []runner.OperatorEvent
+	ALRPostResult   *runner.CommitResult
+	ALRPostErr      error
+
+	ALRAbortLockTable *runner.RoleContextLockTable
+	ALRAbortGrid      *runner.Grid
+	ALRAbortPasses    *runner.PassRegistry
+	ALRAbortQueue     *runner.AmendmentQueue
+	ALRAbortBus       *runner.OperatorBus
+	ALRAbortEvents    []runner.OperatorEvent
+	ALRAbortCommitter *runner.AmendmentCommitter
+	ALRAbortP1        *runner.Pass
+	ALRAbortP1Evt     bool // saw OpEventPassClosed:aborted for P1
+	ALRAbortA1        runner.AmendmentRequest
+	ALRAbortResult    *runner.CommitResult
+	ALRAbortErr       error
+	ALRAbortElapsed   time.Duration
 }
 
 // AddTerminal records a terminal output message for assertion in steps.

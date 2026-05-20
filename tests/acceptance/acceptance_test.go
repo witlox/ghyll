@@ -107,6 +107,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// AmendmentCommitter end-to-end (amendment.feature).
 	registerAmendmentDeferredSteps(ctx, state)
 
+	// Amendment lock-recovery + aborted-pass scenarios — wires
+	// the lockfile PID-liveness check + Grid tmp cleanup +
+	// Pass.Abort interaction with AmendmentCommitter (amendment
+	// .feature Batch 4 lifts).
+	registerAmendmentLockRecoverySteps(ctx, state)
+
 	// Adversarial deferred batch — multi-round remediation,
 	// loop-bomb detection, bounded escalation, verification
 	// auto-insert (adversarial.feature).
@@ -140,6 +146,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// risk, route-upstream, oversized residue, near-simultaneous
 	// verdicts (attestation.feature post-Tier-2 lifts).
 	registerAttestationModalSteps(ctx, state)
+
+	// Runner modal deferred-lift batch (Batch 2) — machine
+	// evaluation success/fail, attested-clause hint emission +
+	// operator verdict, producer unable-to-hint, verification
+	// auto-insert + pure-machine arrow skips adversarial
+	// (runner.feature post-Tier-2 lifts).
+	registerRunnerModalSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

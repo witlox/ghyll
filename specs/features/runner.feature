@@ -12,7 +12,6 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Single machine clause evaluation ----
 
-  @deferred
   Scenario: Successful machine evaluation
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
     And the upstream artifact contains src/foo.go with no TODO markers
@@ -26,7 +25,6 @@ Feature: Machine-clause runner (enforcement spine)
     And the result.details.scanned-files is non-empty (proving real scan)
     And an evaluation-run record is appended with evaluation-run-id, clause-id, pass-id, started-at, completed-at, result, and the list of files actually scanned (so a stub returning empty hits without scanning is detectable)
 
-  @deferred
   Scenario: Machine evaluation fails
     Given a clause "no-todo-marker(scope='src/**')" on arrow A1
     And the artifact contains "TODO: implement retries" at src/foo.go:42
@@ -49,7 +47,6 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Attested clause coordination ----
 
-  @deferred
   Scenario: Attested clause requires hint emission
     Given a clause "attested-G7" on arrow A1 with producer role "analyst"
     When the runner reaches this clause during pass P1
@@ -58,14 +55,12 @@ Feature: Machine-clause runner (enforcement spine)
     And the runner forwards the hint to the attestation flow component
     And the clause status transitions: pending → awaiting-attestation
 
-  @deferred
   Scenario: Operator returns attestation verdict
     Given a clause with status "awaiting-attestation"
     When the attestation flow component records an operator verdict (pass / fail / insufficient-basis)
     Then the runner updates the clause status to match the verdict
     And the arrow's derived status is recomputed
 
-  @deferred
   Scenario: Producer cannot emit hint
     Given a clause where the producer reports "unable-to-hint"
     Then the runner records the clause "unevaluated" with reason "no-rule-selectable-locations"
@@ -122,7 +117,6 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Verification phase orchestration ----
 
-  @deferred
   Scenario: Adversarial phase ran verification auto-inserts
     Given an arrow that ran an adversarial phase
     When the runner enters the verification phase
@@ -131,7 +125,6 @@ Feature: Machine-clause runner (enforcement spine)
     And evaluates them alongside the arrow's declared verification clauses
     And these auto-inserted clauses CANNOT be skipped or weakened by the arrow definition
 
-  @deferred
   Scenario: Pure machine arrow skips adversarial and verification only
     Given an arrow with only machine, depth-robust clauses
     Then the runner skips adversarial and remediation phases
