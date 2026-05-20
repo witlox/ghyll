@@ -40,21 +40,23 @@ func LoadOrGenerateKey(keysDir string, deviceID string) (*DeviceKey, error) {
 		return nil, fmt.Errorf("memory: generate key: %w", err)
 	}
 
-	// Write private key (PEM, mode 0600)
+	// Write private key (PEM, mode 0600). Tier 3 / SR L-9: atomic
+	// temp+rename so a crash mid-write doesn't leave a truncated
+	// file that next session loads as a malformed key.
 	privPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "ED25519 PRIVATE KEY",
 		Bytes: priv.Seed(),
 	})
-	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
+	if err := writeFileAtomic(privPath, privPEM, 0600); err != nil {
 		return nil, fmt.Errorf("memory: write private key: %w", err)
 	}
 
-	// Write public key (PEM)
+	// Write public key (PEM, atomic for the same reason).
 	pubBytes, err := MarshalPublicKey(pub)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(pubPath, pubBytes, 0644); err != nil {
+	if err := writeFileAtomic(pubPath, pubBytes, 0644); err != nil {
 		return nil, fmt.Errorf("memory: write public key: %w", err)
 	}
 
@@ -80,6 +82,14 @@ func loadKey(privPath, pubPath, deviceID string) (*DeviceKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("memory: invalid PEM in private key")
 	}
+	// Tier 3 / SR C-4: ed25519.NewKeyFromSeed panics on
+	// len != SeedSize. Defensive length check converts a panic
+	// into a typed error so a corrupted key file doesn't crash
+	// the process.
+	if len(block.Bytes) != ed25519.SeedSize {
+		return nil, fmt.Errorf("memory: invalid private key length: got %d, want %d",
+			len(block.Bytes), ed25519.SeedSize)
+	}
 	priv := ed25519.NewKeyFromSeed(block.Bytes)
 	pub := priv.Public().(ed25519.PublicKey)
 
@@ -88,6 +98,10 @@ func loadKey(privPath, pubPath, deviceID string) (*DeviceKey, error) {
 
 // MarshalPublicKey encodes an ed25519 public key as PEM.
 func MarshalPublicKey(pub ed25519.PublicKey) ([]byte, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("memory: invalid ed25519 public key length: got %d, want %d",
+			len(pub), ed25519.PublicKeySize)
+	}
 	return pem.EncodeToMemory(&pem.Block{
 		Type:  "ED25519 PUBLIC KEY",
 		Bytes: pub,
@@ -95,10 +109,19 @@ func MarshalPublicKey(pub ed25519.PublicKey) ([]byte, error) {
 }
 
 // UnmarshalPublicKey decodes an ed25519 public key from PEM.
+//
+// Tier 3 / SR C-4: refuses any payload whose length is not exactly
+// ed25519.PublicKeySize (32 bytes). The previous no-check cast
+// produced ed25519.Verify panics on length-mismatched keys and
+// silent fail-true on coincidentally-32-byte attacker garbage.
 func UnmarshalPublicKey(data []byte) (ed25519.PublicKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("memory: invalid PEM in public key")
+	}
+	if len(block.Bytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("memory: invalid ed25519 public key length: got %d, want %d",
+			len(block.Bytes), ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(block.Bytes), nil
 }

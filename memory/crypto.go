@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 )
 
@@ -57,6 +58,16 @@ func CanonicalHash(cp *Checkpoint) string {
 }
 
 // canonicalJSON produces JSON with sorted keys and no extra whitespace.
+//
+// Tier 3 / SR H-9: marshal errors are now PROPAGATED via panic
+// (caught by CanonicalHash callers via the public wrapper).
+// Previously errors were silently swallowed via `keyBytes, _ :=
+// json.Marshal(k)` producing nil segments → two distinct
+// checkpoints could canonicalize to the same hash, enabling
+// substitution attacks. With an unmarshalable value (cyclic,
+// NaN floats, broken Marshaler) the panic surfaces as a clear
+// "canonical hash failed" error at the boundary; integrity
+// guarantee preserved.
 func canonicalJSON(m map[string]any) []byte {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -70,8 +81,14 @@ func canonicalJSON(m map[string]any) []byte {
 		if i > 0 {
 			buf = append(buf, ',')
 		}
-		keyBytes, _ := json.Marshal(k)
-		valBytes, _ := json.Marshal(m[k])
+		keyBytes, err := json.Marshal(k)
+		if err != nil {
+			panic(fmt.Errorf("canonicalJSON: marshal key %q: %w", k, err))
+		}
+		valBytes, err := json.Marshal(m[k])
+		if err != nil {
+			panic(fmt.Errorf("canonicalJSON: marshal value for %q: %w", k, err))
+		}
 		buf = append(buf, keyBytes...)
 		buf = append(buf, ':')
 		buf = append(buf, valBytes...)
