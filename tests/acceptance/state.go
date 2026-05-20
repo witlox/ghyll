@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"os"
 	"time"
 
 	"github.com/witlox/ghyll/bootstrap"
@@ -257,6 +258,17 @@ type ScenarioState struct {
 	AVMatching     []runner.AttestationRecord
 	AVVerifyResErr error
 
+	// Tier 2 modal/path-encoding scenarios (attestation.feature
+	// @deferred lifts: three-role path, init path, missing field).
+	T2Rec          runner.AttestationRecord
+	T2Path         string
+	T2Truncated    bool
+	T2EncodeErr    error
+	T2VerifyDir    string
+	T2VerifyPath   string
+	T2VerifyResult runner.VerifyResult
+	T2VerifyErr    error
+
 	// Runner-pass deferred batch (concurrent / refused / amendment
 	// abort / depth-gate scenarios in runner.feature).
 	RPLockTable   *runner.RoleContextLockTable
@@ -316,6 +328,13 @@ type ScenarioState struct {
 // AddTerminal records a terminal output message for assertion in steps.
 func (s *ScenarioState) AddTerminal(msg string) {
 	s.TerminalOutput = append(s.TerminalOutput, msg)
+}
+
+// T2TempDir returns a per-scenario temp directory; convenience
+// for Tier 2 BDD steps that need to write a JSONL fixture.
+func (s *ScenarioState) T2TempDir(prefix string) string {
+	dir, _ := os.MkdirTemp("", "t2-"+prefix+"-")
+	return dir
 }
 
 // buildClauseArgs returns a default arg map for a catalogue concept,

@@ -115,7 +115,7 @@ func TestScenario_EncodeAttestationPath_Init(t *testing.T) {
 	rec.Context = "anything" // overridden
 	rec.Stratum = "anything" // overridden
 	rec.SourceRole = "ignored"
-	rec.TargetRole = "ignored"
+	rec.TargetRole = "analyst" // target role appears in role-pair
 	path, truncated, err := EncodeAttestationPath(rec)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
@@ -123,7 +123,9 @@ func TestScenario_EncodeAttestationPath_Init(t *testing.T) {
 	if truncated {
 		t.Errorf("init fixture should not truncate")
 	}
-	want := filepath.Join("v3", "init", "stratum-init", "init", "P-1.jsonl")
+	// Per attestation.feature "init arrow path encoding":
+	// role-pair = "init__analyst", context + stratum = "_".
+	want := filepath.Join("v3", "_", "stratum-_", "init__analyst", "P-1.jsonl")
 	if path != want {
 		t.Errorf("path = %q; want %q", path, want)
 	}

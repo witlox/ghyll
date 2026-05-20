@@ -123,6 +123,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// Tier 1 crash-recovery — 7 deferred scenarios across
 	// state-machine.feature + runner.feature (ADR-015).
 	registerTier1RecoverySteps(ctx, state)
+
+	// Tier 2 modal + path encoding — three-role chain, init path,
+	// missing-required-field detection (attestation.feature
+	// @deferred lifts, ADR-016 Step 15).
+	registerTier2ModalSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

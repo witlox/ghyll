@@ -164,7 +164,6 @@ Feature: Operator attestation flow
     And can reconstruct the operator's decision chain
     And can verify that the required fields per unit are present
 
-  @deferred
   Scenario: Missing required field is detected
     Given an attestation record with unit "record-locations-inspected" but no "inspected" array
     When the verifier reads it
@@ -221,7 +220,6 @@ Feature: Operator attestation flow
 
   # ---- Adversarial additions: path canonicalization for three-role chain ----
 
-  @deferred
   Scenario: Three-role chain path encoding
     Given an arrow with role-pair containing the adversary segment (e.g., analyst→adversary→architect)
     When an attestation record is written
@@ -229,7 +227,6 @@ Feature: Operator attestation flow
     And NOT "analyst-adversary-architect" or "analyst→adversary→architect"
     And the path is filesystem-portable (no Unicode glyphs, no path separators, ≤ 255 bytes per component)
 
-  @deferred
   Scenario: init arrow path encoding
     Given an attestation record for the init arrow
     When the path is constructed

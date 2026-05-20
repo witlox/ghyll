@@ -375,9 +375,18 @@ func EncodeAttestationPath(rec AttestationRecord) (string, bool, error) {
 		rolePair string
 	)
 	if isInit {
-		context = "init"
-		stratum = "init"
-		rolePair = "init"
+		// Per attestation.feature "init arrow path encoding":
+		// role-pair is "init__<target>", context + stratum become
+		// "_" placeholders (init is project-scoped, not context-
+		// scoped — per components/init.md sub-phase A).
+		context = "_"
+		stratum = "_"
+		target := strings.TrimSpace(rec.TargetRole)
+		if target == "" {
+			rolePair = "init"
+		} else {
+			rolePair = "init__" + target
+		}
 	} else {
 		context = rec.Context
 		stratum = rec.Stratum
