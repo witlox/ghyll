@@ -9,10 +9,11 @@ import (
 	"github.com/witlox/ghyll/runner"
 )
 
-// TestScenario_SchemaMigration_V4ToV5 verifies the table-rebuild
-// migration that adds CHECK (pass_id != ”) to attestations.
-// Tier 3 / gate-2 CORR-A-27.
-func TestScenario_SchemaMigration_V4ToV5(t *testing.T) {
+// TestScenario_AttestationsSchema_PassIDCheck verifies the
+// attestations table CHECK (pass_id <> ”) constraint rejects
+// inserts with an empty pass_id and accepts well-formed records
+// via CatchUpAttestations.
+func TestScenario_AttestationsSchema_PassIDCheck(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "engine.sqlite")
 	store, err := OpenStore(dbPath)

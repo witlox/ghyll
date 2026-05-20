@@ -220,14 +220,6 @@ func (s *Store) CatchUpAttestations(ctx context.Context, src *runner.Attestation
 		events []runner.OperatorEvent
 	)
 	for _, rec := range recs {
-		// Tier 3 / gate-2 CORR-A-27: the v5 schema CHECK rejects
-		// empty pass_id. Legacy Tier 1 rows loaded via
-		// LoadFromJSONL carry empty PassID by design; backfill
-		// here mirrors the v5 migration's strategy so CatchUp
-		// doesn't refuse the upsert.
-		if rec.PassID == "" {
-			rec.PassID = "legacy-" + rec.ID
-		}
 		written, override, err := s.upsertAttestationInTx(ctx, tx, rec)
 		if err != nil {
 			return count, events, fmt.Errorf("catch-up attestation %s: %w", rec.ID, err)

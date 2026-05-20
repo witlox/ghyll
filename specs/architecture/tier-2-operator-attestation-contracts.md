@@ -13,20 +13,20 @@ disposition log; F-N refs below cite the finding being addressed.
 
 ---
 
-## `engine/store.go` — schema bump + migration
+## `engine/store.go` — baseline schema
+
+The 7 Tier 2 columns (pass_id, context, stratum, adversary_role,
+unit, unit_payload_json, hint_json) are part of the baseline
+`CREATE TABLE attestations` along with the `CHECK (pass_id <> '')`
+constraint.
 
 ```go
-const schemaVersion = 4 // was 3 (Tier 1)
-
-// ensureUnitColumns adds the 7 Tier 2 columns to attestations
-// inside a single transaction (gate-1 F-10):
-//   pass_id, context, stratum, adversary_role,
-//   unit, unit_payload_json, hint_json (default '{}')
-// Idempotent; PRAGMA-checks existence per column.
-func (s *Store) ensureUnitColumns() error
+const schemaVersion = 1
 ```
 
-The `passes` table is unchanged.
+Pre-prod the v2→v5 ALTER chain that originally introduced these
+columns was collapsed into a single fresh schema (no upgrade path
+is preserved). The `passes` table is unchanged.
 
 ---
 

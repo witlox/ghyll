@@ -61,6 +61,7 @@ func registerAttestationDeferredSteps(ctx *godog.ScenarioContext, state *Scenari
 			SourceRole:     "analyst",
 			TargetRole:     "architect",
 			GridVersion:    1,
+			PassID:         state.AVPassID,
 		}
 		rounds := []struct {
 			id      string

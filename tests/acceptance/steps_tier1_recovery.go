@@ -353,6 +353,7 @@ func registerTier1RecoverySteps(ctx *godog.ScenarioContext, state *ScenarioState
 			Verdict:        runner.AttestationPass,
 			Timestamp:      1716100000_000000000,
 			GridVersion:    1,
+			PassID:         "P1",
 		})
 	})
 

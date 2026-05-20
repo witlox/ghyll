@@ -91,11 +91,11 @@ COMMIT;
   "concept": "", "attestation_ref": ""}`. Tier 3 adds
   `locations`, `basis`, `residue`.
 
-`schemaVersion` bumps from 3 to 4. `ensureUnitColumns` wraps
-the ALTERs in `db.Begin()` / `tx.Commit()` (gate-1 F-10) so a
-partial-failure rolls back cleanly. PRAGMA-based existence
-check per column matches Tier 1's `ensureRecoverySourceColumn`
-pattern.
+These columns are baked into the fresh `CREATE TABLE` in
+`engine/store.go` — no migration path is preserved. (The
+original ADR specified an `ensureUnitColumns` ALTER-based
+migration; this was dropped pre-prod when the v2→v5 chain was
+collapsed into a single baseline schema.)
 
 ### Part B: Tree writer becomes primary
 
@@ -437,9 +437,9 @@ Modal is needed for the escalation prompt at minimum.
 
 ## Implementation seam
 
-- `engine/store.go`: `schemaVersion = 4`;
-  `ensureUnitColumns()` migration mirrors
-  `ensureRecoverySourceColumn`.
+- `engine/store.go`: the 7 Tier 2 columns are part of the
+  baseline `CREATE TABLE attestations`. (Pre-prod the v2→v5
+  ALTER chain was collapsed into a single fresh schema.)
 - `engine/records.go`: new fields on `AttestationRecord` (in
   the engine variant — runner's `runner.AttestationRecord`
   mirrors).

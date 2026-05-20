@@ -7,15 +7,12 @@ import (
 	"testing"
 )
 
-// TestScenario_SchemaMigration_V3ToV4 verifies that a fresh
-// OpenStore on a brand-new database produces an attestations
-// table with all 7 Tier 2 columns present, and is idempotent
-// (re-opening doesn't double-ALTER).
-//
-// This is the v3→v4 migration test the contracts doc calls for
-// (Step 16 final roundup). Covers gate-1 F-10 (single-tx
-// migration) by asserting all columns appear together.
-func TestScenario_SchemaMigration_V3ToV4(t *testing.T) {
+// TestScenario_AttestationsSchema_Tier2Columns verifies that a fresh
+// OpenStore on a brand-new database produces an attestations table
+// with all 7 Tier 2 columns present (pass_id, context, stratum,
+// adversary_role, unit, unit_payload_json, hint_json) and is
+// idempotent on re-open.
+func TestScenario_AttestationsSchema_Tier2Columns(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "engine.sqlite")
 	store, err := OpenStore(dbPath)
