@@ -9,8 +9,14 @@
 //
 // Public surface:
 //
-//   - Load(dir string) (*Catalogue, error) — reads all *.yaml files,
-//     validates self-consistency, returns a Catalogue.
+//   - LoadEmbedded() (*Catalogue, error) — production entry point;
+//     reads the schemas embedded into the binary at build time
+//     (ghyll.ConceptsFS). Use this for any session-start wiring so
+//     the released binary does not depend on the source checkout's
+//     on-disk layout (integrator finding H-1).
+//   - Load(dir string) (*Catalogue, error) — disk-backed loader for
+//     custom-data scenarios (tests with bespoke schemas, ad-hoc
+//     tooling). Production code should prefer LoadEmbedded.
 //   - (*Catalogue).Get(name string) (Concept, bool) — lookup by name.
 //   - (*Catalogue).List() []string — enumerate concept names (sorted).
 //   - (*Catalogue).Count() int — number of loaded concepts.

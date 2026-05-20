@@ -27,7 +27,10 @@ var (
 
 func loadSharedCatalogue() (*catalogue.Catalogue, error) {
 	sharedCatalogueOnce.Do(func() {
-		sharedCatalogue, sharedCatalogueErr = catalogue.Load("../../gates/concepts")
+		// Embedded catalogue, not cwd-relative disk path. The
+		// released binary cannot reach ../../gates/concepts;
+		// neither should the acceptance suite (integrator H-1).
+		sharedCatalogue, sharedCatalogueErr = catalogue.LoadEmbedded()
 	})
 	return sharedCatalogue, sharedCatalogueErr
 }
