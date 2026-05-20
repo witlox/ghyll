@@ -52,7 +52,7 @@ mid-pass.
 | **Live pass** | A row whose `state = 'open'`. Held in memory by `PassRegistry`; persisted on every state transition. |
 | **Historical pass** | A row whose `state ∈ {'closed', 'aborted'}`. Not held in memory; readable via the engine table. |
 | **Orphan pass** | A row found at startup with `state = 'open'` and no live process owns it. Crash recovery is the only path that observes this. |
-| **Attestation-pending pass** | An orphan pass whose `arrow_id` has at least one clause with a published-but-unanswered hint on the operator bus (an attestation request without a corresponding record in the attestation table). |
+| **Attestation-pending pass** | An orphan pass with at least one `evaluation_runs` row matching `pass_id = P` AND `depth_type_attestation_ref != ''` AND `end_status = 'running'` AND no `attestations` row with `attestation_id = depth_type_attestation_ref`. (F-1 of validation-impl-pass-tier1.md: defined via the engine JOIN, not via the volatile `OperatorBus`; persistent attestation-request store is Tier 2.) |
 | **Recovery event** | A typed `OperatorEvent` emitted during replay for every reconciliation action (mark-aborted-crash, mark-aborted-attestation-recovered, status-flip-from-jsonl). Audit trail for the operator. |
 
 ---
@@ -77,23 +77,37 @@ mid-pass.
    compute the reconciliation set, apply transitions in batch,
    write recovery events.
 4. **Attestation-pending passes survive crash recovery.** A pass
-   with state `open` AND at least one of its clauses has a
-   published-but-unanswered attestation request stays `open` after
-   recovery. The hint is re-published on the bus so a reconnecting
-   UI can render it. The pass's `recovered_at` timestamp is
-   recorded for audit.
+   whose `evaluation_runs` × `attestations` JOIN identifies at
+   least one clause as attestation-pending (per the definition
+   above) stays `open` after recovery. Recovery calls
+   `PassRegistry.Resume(rec, lockTable)` (F-3) to reconstitute
+   the in-memory `*Pass` AND re-acquire the per-(role, context)
+   lock token, so the dispatcher cannot race a duplicate pass on
+   the same tuple. The hint is reconstructed from the
+   evaluation_runs row (`arrow_id` + `clause_id` +
+   `depth_type_attestation_ref`) and surfaced via
+   `RecoveryReport.Events`, NOT via the volatile OperatorBus
+   (F-18: bus has no subscribers at recovery time). The first
+   preservation stamps `recovered_at`; subsequent recoveries
+   skip the pass if `recovered_at != ''` (F-12 idempotence).
 5. **All other open passes become `aborted` with reason
    `crash`.** Recovery sets `closed_at = recovered_at`,
    `close_reason = "crash"`. Findings raised under the pass keep
    their `grid_version` tag (already an invariant of the existing
    `FindingsStore`).
-6. **Torn checkpoint records are detected and rolled back.** If the
-   sqlite-level row update was partial (sqlite WAL guarantees this
-   is rare but possible at the JSONL-engine seam), the recovery
-   pass detects the inconsistency by hashing the row + comparing
-   to the journal record's hash. Mismatched rows are rolled back
-   to the last verified state; the affected pass is re-marked
-   `aborted:crash`.
+6. **JSONL torn-line handling is lenient; engine row torn-write
+   detection is dropped.** Per F-6 / F-15: sqlite WAL provides
+   row-level atomicity for engine writes; an additional row-hash
+   verification was rejected as premature. The remaining torn-
+   write surface is the JSONL: if `loadFromJSONL` encounters a
+   truncated trailing line, it returns `(loaded int, truncated
+   bool, err error)` where `truncated=true` means it stopped at
+   the last complete record. Session.Open emits
+   `OpEventAttestationAuditDurabilityFailed` with offset detail;
+   on the next successful `Record`, the JSONL writer truncates
+   the file at the last complete offset before appending. **The
+   "Crash mid checkpoint-log write" deferred BDD scenario is
+   retired** (see `state-machine.feature` change in this phase).
 7. **`Query historical pass` is a read, not a reconstruction.** A
    historical pass-id query SELECTs from the engine table; if the
    row exists, return it. If not, return `not-found`. No
@@ -164,14 +178,17 @@ Scenario: Restart aborts orphan open passes
 
 Scenario: Restart preserves attestation-pending open passes
   Given the engine store has 1 open pass P1
-  And P1's arrow has clause C5 with an attestation request that has no
-      corresponding record in the attestation table
-  When engine.Replay runs
-  Then P1's state remains `open`
-  And the attestation request is re-published on the OperatorBus
-  And an OperatorEvent of kind `recovery-attestation-republished` is
-      published with P1's pass-id and C5's clause-id
-  And P1's `recovered_at` is set
+  And P1 has an evaluation_runs row for clause C5 with
+      depth_type_attestation_ref="att-X-C5-v1", end_status="running"
+  And no attestations row has attestation_id="att-X-C5-v1"
+  When engine.Recovery runs
+  Then P1's engine row state remains `open` and recovered_at is set
+  And PassRegistry.Resume reconstitutes the in-memory *Pass + re-
+      acquires the (role, context) lock token
+  And RecoveryReport.Events contains a `recovery-attestation-republished`
+      event with P1's pass-id, C5's clause-id, and att-X-C5-v1
+  And session.Open surfaces RecoveryReport.Events to the operator
+      (NOT via OperatorBus — bus has no subscribers at recovery time)
 ```
 
 ### F-3: Query historical pass
@@ -207,19 +224,25 @@ Scenario: JSONL has the verdict, clause status hasn't transitioned
   And no `split-brain` persists (JSONL says pass; engine + runtime say pass)
 ```
 
-### F-5: Crash mid-checkpoint write
+### F-5: JSONL trailing-line truncation handled leniently
 
 ```gherkin
-Scenario: Engine row write partial (hash mismatch)
-  Given the engine `passes` table has a row for P1 whose
-        journal-derived hash does not match the in-row content
-  When engine.Replay verifies the row
-  Then the row is rolled back to the last verified state
-  And if no verified state exists, the row is re-marked `aborted` with
-      reason `crash`
-  And an OperatorEvent of kind `recovery-torn-row-rollback` is published
-      with P1's pass-id
+Scenario: Recovery skips a truncated trailing JSONL line
+  Given .ghyll/attestations.jsonl has N complete records followed by a
+        partial record (no terminating newline)
+  When attestations.loadFromJSONL is called at session.Open
+  Then it returns (loaded=N, truncated=true, err=nil)
+  And session.Open emits OpEventAttestationAuditDurabilityFailed
+      with detail "trailing truncated line at offset M skipped"
+  And on the next successful AttestationStore.Record, the writer
+      truncates the file at offset M before appending
 ```
+
+Engine row torn-write detection (originally invariant 6) is
+**dropped per F-6 / F-15**: sqlite WAL provides row-level
+atomicity; adding row-hash verification was rejected as premature.
+The "Crash mid checkpoint-log write" deferred BDD scenario is
+retired in `state-machine.feature` as part of this phase.
 
 ### F-6: Per-pass checkpoint emission (runner.feature wiring)
 
@@ -249,9 +272,9 @@ Scenario: Pass aborted records reason in checkpoint
 | FM-4 | Engine + JSONL agree, but `evaluation_runs.end_status` still says `running` after a crash | Single clause | Recovery's F-4 reconciliation reads the JSONL verdict, applies it to the clause via `Runner.transitionClause`, and fires `recovery-attestation-replay`. |
 | FM-5 | Two restart processes try to run recovery concurrently | Whole project | The session lockfile (`cmd/ghyll/session.go`) holds the single-active-session invariant. A second process refuses to start. |
 | FM-6 | Recovery itself crashes mid-reconciliation | Variable | Recovery is idempotent (invariant 3); the next start re-runs it. Partial state is acceptable because every recovery action is a deterministic function of the persisted store + JSONL state. |
-| FM-7 | An operator-published attestation request was on the bus but never persisted (purely in-memory) | Single clause | Lost. The hint cannot be re-published on restart because the bus is volatile. Recovery treats the pass as plain orphan and aborts with reason `crash`. *Mitigation: the operator UI should treat bus events as advisory; only persisted attestation requests survive a crash.* |
+| FM-7 | An attestation request was in operator-bus-only state (no `depth_type_attestation_ref` written to evaluation_runs) when the crash hit | Single clause | The JOIN-based detection (see Domain model) finds nothing → pass falls to orphan-abort. Mitigation: every code path that publishes `OpEventAttestationRequested` MUST first write the `depth_type_attestation_ref` to the `evaluation_runs` row (existing `runner/dispatcher.go:221-234` flow already does this — the ref lands when Runner.Evaluate persists the run, before the operator's verdict). FM-7 reduces to "the dispatcher crashed BETWEEN evaluating the clause and persisting the run" — a single-clause loss window equivalent to losing any other partial write. |
 
-FM-7 is the load-bearing one for the user direction "preserve attestation-pending passes". The current bus is volatile in-memory; for crash recovery to honor invariant 4, attestation **requests** (not just records) need a persistence path. Flagged for architect.
+FM-7 is bounded by the existing engine persistence boundary at `runner.Runner.Evaluate` → journal → `evaluation_runs` row. The JOIN-based detection (F-1 of validation-impl-pass-tier1.md) replaces the original bus-based detection.
 
 ---
 
@@ -289,7 +312,7 @@ FM-7 is the load-bearing one for the user direction "preserve attestation-pendin
 |---|---|---|
 | A-1 | Pass throughput is low enough that per-transition sqlite writes don't bottleneck. | Falsifies if a fan-out test produces thousands of simultaneous passes per second. Current invariant is one operator per repo → low ceiling. |
 | A-2 | The `attestations` JSONL file is durable on its host filesystem (fsync semantics work). | Falsifies on NFS or other filesystems that don't honor fsync. Operators on such filesystems lose the inversion's guarantees. |
-| A-3 | Attestation requests can be persisted (FM-7's mitigation). | Falsifies if the substrate continues to publish attestation requests only on the volatile bus. Forced into FM-7's degraded behavior until addressed. **Flagged for architect.** |
+| A-3 | The `depth_type_attestation_ref` on a clause is persisted via `evaluation_runs` BEFORE the volatile bus event fires. Validated against `runner/dispatcher.go:221-234` + journal handleRun: yes. Resolves FM-7 via the JOIN-based detection (F-1 of validation-impl-pass-tier1.md). |
 | A-4 | The Journal goroutine handoff pattern that existing entities use composes naturally with `Pass`. | Falsifies if Pass needs synchronous persistence (e.g., the dispatcher must know the row is durable before returning). If so, the persistence path becomes blocking. |
 | A-5 | Recovery's "scan JSONL → catch up engine" is fast enough at session start. | Falsifies on multi-GB JSONL files. v1 has no projects this big; v2 inherits the assumption. |
 
@@ -297,31 +320,27 @@ FM-7 is the load-bearing one for the user direction "preserve attestation-pendin
 
 ## Open questions
 
-- **Attestation-request persistence (A-3)**. Without it, FM-7
-  forces the crash-with-awaiting-attestation flow to degrade.
-  Architect call: persist on an `attestation_requests` table
-  (mirror of `attestations` but with a `resolved_at` column), or
-  defer this scenario class as a known degraded behavior in v1?
-- **Recovery vs. attestation-flow ordering at replay**. Recovery
-  scans for attestation-pending passes by joining `passes` ⋈
-  `evaluation_runs` ⋈ `attestations`. The order in `Replay`
-  matters: attestations are loaded first (ADR-010), then grid,
-  then findings, then passes. The recovery scan happens *after*
-  passes load. Architect should confirm this order is robust to
-  partial JSONL.
-- **JSONL-source-of-truth inversion blast radius**. Invariant 2
-  amends ADR-010. Other observers (engine status CLI, future
-  audit-verify tool) may currently assume engine table is
-  authoritative. Architect to enumerate consumers and update.
-- **`evaluation_runs.end_status` recovery**. F-4 reconciles by
-  flipping `end_status` from `running` to the JSONL verdict.
-  This is a write into a column today treated as "set once by
-  the runner". Architect to confirm the column can carry
-  recovery-source writes (or add a `recovery_status` shadow column).
-- **Lock-file orphan recovery for amendments** (
-  `amendment.feature:124-132`, out of scope per the Scope
-  section but mentioned for completeness). Separate from this
-  spec; belongs to the session-lifecycle component.
+All resolved by the gate-1 adversary review (see
+`specs/v2/validation-impl-pass-tier1.md`):
+
+- ~~Attestation-request persistence (A-3)~~. Resolved via the
+  JOIN-based detection over `evaluation_runs` × `attestations`
+  (F-1 / Option A). A dedicated `attestation_requests` table is
+  Tier 2 work, not blocking Tier 1.
+- ~~Recovery vs. attestation-flow ordering at replay~~. Resolved
+  in ADR-015 Part B: attestations → grid → reqs → classif →
+  findings → amendments → passes → Recovery. Recovery refuses to
+  run if `ReplayCounts.Errors` is non-empty (F-13 / fail-loud).
+- ~~JSONL-source-of-truth inversion blast radius~~. Resolved in
+  ADR-015 Part C; the four consumers (`session_engine.go`,
+  `arrow_cmd.go`, `engine_cmd.go`, replay tests) are enumerated
+  in `tier-1-pass-persistence-contracts.md` (F-8).
+- ~~`evaluation_runs.end_status` recovery~~. Resolved: new
+  `Store.UpdateEvaluationRunReconciled` + `recovery_source`
+  column + schemaVersion bump to 3 + verdict→ClauseStatus
+  mapping table (F-7).
+- ~~Lock-file orphan recovery for amendments~~. Still out of
+  scope here; belongs to the session-lifecycle component.
 
 ---
 
@@ -334,29 +353,24 @@ Once implemented, these `@deferred` scenarios should lift:
 - `state-machine.feature`: Query historical pass
 - `state-machine.feature`: Crash while clause is awaiting-attestation
 - `state-machine.feature`: Crash between attestation write and clause-status flip
-- `state-machine.feature`: Crash mid checkpoint-log write
 - `runner.feature`: Pass completes and emits checkpoint
 - `runner.feature`: Pass aborted records reason in checkpoint
 
-= 8 of the remaining 48 `@deferred` scenarios.
+= **7** of the remaining 48 `@deferred` scenarios. (Was 8;
+`state-machine.feature`'s "Crash mid checkpoint-log write" is
+retired per F-6 / F-15 — sqlite WAL atomicity covers row writes;
+JSONL truncation is handled leniently and surfaces as
+`OpEventAttestationAuditDurabilityFailed`.)
 
 ---
 
-## Handoff to architect
+## Handoff to architect → adversary → implementer
 
-Architect picks up:
+Analyst → architect → adversary done. All 18 adversary findings
+remediated in this spec + `ADR-015` + the contracts doc. See
+`specs/v2/validation-impl-pass-tier1.md` for the findings and
+`specs/v2/validation-impl-pass-tier1-remediation.md` for the
+disposition log.
 
-1. **ADR for invariant 2** (JSONL-source-of-truth inversion).
-   Either amends ADR-010 or supersedes with ADR-015. Must
-   enumerate downstream consumers + migration.
-2. **Schema**: `passes` table columns + indexes. Pattern matches
-   existing `findings` / `grid_arrows` shapes.
-3. **Observer wire-up**: where `Pass.closeWith` calls a journal-bound
-   observer; the existing engine `Journal` goroutine fanout pattern.
-4. **Replay ordering**: where the passes load step slots into
-   `engine/replay.go:Replay`.
-5. **Recovery component**: a new file or extension of `replay.go`
-   that runs the F-2 / F-4 / F-5 reconciliation logic.
-6. **Decision on A-3** (attestation-request persistence) before the
-   adversary review.
-7. **Decision on the `evaluation_runs.end_status` recovery write**.
+Implementer picks up the contracts at
+`specs/architecture/tier-1-pass-persistence-contracts.md`.

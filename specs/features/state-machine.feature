@@ -222,15 +222,12 @@ Feature: Status state machine engine
     And the reconciliation is recorded as a recovery event for audit
     And no "split-brain" persists (record says pass, in-memory says awaiting-attestation)
 
-  @deferred
-  Scenario: Crash mid checkpoint-log write
-    Given a pass is being finalized
-    And the checkpoint-log record write is partial (last record truncated)
-    When the harness restarts
-    Then crash recovery detects the truncated record (hash mismatch on the Merkle DAG link)
-    And rolls back to the last verified record
-    And the pass whose checkpoint failed is re-marked as "aborted: crash"
-    And no consumer of the checkpoint log observes the truncated record
+  # Retired by ADR-015 Part D + Tier 1 gate-1 review F-15: sqlite WAL
+  # row-level atomicity covers engine writes; the v1 Merkle DAG
+  # checkpoint chain is not in the Pass-persistence path. JSONL
+  # trailing-line truncation IS load-bearing — covered by F-5 in
+  # pass-persistence.md ("Recovery skips a truncated trailing JSONL
+  # line") which will lift via Tier 1 implementation.
 
   Scenario: Grid-current points at missing grid file
     Given .ghyll/grid.current contains "v3"
