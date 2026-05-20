@@ -349,3 +349,24 @@ func TestScenario_ValidateUnitPayload_EmptyUnit_Tolerated(t *testing.T) {
 		t.Errorf("empty unit: %v", err)
 	}
 }
+
+func TestScenario_SynthesizeHint_PopulatesAllFields(t *testing.T) {
+	c := Clause{
+		Concept:                 "no-todo-marker",
+		ClauseID:                "C1",
+		ArrowID:                 "A1",
+		DepthTypeAttestationRef: "att-A1-C1-v1",
+	}
+	h := SynthesizeHint(c)
+	if h.ArrowID != "A1" || h.ClauseID != "C1" ||
+		h.Concept != "no-todo-marker" || h.AttestationRef != "att-A1-C1-v1" {
+		t.Errorf("SynthesizeHint = %+v; missing fields", h)
+	}
+}
+
+func TestScenario_SynthesizeHint_EmptyClauseProducesEmptyHint(t *testing.T) {
+	h := SynthesizeHint(Clause{})
+	if h.ArrowID != "" || h.ClauseID != "" || h.Concept != "" || h.AttestationRef != "" {
+		t.Errorf("empty clause should produce zero-value hint: %+v", h)
+	}
+}

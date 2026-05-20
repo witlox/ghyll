@@ -20,8 +20,14 @@ import (
 type InsufficientBasisTracker struct {
 	mu     sync.Mutex
 	counts map[string]int
-	max    int
-	bus    *OperatorBus
+	// crossedClauses is the Tier 2 sticky-crossed set (gate-1
+	// F-7): once a clause's consecutive count crosses max, every
+	// subsequent insufficient-basis Record re-emits the
+	// escalation event regardless of count value. Cleared via
+	// Reset(clauseID).
+	crossedClauses map[string]struct{}
+	max            int
+	bus            *OperatorBus
 }
 
 // NewInsufficientBasisTracker constructs a tracker bound to a
@@ -30,9 +36,10 @@ type InsufficientBasisTracker struct {
 // silent.
 func NewInsufficientBasisTracker(max int, bus *OperatorBus) *InsufficientBasisTracker {
 	return &InsufficientBasisTracker{
-		counts: make(map[string]int),
-		max:    max,
-		bus:    bus,
+		counts:         make(map[string]int),
+		crossedClauses: make(map[string]struct{}),
+		max:            max,
+		bus:            bus,
 	}
 }
 
@@ -62,12 +69,23 @@ func (t *InsufficientBasisTracker) Record(arrowID, clauseID string, verdict Atte
 	if verdict != AttestationInsufficientBasis {
 		// Reset on any non-insufficient-basis verdict.
 		delete(t.counts, clauseID)
+		delete(t.crossedClauses, clauseID)
 		return 0, false
 	}
 	t.counts[clauseID]++
 	rounds = t.counts[clauseID]
-	if t.max > 0 && rounds == t.max {
+
+	// Gate-1 F-7 (Tier 2): the crossed state is sticky. Once
+	// rounds reaches max, every subsequent IB Record on this
+	// clause re-emits the escalation event until Reset clears
+	// it. The modal driver's inFlight set dedups so the operator
+	// gets one prompt at a time.
+	_, wasCrossed := t.crossedClauses[clauseID]
+	if t.max > 0 && (rounds >= t.max || wasCrossed) {
 		crossed = true
+		if !wasCrossed {
+			t.crossedClauses[clauseID] = struct{}{}
+		}
 		if t.bus != nil {
 			t.bus.Publish(OperatorEvent{
 				Kind:     OpEventInsufficientBasisRoundsExceeded,
@@ -88,10 +106,23 @@ func (t *InsufficientBasisTracker) Rounds(clauseID string) int {
 	return t.counts[clauseID]
 }
 
-// Reset clears the counter for one clause. Useful when the
-// operator manually decides to retry the clause from scratch.
+// Reset clears the counter AND the sticky-crossed flag for one
+// clause. Called by the modal driver after the operator resolves
+// the escalation (option 1 accepted-risk or option 2
+// route-upstream — both dispose the clause).
 func (t *InsufficientBasisTracker) Reset(clauseID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.counts, clauseID)
+	delete(t.crossedClauses, clauseID)
+}
+
+// IsCrossed reports whether the clause has crossed max-rounds at
+// some point and hasn't been Reset. Used by the modal driver to
+// pick between PresentVerdict and PresentEscalation.
+func (t *InsufficientBasisTracker) IsCrossed(clauseID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.crossedClauses[clauseID]
+	return ok
 }

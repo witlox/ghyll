@@ -2,11 +2,36 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// Hint carries the dispatcher-synthesized payload presented to
+// the operator inside the verdict modal. Tier 2 minimal shape
+// (ADR-016 Part G). Tier 3 may add Locations / Basis / Residue
+// from a producer-side hook.
+type Hint struct {
+	ArrowID        string `json:"arrow_id"`
+	ClauseID       string `json:"clause_id"`
+	Concept        string `json:"concept"`
+	AttestationRef string `json:"attestation_ref"`
+}
+
+// SynthesizeHint returns the Tier 2 minimal hint for a clause
+// (ADR-016 Part G). The dispatcher embeds the JSON serialization
+// in OpEventAttestationRequested's Detail field; the modal driver
+// deserializes when presenting.
+func SynthesizeHint(c Clause) Hint {
+	return Hint{
+		ArrowID:        c.ArrowID,
+		ClauseID:       c.ClauseID,
+		Concept:        c.Concept,
+		AttestationRef: c.DepthTypeAttestationRef,
+	}
+}
 
 // PassDispatcher drives the end-to-end execution of one arrow's
 // clauses inside a Pass. It is the production caller of
@@ -239,13 +264,19 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 			// hint. Crash recovery's republish uses a distinct kind
 			// (OpEventRecoveryAttestationRepublished) so the two
 			// surfaces are distinguishable.
+			//
+			// Tier 2 (ADR-016 Part G): the Detail field carries the
+			// minimal hint as JSON so the modal driver can
+			// deserialize without an out-of-band lookup.
 			if input.AwaitingAttestation && d.Bus != nil {
+				hint := SynthesizeHint(clause)
+				hintJSON, _ := json.Marshal(hint)
 				d.Bus.Publish(OperatorEvent{
 					Kind:     OpEventAttestationRequested,
 					ArrowID:  req.Arrow.ID,
 					PassID:   passID,
 					ClauseID: clauseID,
-					Detail:   "att-ref=" + clause.DepthTypeAttestationRef,
+					Detail:   string(hintJSON),
 				})
 			}
 		}

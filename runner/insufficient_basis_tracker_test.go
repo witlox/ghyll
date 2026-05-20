@@ -111,3 +111,55 @@ func TestScenario_InsufficientBasisTracker_PerClauseIsolation(t *testing.T) {
 		t.Errorf("C6 = %d; want 1", tr.Rounds("C6"))
 	}
 }
+
+func TestScenario_InsufficientBasisTracker_StickyCrossed(t *testing.T) {
+	// Gate-1 F-7: once a clause crosses max, every subsequent
+	// insufficient-basis Record re-emits the escalation event.
+	bus := NewOperatorBus()
+	var crossEvents int
+	bus.Subscribe(func(e OperatorEvent) {
+		if e.Kind == OpEventInsufficientBasisRoundsExceeded {
+			crossEvents++
+		}
+	})
+	tr := NewInsufficientBasisTracker(3, bus)
+
+	for i := 1; i <= 5; i++ {
+		_, crossed := tr.Record("A1", "C5", AttestationInsufficientBasis)
+		if i >= 3 && !crossed {
+			t.Errorf("round %d: crossed=false; want true (sticky after max)", i)
+		}
+	}
+	if crossEvents != 3 {
+		t.Errorf("bus crossEvents = %d; want 3 (round 3, 4, 5)", crossEvents)
+	}
+	if !tr.IsCrossed("C5") {
+		t.Error("IsCrossed = false; want true")
+	}
+
+	// Reset clears the sticky flag.
+	tr.Reset("C5")
+	if tr.IsCrossed("C5") {
+		t.Error("IsCrossed = true after Reset")
+	}
+	// Next insufficient-basis starts fresh.
+	_, crossed := tr.Record("A1", "C5", AttestationInsufficientBasis)
+	if crossed {
+		t.Error("post-Reset round 1: crossed=true; want false (counter at 1, max=3)")
+	}
+}
+
+func TestScenario_InsufficientBasisTracker_PassResetsStickyFlag(t *testing.T) {
+	// A pass verdict resets BOTH the counter and the sticky flag.
+	tr := NewInsufficientBasisTracker(3, nil)
+	for i := 0; i < 4; i++ {
+		tr.Record("A1", "C5", AttestationInsufficientBasis)
+	}
+	if !tr.IsCrossed("C5") {
+		t.Fatal("setup: should be crossed after 4 IB rounds")
+	}
+	tr.Record("A1", "C5", AttestationPass)
+	if tr.IsCrossed("C5") {
+		t.Error("pass verdict didn't clear sticky flag")
+	}
+}
