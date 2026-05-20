@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	gocontext "context"
 	"io"
 	"os"
 	"os/signal"
@@ -36,6 +37,14 @@ func REPL(sess *Session, input io.Reader) {
 	}()
 
 	for {
+		// Tier 2 Step 8 (ADR-016 Part D): drain any queued
+		// operator verdict / escalation modals BEFORE re-prompting.
+		// Blocks the prompt until each pending modal is answered;
+		// the operator sees the verdict UI before the next chat
+		// prompt appears. context.Background here — Step 10 will
+		// wire a session-scoped cancel that /exit can fire.
+		sess.DrainModalPending(gocontext.Background())
+
 		ui.Print(sess.Prompt())
 
 		if !scanner.Scan() {

@@ -10,6 +10,7 @@ import (
 
 	gocontext "context"
 	"github.com/witlox/ghyll/bootstrap"
+	"github.com/witlox/ghyll/cmd/ghyll/modal"
 	"github.com/witlox/ghyll/config"
 	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/dialect"
@@ -74,6 +75,17 @@ type Session struct {
 	// Attest commands require a non-empty opID.
 	opID string
 
+	// modalDriver bridges operator-bus events to the
+	// OperatorModalPrompt. Constructed in initEngine; nil before
+	// engine init or if engine init fails. The REPL drains this
+	// pre-Turn (Tier 2 ADR-016 Part D / Step 8).
+	modalDriver *modalDriver
+
+	// modalPrompt is the user-supplied modal implementation. nil
+	// in production falls back to TermModal(os.Stdin, os.Stdout);
+	// tests inject a StubModal.
+	modalPrompt modal.OperatorModalPrompt
+
 	// warnedEmptyWorkdir gates the one-shot empty-workdir warning
 	// from flushStagedBeforeModelSwitch (validation-pass-10 H10).
 	warnedEmptyWorkdir bool
@@ -112,6 +124,11 @@ type SessionConfig struct {
 	// ReplayTimeout caps engine replay-on-startup at NewSession
 	// (validation-pass-10 W3). Zero falls back to defaultReplayTimeout.
 	ReplayTimeout time.Duration
+
+	// ModalPrompt overrides the production TermModal (tty
+	// interactive). Tests inject a StubModal here; production
+	// leaves it nil and gets the tty implementation.
+	ModalPrompt modal.OperatorModalPrompt
 }
 
 // defaultReplayTimeout caps replay-on-startup so a stalled or
@@ -137,6 +154,10 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		renderer:    sc.Renderer,
 		output:      sc.Output,
 		version:     v,
+		modalPrompt: sc.ModalPrompt,
+	}
+	if s.modalPrompt == nil {
+		s.modalPrompt = &modal.TermModal{In: os.Stdin, Out: os.Stdout}
 	}
 
 	if s.renderer == nil {
@@ -284,6 +305,20 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		return
 	}
 	s.engine = rt
+	// Tier 2 (ADR-016 Part D / Step 7+8): construct the modal
+	// driver now that the engine + bus are live. arrowResolver
+	// closes over the live grid; opIDProvider reads s.opID at
+	// call-time (gate-1 F-20).
+	s.modalDriver = newModalDriver(
+		s.modalPrompt,
+		rt.AttestationStore(),
+		rt.Passes(),
+		rt.Bus(),
+		rt.InsufficientBasisTracker(),
+		func() string { return s.opID },
+		s.buildArrowResolver(rt),
+		0,
+	)
 	if total := counts.Arrows + counts.Findings + counts.Requirements +
 		counts.AmendmentsActive + counts.AmendmentsDrained; total > 0 {
 		s.output(fmt.Sprintf("ℹ engine replayed: %d arrows, %d findings, %d requirements, %d amendments (%d drained)",
@@ -311,6 +346,12 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	// no subscribers at recovery time (F-18 invariant); the report
 	// is session.Open's responsibility to render.
 	report := rt.RecoveryReport()
+	// Tier 2 (gate-1 F-4): feed Recovery's republished
+	// attestation events into the modal driver so the first turn
+	// after restart re-presents pending verdicts.
+	if s.modalDriver != nil && len(report.Events) > 0 {
+		s.modalDriver.EnqueueFromRecovery(report.Events)
+	}
 	if report.OrphansAborted+report.OrphansPreserved+
 		report.EvaluationRunsFlipped+report.JSONLTruncatedSkipped > 0 ||
 		len(rt.catchUpOverrideEvents) > 0 {
@@ -333,6 +374,30 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		for _, ev := range rt.catchUpOverrideEvents {
 			s.output(fmt.Sprintf("  - %s %s", ev.Kind, sanitizeOneLine(ev.Detail)))
 		}
+	}
+}
+
+// buildArrowResolver closes over the engine runtime + Grid so the
+// modalDriver can fill SourceRole/TargetRole/Context/Stratum/
+// GridVersion at record-construction time. Mirrors the /attest CLI's
+// arrow lookup path (handleAttestCommand).
+func (s *Session) buildArrowResolver(rt *engineRuntime) arrowResolverFn {
+	return func(arrowID string) (arrowResolved, bool) {
+		grid := rt.Grid()
+		if grid == nil {
+			return arrowResolved{}, false
+		}
+		def, ok := grid.Lookup(arrowID)
+		if !ok {
+			return arrowResolved{}, false
+		}
+		return arrowResolved{
+			SourceRole:  def.SourceRole,
+			TargetRole:  def.TargetRole,
+			Context:     def.Context,
+			Stratum:     def.Stratum,
+			GridVersion: grid.Version(),
+		}, true
 	}
 }
 
@@ -585,6 +650,27 @@ func normalizeDialect(d string) (string, error) {
 	default:
 		return "", fmt.Errorf("%w: %q (known families: glm, minimax, deepseek, qwen)",
 			errUnknownDialect, d)
+	}
+}
+
+// DrainModalPending blocks until every queued operator verdict /
+// escalation has been answered. Called pre-Turn by the REPL so the
+// operator sees the modal before the next model dispatch (ADR-016
+// Part D / Step 8). No-op if the engine isn't wired or no driver
+// exists.
+//
+// On ErrModalDrainCapExceeded surfaces the diagnostic to the user
+// and continues; the pending overflow gets a OpEventModalBackpressure
+// event on the bus for operator visibility.
+func (s *Session) DrainModalPending(ctx gocontext.Context) {
+	if s == nil || s.modalDriver == nil {
+		return
+	}
+	if err := s.modalDriver.DrainPending(ctx); err != nil {
+		if errors.Is(err, gocontext.Canceled) || errors.Is(err, gocontext.DeadlineExceeded) {
+			return
+		}
+		s.output(fmt.Sprintf("⚠ modal drain: %v", err))
 	}
 }
 
