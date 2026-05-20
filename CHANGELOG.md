@@ -11,7 +11,89 @@ on-demand via `workflow_dispatch`), generates the version, creates the
 tag, builds cross-arch binaries, and cuts a GitHub release. Do NOT
 run `git tag` by hand.
 
-## v2026.30.x — Tier 2 + Tier 3 + Tier 4
+## v2026.30.x — prod-readiness sprint (post-v2026.30.228)
+
+A cold-context integrator pass against the v2026.30.228 release
+found that the binary shipped library code without operator-facing
+wiring — every fresh `ghyll run` exited at step 1, the bootstrap
+pipeline had no CLI driver, and gate-and-arrow execution was
+unreachable from the chat loop. This minor-version bump fixes all
+six findings (3 Critical + 3 High) and lifts 21 BDD scenarios from
+`@deferred`.
+
+### Production wiring (integrator findings)
+
+- **C-1** (`b3bd710`) — `ghyll init --op-id <id> [project-dir]`. Wires
+  `bootstrap.ParseRoleFileEmbedded` → `catalogue.LoadEmbedded` →
+  `ProfileRepo` → `BuildProposal` → operator-acceptance loop
+  (auto-accept v1, skip-with-residue for clauses missing required
+  args) → `BuildInitGrid` → `Grid.Write` to `.ghyll/grid.v1.yaml`.
+  Auto-creates a "default" bounded context for empty repos.
+- **C-2** (`b6c8c8f`) — `config.DefaultTemplate()` via `//go:embed
+  config/example.toml`. `cmd/ghyll/config_bootstrap.go:ensureConfig`
+  auto-writes `~/.ghyll/config.toml` (mode `0o600`) on first run if
+  missing, prints a `ui.Status` hint with the path, and exits 0 so
+  the operator can edit endpoints. Race-resilient against concurrent
+  `ghyll run` invocations.
+- **C-3** (`1c39506`) — `/run-arrow <id> [--context <ctx>]` and
+  `/list-arrows` slash commands in the REPL. Bus subscriber surfaces
+  `OpEventPassOpened` / `OpEventPassClosed` /
+  `OpEventInsufficientBasisRoundsExceeded` inline; existing
+  modal driver still owns verdict prompts.
+- **H-1** (`f0c79cc`) — `//go:embed gates/concepts/*.yaml` →
+  `ghyll.ConceptsFS` (18 schemas, ~24 KB). New
+  `catalogue.LoadEmbedded()` reads from the embedded FS.
+- **H-2** (`68f9eb1`) — `//go:embed specs/architecture/roles/*.md` →
+  `ghyll.RolesFS` (4 role contracts per ADR-008). New
+  `bootstrap.ParseRoleFileEmbedded(roleName)` with the
+  `ErrRoleNameUnknown` sentinel.
+- **H-3** (`dfa5a4d`) — operator guide rewritten. Bootstrap section
+  uses real commands; full slash-commands table; obsolete
+  hand-place-the-grid prose removed.
+
+### Adversarial pass (post-fix remediation, `d138caa`)
+
+Cold-context review against the six commits above. Zero Critical
+findings. Three High, all remediated in-pass:
+
+- **H-A** — Op-id NFC-normalization. `ghyll init` and
+  `ghyll init attest` now route through a shared
+  `validateAndNormalizeOpID` shim so the canonical form lands in
+  `grid.created-by-op-id` and emitted `AttestationRecord`s.
+- **H-B** — First-run config-bootstrap race. `ensureConfig` handles
+  EEXIST from `O_EXCL` by re-loading; valid template → proceed,
+  malformed → surface real parse error, vanished → new
+  `errConfigBootstrapRace` sentinel.
+- **H-C** — `/run-arrow` nil-guards `s.engine.Bus()` before
+  `Subscribe`.
+
+Three Medium + three Low flagged in
+`specs/v4/post-prod-readiness-adversarial.md`; none release-blocking.
+
+### BDD `@deferred` lifts (parallel-batch wiring)
+
+Suite at **343 active scenarios** (up from 322 in v2026.30.228).
+
+- **Batch 1** (`f10daf2`) — `attestation.feature`: 9 scenarios.
+  Multi-operator handoff, verdict pass/fail/IB, 3-rounds-then-
+  escalation, accepted-risk, route-upstream, oversized residue,
+  near-simultaneous verdicts.
+- **Batch 2** (`0a40690`) — `runner.feature`: 7 scenarios. Machine
+  eval success/fail, attested-clause hint, operator verdict,
+  producer-cannot-emit-hint, adversarial verification auto-insert,
+  pure-machine arrow.
+- **Batch 4** (`11de530`) — `edit.feature` + `amendment.feature`:
+  3 scenarios. Edit temp-file cleanup, amendment-lock-crash-
+  recovery, attestation-waiting-on-aborted-pass.
+- **Batch 5** (`f94599c`) — `adversarial.feature`: 2 scenarios.
+  Producer-fix re-attack, accepted-risk proposal.
+
+16 `@deferred` scenarios remain — all structurally substrate-gated
+(artifact dep-check schema, residue imputed-cost calculator,
+invalidated-status enum + history layer, YAML-loader wire-form,
+bus-buffered pending-attestation-request semantics).
+
+## v2026.30.228 — Tier 2 + Tier 3 + Tier 4
 
 The first release on the new ADR-sum versioning scheme (17 main ADRs
 + 13 v2 ADRs = 30). Covers the gate-and-arrow enforcement spine
