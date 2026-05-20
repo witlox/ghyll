@@ -474,6 +474,35 @@ func TestScenario_ModalDriver_NoOpID_RejectsRecord(t *testing.T) {
 	}
 }
 
+// --- residue note cap -----------------------------------------
+
+func TestScenario_ModalDriver_ResidueOverCap_RejectedBeforeRecord(t *testing.T) {
+	long := strings.Repeat("x", 65)
+	stub := &modal.StubModal{
+		Verdicts: []modal.VerdictSubmission{
+			{
+				Verdict: runner.AttestationInsufficientBasis,
+				Unit:    runner.VerdictUnitWriteResidueNote,
+				Payload: runner.VerdictUnitPayload{Residue: long},
+			},
+		},
+	}
+	fx := newDriverFixture(t, stub)
+	fx.driver.residueNoteMaxBytes = 64 // tiny cap so 65-byte residue fails
+	hint := runner.Hint{ArrowID: "A", ClauseID: "c", AttestationRef: "att-residue-cap"}
+	hj, _ := json.Marshal(hint)
+	fx.bus.Publish(runner.OperatorEvent{
+		Kind: runner.OpEventAttestationRequested, ArrowID: "A", ClauseID: "c", PassID: "p", Detail: string(hj),
+	})
+	err := fx.driver.DrainPending(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unit payload") {
+		t.Errorf("err = %v; want unit-payload error", err)
+	}
+	if fx.store.Len() != 0 {
+		t.Errorf("store.Len = %d; want 0 (over-cap residue refused)", fx.store.Len())
+	}
+}
+
 // --- subscriber filter -----------------------------------------
 
 func TestScenario_ModalDriver_OnEvent_IgnoresIrrelevantKinds(t *testing.T) {

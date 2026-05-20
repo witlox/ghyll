@@ -16,11 +16,16 @@ type GridDefaults struct {
 	DepthLadder                []DepthLadderTier
 	InsufficientBasisRoundsMax int
 	RemediationRoundsMax       int
+
+	// Tier 2 (ADR-016 / Step 11):
+	ResidueNoteMaxBytes int
+	ModalPendingMaxLen  int
 }
 
 // DefaultGridDefaults returns the hardcoded ghyll defaults
-// (severity-threshold=medium, 4-tier ladder, 3/5 round caps). Calling
-// this is the explicit "I accept the defaults" path; passing custom
+// (severity-threshold=medium, 4-tier ladder, 3/5 round caps,
+// 16 KiB residue note cap, 64-entry modal queue). Calling this
+// is the explicit "I accept the defaults" path; passing custom
 // values is the policy-tuning path.
 func DefaultGridDefaults() GridDefaults {
 	return GridDefaults{
@@ -28,6 +33,8 @@ func DefaultGridDefaults() GridDefaults {
 		DepthLadder:                DefaultDepthLadder(),
 		InsufficientBasisRoundsMax: 3,
 		RemediationRoundsMax:       5,
+		ResidueNoteMaxBytes:        DefaultResidueNoteMaxBytes,
+		ModalPendingMaxLen:         DefaultModalPendingMaxLen,
 	}
 }
 
@@ -44,6 +51,12 @@ func (d GridDefaults) validate() error {
 	}
 	if d.RemediationRoundsMax < 1 {
 		return ErrRemediationRoundsMaxNonPositive
+	}
+	if d.ResidueNoteMaxBytes < 1 {
+		return ErrResidueNoteMaxBytesNonPositive
+	}
+	if d.ModalPendingMaxLen < 1 {
+		return ErrModalPendingMaxLenNonPositive
 	}
 	return nil
 }
@@ -68,6 +81,8 @@ func (d GridDefaults) validate() error {
 var (
 	ErrInsufficientBasisRoundsMaxNonPositive = errors.New("insufficient-basis-rounds-max-must-be-positive")
 	ErrRemediationRoundsMaxNonPositive       = errors.New("remediation-rounds-max-must-be-positive")
+	ErrResidueNoteMaxBytesNonPositive        = errors.New("residue-note-max-bytes-must-be-positive")
+	ErrModalPendingMaxLenNonPositive         = errors.New("modal-pending-max-len-must-be-positive")
 )
 
 // BuildInit errors.
@@ -183,6 +198,8 @@ func buildInitGridImpl(opID string, profile *ProjectProfile, proposals []*ArrowP
 	g.DepthLadder = append([]DepthLadderTier(nil), defaults.DepthLadder...)
 	g.InsufficientBasisRoundsMax = defaults.InsufficientBasisRoundsMax
 	g.RemediationRoundsMax = defaults.RemediationRoundsMax
+	g.ResidueNoteMaxBytes = defaults.ResidueNoteMaxBytes
+	g.ModalPendingMaxLen = defaults.ModalPendingMaxLen
 
 	for _, ap := range proposals {
 		g.Arrows = append(g.Arrows, serializeArrow(ap))

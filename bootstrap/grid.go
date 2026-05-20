@@ -30,6 +30,19 @@ type Grid struct {
 	InsufficientBasisRoundsMax int               `yaml:"insufficient-basis-rounds-max"`
 	RemediationRoundsMax       int               `yaml:"remediation-rounds-max"`
 
+	// Tier 2 (ADR-016 / Step 11):
+
+	// ResidueNoteMaxBytes caps the operator's write-residue-note
+	// payload (insufficient-basis verdicts, escalation residues).
+	// Default 16 KiB. Zero means "use built-in default".
+	ResidueNoteMaxBytes int `yaml:"residue-note-max-bytes,omitempty"`
+
+	// ModalPendingMaxLen caps the in-flight modal queue. Beyond
+	// this length the modal driver drops new events + emits
+	// OpEventModalBackpressure. Default 64. Zero means "use
+	// built-in default".
+	ModalPendingMaxLen int `yaml:"modal-pending-max-len,omitempty"`
+
 	// Arrows and Residue use untyped shapes for v1; concrete types
 	// will replace these as the runner / amendment components land.
 	Arrows  []map[string]any `yaml:"arrows,omitempty"`
@@ -107,6 +120,32 @@ func NewGrid(opID string) *Grid {
 		SeverityThreshold:          "medium",
 		InsufficientBasisRoundsMax: 3,
 		RemediationRoundsMax:       5,
+		ResidueNoteMaxBytes:        DefaultResidueNoteMaxBytes,
+		ModalPendingMaxLen:         DefaultModalPendingMaxLen,
+	}
+}
+
+// Tier 2 default policy values (ADR-016 / Step 11). The grid
+// schema overrides these per-project; zero on disk normalizes to
+// the default via Grid.NormalizeTier2Defaults.
+const (
+	DefaultResidueNoteMaxBytes = 16 * 1024
+	DefaultModalPendingMaxLen  = 64
+)
+
+// NormalizeTier2Defaults fills ResidueNoteMaxBytes and
+// ModalPendingMaxLen with built-in defaults if the grid file
+// omitted them (YAML zero values). Called after Read so the
+// runtime sees concrete numbers, not zeros.
+func (g *Grid) NormalizeTier2Defaults() {
+	if g == nil {
+		return
+	}
+	if g.ResidueNoteMaxBytes <= 0 {
+		g.ResidueNoteMaxBytes = DefaultResidueNoteMaxBytes
+	}
+	if g.ModalPendingMaxLen <= 0 {
+		g.ModalPendingMaxLen = DefaultModalPendingMaxLen
 	}
 }
 
@@ -371,5 +410,6 @@ func ReadVersion(dir string, version int) (*Grid, error) {
 	if g.GridVersion != version {
 		return nil, fmt.Errorf("ReadVersion: %q declares grid-version=%d but file is named v%d", gridPath, g.GridVersion, version)
 	}
+	g.NormalizeTier2Defaults()
 	return &g, nil
 }

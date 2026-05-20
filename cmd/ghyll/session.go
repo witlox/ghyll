@@ -291,8 +291,12 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	// here — escalation is disabled (max=0) and the runtime
 	// proceeds.
 	ibRoundsMax := 0
+	modalPendingMaxLen := 0
+	residueNoteMaxBytes := 0
 	if g, gerr := bootstrap.Read(s.workdir); gerr == nil && g != nil {
 		ibRoundsMax = g.InsufficientBasisRoundsMax
+		modalPendingMaxLen = g.ModalPendingMaxLen
+		residueNoteMaxBytes = g.ResidueNoteMaxBytes
 	}
 	rt, err := openEngineWithOptions(s.workdir, nil, ibRoundsMax)
 	if err != nil {
@@ -326,8 +330,9 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		rt.InsufficientBasisTracker(),
 		func() string { return s.opID },
 		s.buildArrowResolver(rt),
-		0,
+		modalPendingMaxLen,
 	)
+	s.modalDriver.residueNoteMaxBytes = residueNoteMaxBytes
 	if total := counts.Arrows + counts.Findings + counts.Requirements +
 		counts.AmendmentsActive + counts.AmendmentsDrained; total > 0 {
 		s.output(fmt.Sprintf("ℹ engine replayed: %d arrows, %d findings, %d requirements, %d amendments (%d drained)",

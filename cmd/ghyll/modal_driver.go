@@ -29,6 +29,11 @@ type modalDriver struct {
 	arrowResolver arrowResolverFn
 	pendingMaxLen int
 
+	// residueNoteMaxBytes is the cap on operator-written residue
+	// notes (set by session.initEngine from grid.residue-note-
+	// max-bytes; zero disables the check). Step 11.
+	residueNoteMaxBytes int
+
 	mu       sync.Mutex
 	pending  []modalRequest
 	inFlight map[string]struct{} // gate-1 F-12: dedup on AttestationRecord.ID
@@ -341,6 +346,9 @@ func (d *modalDriver) handleVerdict(ctx context.Context, req modalRequest) error
 		}
 		return err
 	}
+	if err := runner.ValidateUnitPayload(sub.Unit, sub.Payload, d.residueNoteMaxBytes); err != nil {
+		return fmt.Errorf("modal-driver: unit payload: %w", err)
+	}
 	rec, recErr := d.buildRecord(req, sub)
 	if recErr != nil {
 		return recErr
@@ -394,6 +402,9 @@ func (d *modalDriver) handleEscalation(ctx context.Context, req modalRequest) er
 		Verdict: verdict,
 		Unit:    runner.VerdictUnitWriteResidueNote,
 		Payload: runner.VerdictUnitPayload{Residue: choice.Residue},
+	}
+	if err := runner.ValidateUnitPayload(sub.Unit, sub.Payload, d.residueNoteMaxBytes); err != nil {
+		return fmt.Errorf("modal-driver: escalation payload: %w", err)
 	}
 	rec, recErr := d.buildRecord(req, sub)
 	if recErr != nil {
