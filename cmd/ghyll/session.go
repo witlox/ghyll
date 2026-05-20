@@ -1299,6 +1299,19 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 	// claimed identity is captured in OpID. AttestedByRole MUST
 	// NOT match source or target per §12.2; "operator" is the
 	// safe synthetic role that bypasses both diamond roles.
+	//
+	// Tier 2 (gate-1 F-6): PassID is required for the tree
+	// writer's per-pass path encoding. The /attest escape hatch
+	// looks up the live pass-id from evaluation_runs JOIN on
+	// depth_type_attestation_ref = ref. If no in-flight pass
+	// owns the ref, the verdict is refused with a typed message.
+	passID, lookupErr := s.lookupPassIDForRef(ref)
+	if lookupErr != nil {
+		return SlashCommandResult{
+			Handled: true, ContinueLoop: true,
+			Output: fmt.Sprintf("✗ /attest: no live pass owns %q: %v (use the modal flow during a session)", ref, lookupErr),
+		}
+	}
 	rec := runner.AttestationRecord{
 		ID:             ref,
 		Kind:           parsed.kind,
@@ -1312,6 +1325,13 @@ func (s *Session) handleAttestCommand(arg string) SlashCommandResult {
 		Reason:         reason,
 		Timestamp:      time.Now().UnixNano(),
 		GridVersion:    parsed.gridVersion,
+		// Tier 2 fields:
+		PassID:  passID,
+		Context: gridArrow.Context,
+		Stratum: gridArrow.Stratum,
+		// HintJSON stays at the default '{}'; the /attest CLI is
+		// a power-user replay path, no modal interaction.
+		HintJSON: "{}",
 	}
 	if err := s.engine.AttestationStore().Record(rec); err != nil {
 		return SlashCommandResult{
@@ -1362,6 +1382,33 @@ func (s *Session) handleAttestationsCommand(arrowArg string) SlashCommandResult 
 		Handled: true, ContinueLoop: true,
 		Output: strings.TrimRight(b.String(), "\n"),
 	}
+}
+
+// lookupPassIDForRef queries evaluation_runs for the pass-id
+// associated with a depth_type_attestation_ref. Tier 2 (gate-1
+// F-6): the /attest CLI escape hatch needs a non-empty PassID to
+// satisfy the tree writer's path encoder. The pass-id lives on
+// the evaluation_runs row that the dispatcher persisted when the
+// clause first evaluated.
+//
+// Returns the pass-id string or an error if no row owns the ref.
+func (s *Session) lookupPassIDForRef(ref string) (string, error) {
+	if s.engine == nil || s.engine.Store() == nil {
+		return "", errors.New("engine unavailable")
+	}
+	var passID string
+	err := s.engine.Store().DB().QueryRowContext(
+		gocontext.Background(),
+		`SELECT pass_id FROM evaluation_runs WHERE depth_type_attestation_ref = ? LIMIT 1`,
+		ref,
+	).Scan(&passID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(passID) == "" {
+		return "", errors.New("evaluation_runs.pass_id is empty for that ref")
+	}
+	return passID, nil
 }
 
 // handlePassByIDCommand renders the engine row for one pass-id.

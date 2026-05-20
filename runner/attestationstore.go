@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -619,6 +620,127 @@ func (s *AttestationStore) LoadFromJSONL(path string, engineHasRows bool) (loade
 	}
 	_ = lastGood // reserved for future TruncateAt offset hand-off via session.Open
 	return loaded, truncatedOK, nil
+}
+
+// LoadFromTree walks <root>/v*/<ctx>/stratum-*/<role-pair>/<pass-id>.jsonl
+// and unions every JSONL line into byID via recordReplay. Per
+// ADR-016 Part B (Tier 2): the tree is the authoritative load
+// surface, replacing Tier 1's LoadFromJSONL of the flat file.
+//
+// Returns the same LoadResult shape as LoadFromJSONL:
+//   - res.Loaded: count of valid records loaded.
+//   - res.Truncated: true if ANY per-pass file ends with a
+//     partial trailing line. The caller (session.openEngine)
+//     calls AttestationTreeWriter.TruncateTrailingPartialAll on
+//     a truncated=true return.
+//   - res.LastCompleteOffset: not meaningful for trees (per-file
+//     offsets vary); always 0.
+//   - err:
+//     missing tree + engineHasRows=true → ErrAttestationAuditLost
+//     missing tree + engineHasRows=false → (0, false, nil) fresh
+//     unreadable file mid-walk → ErrAttestationAuditLost
+//     mid-file corrupt line → ErrAttestationAuditLost
+//
+// Trailing-truncation tolerance mirrors LoadFromJSONL's lenient
+// mode: a partial last line stops the per-file read at the last
+// complete record without erroring.
+func (s *AttestationStore) LoadFromTree(root string, engineHasRows bool) (loaded int, truncated bool, err error) {
+	stat, statErr := os.Stat(root)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			if engineHasRows {
+				return 0, false, fmt.Errorf("%w: tree %s missing but engine has rows", ErrAttestationAuditLost, root)
+			}
+			return 0, false, nil // fresh project
+		}
+		return 0, false, fmt.Errorf("%w: stat %s: %w", ErrAttestationAuditLost, root, statErr)
+	}
+	if !stat.IsDir() {
+		return 0, false, fmt.Errorf("%w: %s is not a directory", ErrAttestationAuditLost, root)
+	}
+
+	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		fileLoaded, fileTruncated, loadErr := s.loadOneTreeFile(path)
+		if loadErr != nil {
+			return loadErr
+		}
+		loaded += fileLoaded
+		if fileTruncated {
+			truncated = true
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return loaded, truncated, fmt.Errorf("%w: walk %s: %w", ErrAttestationAuditLost, root, walkErr)
+	}
+	return loaded, truncated, nil
+}
+
+// loadOneTreeFile reads a single per-pass JSONL file and feeds
+// each valid record through recordReplay. Mirrors LoadFromJSONL's
+// per-line logic.
+func (s *AttestationStore) loadOneTreeFile(path string) (loaded int, truncated bool, err error) {
+	f, openErr := os.Open(path)
+	if openErr != nil {
+		return 0, false, fmt.Errorf("open %s: %w", path, openErr)
+	}
+	defer func() { _ = f.Close() }()
+
+	reader := bufio.NewReader(f)
+	lineNo := 0
+	for {
+		lineBytes, readErr := reader.ReadBytes('\n')
+		if len(lineBytes) > 0 {
+			lineNo++
+			// Partial trailing line: ends without newline AND EOF.
+			if readErr == io.EOF && lineBytes[len(lineBytes)-1] != '\n' {
+				truncated = true
+				break
+			}
+			line := strings.TrimSpace(string(lineBytes))
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			var rec jsonlRecord
+			if jerr := json.Unmarshal([]byte(line), &rec); jerr != nil {
+				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, jerr)
+			}
+			attRec := AttestationRecord{
+				ID:             rec.ID,
+				Kind:           AttestationKind(rec.Kind),
+				ArrowID:        rec.ArrowID,
+				ClauseID:       rec.ClauseID,
+				OpID:           rec.OpID,
+				AttestedByRole: rec.AttestedByRole,
+				SourceRole:     rec.SourceRole,
+				TargetRole:     rec.TargetRole,
+				Verdict:        AttestationVerdict(rec.Verdict),
+				Reason:         rec.Reason,
+				Timestamp:      rec.Timestamp,
+				GridVersion:    rec.GridVersion,
+			}
+			if rerr := s.recordReplay(attRec); rerr != nil {
+				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, rerr)
+			}
+			loaded++
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return loaded, truncated, nil
+			}
+			return loaded, false, fmt.Errorf("read %s: %w", path, readErr)
+		}
+	}
+	return loaded, truncated, nil
 }
 
 // ComputeAttestationID returns the deterministic ID for an

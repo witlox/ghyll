@@ -102,9 +102,14 @@ func TestScenario_ArrowShow_WithAttestations(t *testing.T) {
 		AttestedByRole: "operator",
 		SourceRole:     "analyst",
 		TargetRole:     "architect",
-		Verdict:        runner.AttestationPass,
-		Timestamp:      1,
-		GridVersion:    1,
+		// Tier 2 (ADR-016): PassID + Context + Stratum required
+		// for the tree writer's per-pass path encoding.
+		PassID:      "P-att-show",
+		Context:     "ctxA",
+		Stratum:     "L1",
+		Verdict:     runner.AttestationPass,
+		Timestamp:   1,
+		GridVersion: 1,
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}

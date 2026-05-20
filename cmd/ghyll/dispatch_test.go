@@ -140,6 +140,7 @@ func TestScenario_Dispatch_EngineStatus_PopulatedDB(t *testing.T) {
 		ArrowID: "A1", ClauseID: "C1", OpID: "test",
 		AttestedByRole: "operator", SourceRole: "analyst", TargetRole: "architect",
 		Verdict: runner.AttestationPass, Timestamp: 1, GridVersion: 1,
+		PassID: "P-dispatch", Context: "default", Stratum: "L1",
 	}
 	_ = rt.AttestationStore().Record(rec)
 	rt.journal.Flush()

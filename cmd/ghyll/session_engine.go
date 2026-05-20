@@ -177,15 +177,20 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 		_ = store.Close()
 		return nil, fmt.Errorf("count attestations: %w", attErr)
 	}
-	loaded, truncated, loadErr := rt.attestations.LoadFromJSONL(rt.jsonlPath, attCount > 0)
+	// Tier 2 (ADR-016 Part B) / gate-1 F-1: load from the TREE,
+	// not the flat file. The tree is the authoritative audit
+	// surface post-Tier-2; the flat aggregate is a forward-only
+	// Observer that we never read at boot.
+	treeRoot := filepath.Join(filepath.Dir(dbPath), "attestations")
+	loaded, truncated, loadErr := rt.attestations.LoadFromTree(treeRoot, attCount > 0)
 	if loadErr != nil {
 		_ = store.Close()
-		return nil, fmt.Errorf("load attestation jsonl: %w", loadErr)
+		return nil, fmt.Errorf("load attestation tree: %w", loadErr)
 	}
 	rt.jsonlTruncated = truncated
 	if logger != nil && (loaded > 0 || truncated) {
-		logger.Info("engine: attestation jsonl loaded",
-			"path", rt.jsonlPath, "loaded", loaded, "truncated", truncated)
+		logger.Info("engine: attestation tree loaded",
+			"root", treeRoot, "loaded", loaded, "truncated", truncated)
 	}
 	// Engine cache catches up from JSONL before Replay/Recovery
 	// (ADR-015 Part C). Recovery's JOIN-based detection consults
@@ -215,11 +220,9 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 			"path", rt.jsonlPath, "err", jerr)
 	}
 
-	// Per-role-pair JSONL tree per the operator-attestation spec.
-	// Subscribed alongside the flat writer in attachJournal.
-	// Failure to open is non-fatal — same contract as the flat
-	// writer.
-	treeRoot := filepath.Join(filepath.Dir(dbPath), "attestations")
+	// Per-pass JSONL tree (operator-attestation spec). Tier 2
+	// (ADR-016 Part B) promotes this to the PrimaryWriter slot
+	// in attachJournal; the flat writer drops to Observer-only.
 	tw, terr := runner.NewAttestationTreeWriter(treeRoot)
 	if terr == nil {
 		rt.treeWriter = tw.WithBus(rt.bus)
@@ -382,14 +385,27 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	r.journal.AttachPasses(r.passes)
 
 	// Tier 1 (ADR-015 Part C): JSONL is source of truth. Set the
-	// primaryWriter so AttestationStore.Record blocks on a JSONL
-	// fsync failure (ErrAttestationAuditWriteFailed) instead of
-	// silently mutating byID with a missing audit row. Failure
-	// modes covered: disk full, fsync error, writer closed.
-	if r.jsonlWriter != nil {
+	// Tier 2 (ADR-016 Part B): the TREE writer is the
+	// AttestationStore primaryWriter. The flat aggregate is an
+	// Observer fanout — it appends post-tree-write but cannot
+	// fail Record. Per gate-1 F-1, the tree is the authoritative
+	// audit surface; the flat aggregate is a tail.
+	if r.treeWriter != nil {
+		r.attestations.SetPrimaryWriter(r.treeWriter.PrimaryWriter())
+		// Truncate any trailing partial lines in the tree (gate-1
+		// F-11) so the next Record appends cleanly. Walks the
+		// whole tree; cheap on healthy systems.
+		if r.jsonlTruncated {
+			if err := r.treeWriter.TruncateTrailingPartialAll(""); err != nil {
+				logger.Warn("engine: tree truncate failed", "err", err)
+			}
+		}
+	} else if r.jsonlWriter != nil {
+		// Defensive fallback: if the tree writer failed to open,
+		// the flat writer takes the primary slot (legacy Tier 1
+		// behavior). The audit trail still works; the per-pass
+		// tree just isn't available for forensics.
 		r.attestations.SetPrimaryWriter(r.jsonlWriter.PrimaryWriter())
-		// Truncate the trailing partial line (if Load detected one)
-		// so the next Record overwrites it cleanly (F-6).
 		if r.jsonlTruncated {
 			if err := r.jsonlWriter.TruncateTrailingPartial(); err != nil {
 				logger.Warn("engine: jsonl truncate failed", "err", err)
@@ -397,13 +413,12 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		}
 	}
 
-	// Per-role-pair tree writer: same post-replay subscription
-	// rule. Tree files complement the flat JSONL — operators can
-	// drill into one pass's verdicts under
-	//   <workdir>/.ghyll/attestations/v<N>/<context>/stratum-<S>/
-	//   <role-pair>/<pass-id>.jsonl
-	if r.treeWriter != nil {
-		r.attestations.Observe(r.treeWriter.Observer())
+	// Flat aggregate writer subscribes as an Observer (Tier 2):
+	// every verdict appends to .ghyll/attestations.jsonl AFTER
+	// the tree primary already succeeded. The flat write may
+	// fail silently; the bus event surfaces durability problems.
+	if r.jsonlWriter != nil {
+		r.attestations.Observe(r.jsonlWriter.Observer())
 	}
 
 	// InsufficientBasisTracker subscribes to attestation events so

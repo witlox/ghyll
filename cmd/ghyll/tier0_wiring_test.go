@@ -81,6 +81,10 @@ func TestScenario_Tier0_AttestationFlow_PersistsAndJSONLsAudit(t *testing.T) {
 		Verdict:        runner.AttestationPass,
 		Timestamp:      1747663200_000000000,
 		GridVersion:    1,
+		// Tier 2 (ADR-016): PassID + Context + Stratum required.
+		PassID:  "P-tier0-att",
+		Context: "default",
+		Stratum: "L1",
 	}
 	if err := rt.AttestationStore().Record(rec); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -132,6 +136,7 @@ func TestScenario_Tier0_Replay_DoesNotDoubleAppendJSONL(t *testing.T) {
 		ArrowID: "A1", ClauseID: "C1", OpID: "op",
 		AttestedByRole: "implementer", SourceRole: "analyst", TargetRole: "architect",
 		Verdict: runner.AttestationPass, Timestamp: 1, GridVersion: 1,
+		PassID: "P-replay", Context: "default", Stratum: "L1",
 	}
 	if err := rt.AttestationStore().Record(rec); err != nil {
 		t.Fatal(err)
@@ -200,6 +205,9 @@ func TestScenario_Tier0_InsufficientBasisTracker_WiredToAttestationStore(t *test
 			Verdict:        runner.AttestationInsufficientBasis,
 			Timestamp:      int64(i),
 			GridVersion:    uint64(i),
+			PassID:         "P-ib-" + string(rune('0'+i)),
+			Context:        "default",
+			Stratum:        "L1",
 		}
 		if err := rt.AttestationStore().Record(rec); err != nil {
 			t.Fatal(err)

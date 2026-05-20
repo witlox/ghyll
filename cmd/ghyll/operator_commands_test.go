@@ -5,12 +5,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
 )
 
 // newOperatorTestSession builds a session with the engine runtime
 // fully wired so operator commands can read live state. Uses a
 // real engineRuntime + a stub Session minimally populated.
+//
+// Tier 2 (gate-1 F-6): pre-seeds an evaluation_runs row so the
+// /attest CLI's PassID lookup finds an in-flight pass to attach
+// the verdict to. The Tier 2 tree primaryWriter requires PassID.
 func newOperatorTestSession(t *testing.T) *Session {
 	t.Helper()
 	rt, _ := newTier0Runtime(t)
@@ -30,6 +35,25 @@ func newOperatorTestSession(t *testing.T) *Session {
 		Clauses:    []runner.Clause{{Concept: "no-todo-marker", ClauseID: "C1"}},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	// Seed evaluation_runs for the refs the tests use. /attest's
+	// Tier 2 PassID lookup queries this table.
+	for i, ref := range []string{
+		"att-A1-C1-v1", "att-A1-C1-v2", "att-A1-C1-v3", "att-A1-C1-v4",
+		"att-A1-C1-v5", "att-A1-C1-v6",
+	} {
+		if err := rt.Store().InsertEvaluationRun(context.Background(), engine.EvaluationRunRecord{
+			ID:                      "R-attest-fixture-" + string(rune('0'+i)),
+			ClauseID:                "C1",
+			PassID:                  "P-operator-fixture-" + string(rune('0'+i)),
+			ArrowID:                 "A1",
+			DepthTypeAttestationRef: ref,
+			StartStatus:             "pending",
+			EndStatus:               "running",
+			ResultJSON:              "{}",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &Session{
 		engine:  rt,
