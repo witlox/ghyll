@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/witlox/ghyll/internal/safefile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -393,10 +394,22 @@ func detectInconsistency(dir string, current int) error {
 // ReadVersion loads a specific grid version, independent of
 // grid.current. Useful for inspecting historical versions or for the
 // state-machine engine's boot recovery.
+// MaxGridFileBytes caps grid.v<N>.yaml at 4 MiB. Tier 3 / SR H-2:
+// previously unbounded os.ReadFile + yaml.Unmarshal could OOM on
+// a 2 GB / alias-bomb grid file.
+const MaxGridFileBytes = 4 * 1024 * 1024
+
+// MaxBoundedContextsImport caps the number of bounded contexts a
+// loaded grid yaml can declare. Tier 3 / SR L-8 — prevents 100k-
+// context forged yaml.
+const MaxBoundedContextsImport = 256
+
 func ReadVersion(dir string, version int) (*Grid, error) {
 	gridName := fmt.Sprintf("%s%d%s", GridFilePrefix, version, GridFileSuffix)
 	gridPath := filepath.Join(dir, ".ghyll", gridName)
-	data, err := os.ReadFile(gridPath)
+	// Tier 3 / SR H-2: cap at 4 MiB + refuse symlinks before
+	// yaml.Unmarshal allocates.
+	data, err := safefile.ReadCappedFile(gridPath, MaxGridFileBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: grid.v%d.yaml not found", ErrGridCurrentPointsToMissing, version)
@@ -409,6 +422,23 @@ func ReadVersion(dir string, version int) (*Grid, error) {
 	}
 	if g.GridVersion != version {
 		return nil, fmt.Errorf("ReadVersion: %q declares grid-version=%d but file is named v%d", gridPath, g.GridVersion, version)
+	}
+	// Tier 3 / SR L-8: bound bounded-contexts at the load
+	// boundary (DeclareContext enforces this in code-paths that
+	// build the grid; yaml-load was the missing path).
+	if len(g.BoundedContexts) > MaxBoundedContextsImport {
+		return nil, fmt.Errorf("ReadVersion: bounded-contexts count %d exceeds cap %d",
+			len(g.BoundedContexts), MaxBoundedContextsImport)
+	}
+	// Tier 3 / SR M-10: bound ResidueNoteMaxBytes range so a
+	// forged grid with `residue-note-max-bytes: 1` doesn't
+	// silently kill operator residue flow, and so a `: huge`
+	// doesn't allow oversized residues to flow.
+	if g.ResidueNoteMaxBytes != 0 {
+		if g.ResidueNoteMaxBytes < 1024 || g.ResidueNoteMaxBytes > 1*1024*1024 {
+			return nil, fmt.Errorf("ReadVersion: residue-note-max-bytes %d out of range [1024, 1048576]",
+				g.ResidueNoteMaxBytes)
+		}
 	}
 	g.NormalizeTier2Defaults()
 	return &g, nil

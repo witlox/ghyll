@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -62,10 +63,21 @@ func (c *VaultClient) Search(embedding []float32, repoHash string, topK int) ([]
 		return nil, fmt.Errorf("memory: vault search HTTP %d", resp.StatusCode)
 	}
 
+	// Tier 3 / SR H-4: cap response body at 16 MiB so a hostile
+	// vault can't OOM the client by returning multi-GB results.
+	const maxVaultRespBytes = 16 * 1024 * 1024
+	limitedBody := io.LimitReader(resp.Body, maxVaultRespBytes+1)
+	respBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		return nil, fmt.Errorf("memory: vault read response: %w", err)
+	}
+	if int64(len(respBytes)) > maxVaultRespBytes {
+		return nil, fmt.Errorf("memory: vault response exceeds %d-byte cap", maxVaultRespBytes)
+	}
 	var result struct {
 		Results []SearchResult `json:"results"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(respBytes, &result); err != nil {
 		return nil, fmt.Errorf("memory: vault decode: %w", err)
 	}
 	return result.Results, nil

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
+	"github.com/witlox/ghyll/internal/safefile"
 )
 
 var (
@@ -132,9 +133,16 @@ type VaultConfig struct {
 	Token string `toml:"token,omitempty"`
 }
 
+// MaxConfigFileBytes caps the config TOML at 1 MiB. Tier 3 / SR
+// H-5: unbounded os.ReadFile + toml.Decode could OOM on a forged
+// 100 MiB config.toml.
+const MaxConfigFileBytes = 1 * 1024 * 1024
+
 // Load reads and parses a TOML config file, applies defaults, and validates.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	// Tier 3 / SR H-5: cap at 1 MiB + refuse symlinks before
+	// toml.Decode allocates.
+	data, err := safefile.ReadCappedFile(path, MaxConfigFileBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, &ConfigError{
@@ -272,9 +280,28 @@ func validate(cfg *Config) error {
 				Err:     ErrConfigValidation,
 			}
 		}
+		// Tier 3 / SR H-5: endpoint URL scheme MUST be http or
+		// https. Forbid file://, data://, ext:, etc. — these
+		// can route through Go transport plugins or trigger
+		// unexpected handlers.
+		if err := safefile.ValidateURLScheme(m.Endpoint, "http", "https"); err != nil {
+			return &ConfigError{
+				Message: fmt.Sprintf("model '%s' endpoint %q: %v", name, m.Endpoint, err),
+				Err:     ErrConfigValidation,
+			}
+		}
 		if !knownDialects[m.Dialect] {
 			return &ConfigError{
 				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known families: minimax, glm, deepseek, qwen)", name, m.Dialect),
+				Err:     ErrConfigValidation,
+			}
+		}
+	}
+	// Tier 3 / SR H-5: vault URL also scheme-checked when set.
+	if cfg.Vault != nil && cfg.Vault.URL != "" {
+		if err := safefile.ValidateURLScheme(cfg.Vault.URL, "http", "https"); err != nil {
+			return &ConfigError{
+				Message: fmt.Sprintf("vault.url %q: %v", cfg.Vault.URL, err),
 				Err:     ErrConfigValidation,
 			}
 		}

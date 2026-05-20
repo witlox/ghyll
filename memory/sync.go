@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/witlox/ghyll/internal/safefile"
 )
 
 // SyncError wraps git operation failures.
@@ -208,9 +210,23 @@ func (s *Syncer) Fetch() error {
 }
 
 // WriteCheckpoint writes a checkpoint JSON file to the worktree.
+//
+// Tier 3 / SR C-3: validate repoHash + cp.DeviceID + cp.Hash via
+// safefile.SafeSegment before joining into filesystem paths. A
+// poisoned checkpoint with DeviceID = "../../../etc/cron.d/evil"
+// can no longer escape the worktree.
 func (s *Syncer) WriteCheckpoint(cp *Checkpoint, repoHash string) error {
 	if !s.initialized {
 		return &SyncError{Op: "write", Err: fmt.Errorf("worktree not initialized")}
+	}
+	if err := safefile.SafeSegment(repoHash); err != nil {
+		return &SyncError{Op: "write", Err: fmt.Errorf("repoHash: %w", err)}
+	}
+	if err := safefile.SafeSegment(cp.DeviceID); err != nil {
+		return &SyncError{Op: "write", Err: fmt.Errorf("deviceID: %w", err)}
+	}
+	if err := safefile.SafeSegment(cp.Hash); err != nil {
+		return &SyncError{Op: "write", Err: fmt.Errorf("hash: %w", err)}
 	}
 
 	// Ensure directory structure
@@ -309,7 +325,10 @@ func (s *Syncer) ReadCheckpoints(repoHash string) ([]Checkpoint, error) {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(cpDir, entry.Name()))
+		// Tier 3 / SR M-5: cap per-checkpoint file at 1 MiB so a
+		// poisoned 2 GB file doesn't OOM the syncer.
+		data, err := safefile.ReadCappedFile(
+			filepath.Join(cpDir, entry.Name()), 1*1024*1024)
 		if err != nil {
 			continue
 		}
@@ -323,9 +342,15 @@ func (s *Syncer) ReadCheckpoints(repoHash string) ([]Checkpoint, error) {
 }
 
 // WritePublicKey writes a device public key to the worktree.
+//
+// Tier 3 / SR C-3: validate deviceID via safefile.SafeSegment
+// before filepath.Join.
 func (s *Syncer) WritePublicKey(deviceID string, pubKeyPEM []byte) error {
 	if !s.initialized {
 		return &SyncError{Op: "write", Err: fmt.Errorf("worktree not initialized")}
+	}
+	if err := safefile.SafeSegment(deviceID); err != nil {
+		return &SyncError{Op: "write", Err: fmt.Errorf("deviceID: %w", err)}
 	}
 	devicesDir := filepath.Join(s.worktreeDir, "devices")
 	if err := os.MkdirAll(devicesDir, 0755); err != nil {
@@ -335,9 +360,14 @@ func (s *Syncer) WritePublicKey(deviceID string, pubKeyPEM []byte) error {
 }
 
 // ReadPublicKey reads a device public key from the worktree.
+//
+// Tier 3 / SR C-3: validate deviceID via safefile.SafeSegment.
 func (s *Syncer) ReadPublicKey(deviceID string) ([]byte, error) {
 	if !s.initialized {
 		return nil, &SyncError{Op: "read", Err: fmt.Errorf("worktree not initialized")}
+	}
+	if err := safefile.SafeSegment(deviceID); err != nil {
+		return nil, &SyncError{Op: "read", Err: fmt.Errorf("deviceID: %w", err)}
 	}
 	path := filepath.Join(s.worktreeDir, "devices", deviceID+".pub")
 	data, err := os.ReadFile(path)

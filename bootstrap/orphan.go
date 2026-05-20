@@ -88,6 +88,15 @@ func ExtractContextSymbols(projectDir, contextID string) ([]ExportedSymbol, erro
 	if !isValidContextID(contextID) {
 		return nil, fmt.Errorf("ExtractContextSymbols: invalid contextID %q", contextID)
 	}
+	// Tier 3 / SR M-9: resolve projectDir to an absolute path
+	// at entry so a later os.Chdir doesn't race the join. A
+	// relative input that survived earlier validation would
+	// otherwise resolve against the caller's CWD.
+	absProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("ExtractContextSymbols: abs %q: %w", projectDir, err)
+	}
+	projectDir = absProjectDir
 	ctxDir := filepath.Join(projectDir, "src", contextID)
 	info, err := os.Lstat(ctxDir)
 	if err != nil {

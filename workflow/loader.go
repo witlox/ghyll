@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/witlox/ghyll/internal/safefile"
 )
 
 // Workflow is the loaded result of scanning .ghyll/ (or fallback .claude/).
@@ -74,8 +76,18 @@ func Load(globalDir, projectDir string, fallbackFolders []string) (*Workflow, er
 	return wf, nil
 }
 
+// maxWorkflowFileBytes caps each instruction/command file at
+// 256 KiB. Tier 3 / SR H-3: previously unbounded + symlink-
+// following — a 1 GB instructions.md OOMed the agent, and a
+// symlink `instructions.md -> /etc/shadow` exfiltrated file
+// content into the system prompt.
+const maxWorkflowFileBytes = 256 * 1024
+
 func readFileIfExists(path string) string {
-	data, err := os.ReadFile(path)
+	// Tier 3 / SR H-3: refuse symlinks via Lstat + cap size.
+	// Workflow files are operator-supplied + can land in the
+	// system prompt; this is the data-exfiltration class.
+	data, err := safefile.ReadCappedFile(path, maxWorkflowFileBytes)
 	if err != nil {
 		return ""
 	}
