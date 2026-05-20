@@ -38,7 +38,9 @@ make                  # lint + test + build
 make build-bin        # versioned binaries to bin/
 make test             # unit + acceptance tests
 make test-race        # with race detector
-make coverage-check   # enforce 70% threshold
+make coverage-check   # enforce 78% threshold
+make bench            # engine + runner benchmarks (perf/baselines.md)
+make test-live        # opt-in live-endpoint tests (build tag `live`)
 make docs-serve       # preview mdbook locally
 make embedder         # download ONNX embedding model
 ```
@@ -61,7 +63,10 @@ dialect/              model-specific code + routing decision table
   router.go           context-depth routing
   glm5.go             GLM-5 dialect
   minimax_m25.go      MiniMax M2.5 dialect
+  deepseek.go         DeepSeek dialect
+  qwen.go             Qwen dialect
   parse.go            shared OpenAI tool call parser
+  helpers.go          shared sanitize/strip helpers
 memory/               checkpoint store + crypto + sync + embedder
   store.go            sqlite + hash chain
   crypto.go           canonical hash, ed25519 sign/verify, chain verification
@@ -101,7 +106,8 @@ scripts/              scenario verification tooling
 - Tests: TDD (red-green-refactor), TestScenario_* naming, godog for acceptance
 - Memory checkpoints: append-only, hash-chained, ed25519 signed
 - The git orphan branch `ghyll/memory` is never merged into code branches
-- CI: build -> validate -> test pipeline, 70% coverage threshold
+- CI: build -> validate -> test pipeline, 78% coverage threshold
+- Releases: weekly cron or `workflow_dispatch` in `release.yml`; version is `v<year>.<sum-of-ADRs>.<commit-count>`; the ADR-sum is a manual constant bumped in the workflow when a new ADR lands
 
 ## Key Design Decisions
 
@@ -117,6 +123,10 @@ scripts/              scenario verification tooling
 
 - [ADR-015: Pass persistence + JSONL source of truth](docs/decisions/015-pass-persistence-and-jsonl-source-of-truth.md) — Tier 1: `passes` table + crash recovery + JSONL becomes the authoritative attestation log (amends ADR-010)
 
+- [ADR-016: Tier 2 operator modal + tree primary](docs/decisions/016-tier-2-operator-modal-and-tree-primary.md) — operator verdict modal; per-pass attestation tree becomes the primary write target
+
+- [ADR-017: ProjectStatus aggregator](docs/decisions/017-project-status-aggregator.md) — read-only aggregator over runner stores, no cache
+
 Architectural reference (current code, not aspirational):
 
 - [v2 design](specs/architecture/v2-design.md) — gate-and-arrow rationale
@@ -131,9 +141,12 @@ Architectural reference (current code, not aspirational):
 ghyll run .                           # start session, auto-detect model
 ghyll run . --model glm5              # force GLM-5
 ghyll run . --resume                  # resume from last session's checkpoint
+ghyll init attest --op-id alice       # emit on-the-spot init attestations
 ghyll memory search "race condition"  # search checkpoints
 ghyll memory sync                     # manual sync
 ghyll memory log                      # show checkpoint chain
+ghyll engine status                   # show persistent engine state
+ghyll engine replay                   # replay persisted entities
 ghyll config show                     # display configuration
 ghyll version                         # print version
 ```

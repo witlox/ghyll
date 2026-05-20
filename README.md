@@ -15,10 +15,16 @@ migrations, glue code, and rapid prototyping, where throughput is the
 win and ghyll's gate ceremony is pure overhead. Stating the second half
 is the position.
 
-> **Status.** The correctness mechanism — typed gate clauses, role
-> transitions as first-class arrows, the integrator feedback cycle —
-> is implemented. Dialects, memory, drift detection, and streaming
-> support it as continuity infrastructure. Design lives in
+> **Status.** Tier 0 → 4 of the production-readiness roadmap are
+> shipped. The correctness mechanism — typed gate clauses, role
+> transitions as first-class arrows, the operator-verdict modal,
+> the integrator feedback cycle — is implemented end-to-end, with
+> persistence, crash recovery, and signed checkpoint sync. First
+> tagged release: [`v2026.30.228`](https://github.com/witlox/ghyll/releases/tag/v2026.30.228).
+> See the [CHANGELOG](CHANGELOG.md), the
+> [operator guide](docs/operator-guide.md), and the
+> [architecture flows](docs/architecture-flows.md) for the current
+> surface. Full design reference in
 > [`specs/architecture/`](specs/architecture/).
 
 > ## :warning: SANDBOX REQUIRED
@@ -79,8 +85,10 @@ The differentiator is **behavioral, not infrastructural**. ghyll's
 correctness mechanism is a gate system, not drift detection.
 
 - **Roles are fixed and first-class.** A diamond workflow (analyst →
-  architect → implementer → auditor → integrator) is embedded and
-  enforced as the default.
+  architect → implementer → integrator) is embedded and enforced
+  as the default; role contracts live in
+  [`specs/architecture/roles/`](specs/architecture/roles/) (ADR-008
+  fixed the runtime role set and removed runtime overlays).
 - **Role transitions are arrows.** Every transition is a first-class
   artifact with typed gate clauses. Transitions are legal only along
   declared arrows; undeclared transitions suspend, not silently proceed.
@@ -114,7 +122,8 @@ shallow work.
 |-------|--------------|---------|------|
 | MiniMax M2.5 | 10B / 230B | 1M tokens | Fast |
 | GLM-5 | 40B / 744B | 200K tokens | Deep |
-| Kimi K2 | 32B / 1T | 256K tokens | Planned |
+| DeepSeek | — | 128K tokens | Auxiliary |
+| Qwen | — | 128K tokens | Auxiliary |
 
 - Model-specific dialects — hand-tuned prompts, tool parsing, compaction per model
 - Real-time streaming — tokens appear as they arrive, tool calls rendered inline
@@ -134,9 +143,18 @@ Architectural reference (current code, not aspirational) lives in
 ```bash
 make setup           # install tools + git hooks
 make                 # lint + test + build
-make coverage-check  # enforce 70% coverage
-make docs-serve      # preview docs locally
+make test-race       # tests under the race detector
+make coverage-check  # enforce 78% coverage
+make bench           # engine + runner benchmarks (perf/baselines.md)
+make test-live       # opt-in live-endpoint tests (build tag `live`)
+make docs-serve      # preview mdbook docs locally
 ```
+
+Releases are tagged automatically by
+[`.github/workflows/release.yml`](.github/workflows/release.yml)
+on a weekly schedule (or via `workflow_dispatch`). Versioning is
+`v<year>.<sum-of-ADRs>.<commit-count>`; the ADR-sum counter is
+bumped manually in the workflow when a new ADR lands.
 
 ## License
 
