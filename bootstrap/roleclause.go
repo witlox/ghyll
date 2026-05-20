@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	ghyll "github.com/witlox/ghyll"
 )
 
 // Role file parsing.
@@ -65,6 +67,9 @@ func (c RoleClause) IsAttested() bool {
 var (
 	ErrRoleFileNoTable     = errors.New("role-file-no-exit-gate-table")
 	ErrRoleClauseMalformed = errors.New("role-clause-malformed")
+	// ErrRoleNameUnknown is returned by ParseRoleFileEmbedded when the
+	// requested role name isn't one of the four canonical ADR-008 roles.
+	ErrRoleNameUnknown = errors.New("role-name-unknown")
 )
 
 // expectedHeader is the canonical column header for a role's
@@ -74,22 +79,72 @@ const expectedHeader = "| # | Clause | Concept (machine) or attested judgement |
 
 // ParseRoleFile reads path and returns the parsed role file. The Role
 // name is derived from the filename (e.g., analyst.md → "analyst").
+//
+// Use this entry point only when the caller has a real filesystem
+// path (custom role overrides during development, test fixtures with
+// bespoke clauses, etc.). For loading the four canonical role
+// contracts that ship inside the binary, prefer
+// ParseRoleFileEmbedded.
 func ParseRoleFile(path string) (*RoleFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("ParseRoleFile: read %q: %w", path, err)
 	}
-	clauses, err := parseExitGateTable(string(data))
+	rf, err := parseRoleFileBytes(data, path)
 	if err != nil {
 		return nil, fmt.Errorf("ParseRoleFile: %q: %w", path, err)
+	}
+	return rf, nil
+}
+
+// ParseRoleFileEmbedded loads one of the four canonical role
+// contracts (analyst, architect, implementer, integrator) from the
+// embedded FS in the repo-root `ghyll` package and returns the parsed
+// RoleFile.
+//
+// Unlike ParseRoleFile, this works inside a released binary where
+// specs/architecture/roles/ is no longer present on disk. This is the
+// path that `ghyll init` and other production-time consumers must use
+// (integrator finding H-2).
+//
+// roleName must be one of: "analyst", "architect", "implementer",
+// "integrator". Any other value returns an error referencing
+// ErrRoleNameUnknown so callers can distinguish "no such role" from
+// "role parse failed".
+func ParseRoleFileEmbedded(roleName string) (*RoleFile, error) {
+	switch roleName {
+	case "analyst", "architect", "implementer", "integrator":
+	default:
+		return nil, fmt.Errorf("ParseRoleFileEmbedded: %w: %q", ErrRoleNameUnknown, roleName)
+	}
+	embeddedPath := "specs/architecture/roles/" + roleName + ".md"
+	data, err := ghyll.RolesFS.ReadFile(embeddedPath)
+	if err != nil {
+		return nil, fmt.Errorf("ParseRoleFileEmbedded: read embedded %q: %w", embeddedPath, err)
+	}
+	rf, err := parseRoleFileBytes(data, embeddedPath)
+	if err != nil {
+		return nil, fmt.Errorf("ParseRoleFileEmbedded: %q: %w", embeddedPath, err)
+	}
+	return rf, nil
+}
+
+// parseRoleFileBytes is the shared parser body for ParseRoleFile and
+// ParseRoleFileEmbedded. label is the source identifier used to
+// populate RoleFile.Path and to derive the role name from its
+// basename (e.g., "specs/architecture/roles/analyst.md" → "analyst").
+func parseRoleFileBytes(data []byte, label string) (*RoleFile, error) {
+	clauses, err := parseExitGateTable(string(data))
+	if err != nil {
+		return nil, err
 	}
 	// Validation-pass-2 F25: use filepath.Base (handles Windows
 	// separators and special path forms) rather than a hand-rolled
 	// scan on '/' and '\'.
-	role := strings.TrimSuffix(filepath.Base(path), ".md")
+	role := strings.TrimSuffix(filepath.Base(label), ".md")
 	return &RoleFile{
 		Role:    role,
-		Path:    path,
+		Path:    label,
 		Clauses: clauses,
 	}, nil
 }

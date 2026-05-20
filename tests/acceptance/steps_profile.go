@@ -191,9 +191,9 @@ func (s *ScenarioState) initAutoProposesPerArrow() error {
 	if err != nil {
 		return fmt.Errorf("load catalogue: %w", err)
 	}
-	rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/analyst.md")
+	rf, err := bootstrap.ParseRoleFileEmbedded("analyst")
 	if err != nil {
-		return fmt.Errorf("ParseRoleFile(analyst): %w", err)
+		return fmt.Errorf("ParseRoleFileEmbedded(analyst): %w", err)
 	}
 	for _, c := range s.Profile.BoundedContexts {
 		ap, err := bootstrap.BuildProposal(rf, cat, "analyst", "architect", c.ID)

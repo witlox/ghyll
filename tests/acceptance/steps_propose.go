@@ -90,9 +90,9 @@ func (s *ScenarioState) initEntersAutoProposeFlow() error {
 	}
 	var all []*bootstrap.ArrowProposal
 	for _, rp := range pairs {
-		rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/" + rp.upstream + ".md")
+		rf, err := bootstrap.ParseRoleFileEmbedded(rp.upstream)
 		if err != nil {
-			return fmt.Errorf("ParseRoleFile(%s): %w", rp.upstream, err)
+			return fmt.Errorf("ParseRoleFileEmbedded(%s): %w", rp.upstream, err)
 		}
 		for i := 1; i <= s.BoundedContextCount; i++ {
 			ctxID := fmt.Sprintf("context-%d", i)
@@ -177,9 +177,9 @@ func (s *ScenarioState) aProposedClauseFromRoleFile(role, clauseID, concept stri
 	if err != nil {
 		return fmt.Errorf("load catalogue: %w", err)
 	}
-	rf, err := bootstrap.ParseRoleFile("../../specs/architecture/roles/" + role + ".md")
+	rf, err := bootstrap.ParseRoleFileEmbedded(role)
 	if err != nil {
-		return fmt.Errorf("ParseRoleFile(%s): %w", role, err)
+		return fmt.Errorf("ParseRoleFileEmbedded(%s): %w", role, err)
 	}
 	// Find the named clause.
 	var target *bootstrap.RoleClause

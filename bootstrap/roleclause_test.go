@@ -202,3 +202,78 @@ func TestParseRoleFile_MissingFile(t *testing.T) {
 		t.Error("expected error for missing file; got nil")
 	}
 }
+
+// TestParseRoleFileEmbedded_AllRoles covers integrator finding H-2:
+// the four canonical role contracts (ADR-008) must load from the
+// embedded FS so the parser works inside a released binary where
+// specs/architecture/roles/ is not present on disk.
+func TestParseRoleFileEmbedded_AllRoles(t *testing.T) {
+	roles := []string{"analyst", "architect", "implementer", "integrator"}
+	for _, role := range roles {
+		t.Run(role, func(t *testing.T) {
+			rf, err := ParseRoleFileEmbedded(role)
+			if err != nil {
+				t.Fatalf("ParseRoleFileEmbedded(%s): %v", role, err)
+			}
+			if rf.Role != role {
+				t.Errorf("Role = %q; want %q", rf.Role, role)
+			}
+			if len(rf.Clauses) == 0 {
+				t.Errorf("%s: parsed 0 clauses; expected non-empty exit gate", role)
+			}
+			// Sanity: every clause must have an ID, clause text, and
+			// exactly one of machine/attested set. This guards against a
+			// silent embed/parse regression that loads a stub file.
+			for i, c := range rf.Clauses {
+				if c.ID == "" {
+					t.Errorf("%s clause[%d] has empty ID", role, i)
+				}
+				if c.ClauseText == "" {
+					t.Errorf("%s clause[%d] %q has empty ClauseText", role, i, c.ID)
+				}
+				if c.IsMachine() == c.IsAttested() {
+					t.Errorf("%s clause %s: exactly one of IsMachine/IsAttested must be true", role, c.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestParseRoleFileEmbedded_UnknownRole asserts that asking for a
+// role outside the ADR-008 set returns ErrRoleNameUnknown so callers
+// can distinguish "no such role" from a parse failure on a real
+// role file.
+func TestParseRoleFileEmbedded_UnknownRole(t *testing.T) {
+	_, err := ParseRoleFileEmbedded("auditor") // valid Claude Code role, not a ghyll runtime role
+	if err == nil {
+		t.Fatal("expected error for unknown role; got nil")
+	}
+	if !errors.Is(err, ErrRoleNameUnknown) {
+		t.Errorf("err = %v; want errors.Is(err, ErrRoleNameUnknown)", err)
+	}
+}
+
+// TestParseRoleFileEmbedded_AgreesWithFile verifies the embedded
+// loader returns the same clause set as the on-disk loader for a
+// canonical role. This guards against an embed directive accidentally
+// pointing at a stale snapshot.
+func TestParseRoleFileEmbedded_AgreesWithFile(t *testing.T) {
+	fromDisk, err := ParseRoleFile("../specs/architecture/roles/analyst.md")
+	if err != nil {
+		t.Fatalf("ParseRoleFile(analyst.md from disk): %v", err)
+	}
+	fromEmbed, err := ParseRoleFileEmbedded("analyst")
+	if err != nil {
+		t.Fatalf("ParseRoleFileEmbedded(analyst): %v", err)
+	}
+	if len(fromDisk.Clauses) != len(fromEmbed.Clauses) {
+		t.Fatalf("clause-count mismatch: disk=%d embedded=%d",
+			len(fromDisk.Clauses), len(fromEmbed.Clauses))
+	}
+	for i := range fromDisk.Clauses {
+		if fromDisk.Clauses[i] != fromEmbed.Clauses[i] {
+			t.Errorf("clause[%d] mismatch:\n disk=%+v\n embedded=%+v",
+				i, fromDisk.Clauses[i], fromEmbed.Clauses[i])
+		}
+	}
+}
