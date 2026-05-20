@@ -443,6 +443,51 @@ type EvaluationRunRecord struct {
 	RunError                string `json:"run_error"`
 }
 
+// UpdateEvaluationRunReconciled flips an existing run's end_status
+// and stamps the recovery_source provenance column. Used by
+// engine.Recovery (ADR-015 Part D step 4) when the JSONL attestation
+// has a verdict but the run row still says end_status=running.
+// source is typically "recovery-attestation-replay"; at is the
+// reconciliation timestamp (RFC3339).
+//
+// Returns ErrEngineEvaluationRunNotFound if no row matches runID.
+func (s *Store) UpdateEvaluationRunReconciled(
+	ctx context.Context,
+	runID string,
+	endStatus string,
+	source string,
+	at string,
+) error {
+	if strings.TrimSpace(runID) == "" {
+		return ErrEngineEmptyID
+	}
+	if strings.TrimSpace(endStatus) == "" {
+		return fmt.Errorf("%w: end_status required", ErrEngineInvalidStatus)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE evaluation_runs
+		SET    end_status      = ?,
+		       recovery_source = ?,
+		       completed_at    = CASE WHEN completed_at = '' THEN ? ELSE completed_at END
+		WHERE  id = ?
+	`, endStatus, source, at, runID)
+	if err != nil {
+		return fmt.Errorf("UpdateEvaluationRunReconciled %s: %w", safeID(runID), err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("UpdateEvaluationRunReconciled %s RowsAffected: %w", safeID(runID), err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrEngineEvaluationRunNotFound, safeID(runID))
+	}
+	return nil
+}
+
+// ErrEngineEvaluationRunNotFound signals a recovery-update or
+// historical-query against a missing run row.
+var ErrEngineEvaluationRunNotFound = errors.New("engine: evaluation_run not found")
+
 // InsertEvaluationRun appends a run record. EvaluationRun is
 // snapshot-by-design (runner.go); persistence is one-shot. JSON
 // blob validated at write boundary (E4).
@@ -519,6 +564,201 @@ func JSONSlice(v any) string { return MustJSON(v, "[]") }
 // JSONObject marshals v as a JSON object, falling back to "{}" on
 // error. Convenience wrapper.
 func JSONObject(v any) string { return MustJSON(v, "{}") }
+
+// PassRecord is the persistence shape of a runner.Pass (ADR-015
+// Part A). Mirrors the table columns 1:1. Validation runs on the
+// write boundary (matching FindingRecord / AmendmentRecord).
+type PassRecord struct {
+	PassID      string `json:"pass_id"`
+	Role        string `json:"role"`
+	Context     string `json:"context"`
+	ArrowID     string `json:"arrow_id"`
+	GridVersion uint64 `json:"grid_version,string"`
+	State       string `json:"state"`
+	OpenedAt    string `json:"opened_at"`
+	ClosedAt    string `json:"closed_at"`
+	CloseReason string `json:"close_reason"`
+	RecoveredAt string `json:"recovered_at"`
+}
+
+// PassListFilter narrows ListPasses results. Empty fields are
+// wildcards. Limit + Offset honor normalizePaging.
+type PassListFilter struct {
+	State   string
+	ArrowID string
+	Role    string
+	Context string
+	Limit   int
+	Offset  int
+}
+
+// knownPassState is the canonical set of state column values.
+// Matches the CHECK constraint on the `passes` table.
+var knownPassState = map[string]struct{}{
+	"open":    {},
+	"closed":  {},
+	"aborted": {},
+}
+
+// Pass-record validation errors.
+var (
+	ErrEnginePassIDEmpty      = errors.New("engine: pass-id required")
+	ErrEnginePassRoleEmpty    = errors.New("engine: pass role required")
+	ErrEnginePassContextEmpty = errors.New("engine: pass context required")
+	ErrEnginePassArrowEmpty   = errors.New("engine: pass arrow_id required")
+	ErrEnginePassStateInvalid = errors.New("engine: pass state not in {open,closed,aborted}")
+	ErrEnginePassNotFound     = errors.New("engine: pass not found")
+)
+
+// validatePass returns nil iff the record is structurally well-
+// formed. Mirrors the runner-layer Pass.OpenPass invariants for the
+// engine's persistence boundary.
+func validatePass(r PassRecord) error {
+	if strings.TrimSpace(r.PassID) == "" {
+		return ErrEnginePassIDEmpty
+	}
+	if strings.TrimSpace(r.Role) == "" {
+		return ErrEnginePassRoleEmpty
+	}
+	if strings.TrimSpace(r.Context) == "" {
+		return ErrEnginePassContextEmpty
+	}
+	if strings.TrimSpace(r.ArrowID) == "" {
+		return ErrEnginePassArrowEmpty
+	}
+	if _, ok := knownPassState[r.State]; !ok {
+		return fmt.Errorf("%w: %q", ErrEnginePassStateInvalid, r.State)
+	}
+	return nil
+}
+
+// UpsertPass inserts a new pass row or updates an existing one on
+// pass_id conflict. State-machine transition validation is the
+// runner's job (runner.Pass.closeWith already enforces); the engine
+// accepts whatever the runner persists provided it's structurally
+// valid.
+func (s *Store) UpsertPass(ctx context.Context, r PassRecord) error {
+	if err := validatePass(r); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO passes (
+			pass_id, role, context, arrow_id, grid_version,
+			state, opened_at, closed_at, close_reason, recovered_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(pass_id) DO UPDATE SET
+			state         = excluded.state,
+			closed_at     = excluded.closed_at,
+			close_reason  = excluded.close_reason,
+			recovered_at  = CASE
+			    WHEN passes.recovered_at = '' THEN excluded.recovered_at
+			    ELSE passes.recovered_at
+			END
+	`,
+		r.PassID, r.Role, r.Context, r.ArrowID, int64(r.GridVersion),
+		r.State, r.OpenedAt, r.ClosedAt, r.CloseReason, r.RecoveredAt,
+	)
+	if err != nil {
+		return fmt.Errorf("UpsertPass %s: %w", safeID(r.PassID), err)
+	}
+	return nil
+}
+
+// GetPass returns the row for a pass_id. The bool is false when no
+// such row exists (mirrors GetFinding's contract).
+func (s *Store) GetPass(ctx context.Context, id string) (PassRecord, bool, error) {
+	if strings.TrimSpace(id) == "" {
+		return PassRecord{}, false, ErrEngineEmptyID
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT pass_id, role, context, arrow_id, grid_version,
+		       state, opened_at, closed_at, close_reason, recovered_at
+		FROM   passes
+		WHERE  pass_id = ?
+	`, id)
+	rec, err := scanPass(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PassRecord{}, false, nil
+	}
+	if err != nil {
+		return PassRecord{}, false, fmt.Errorf("GetPass %s: %w", safeID(id), err)
+	}
+	return rec, true, nil
+}
+
+// ListPasses returns rows matching filter, ordered by opened_at
+// ASC (chronological). Used by /passes (no arg) and by Recovery's
+// orphan scan.
+func (s *Store) ListPasses(ctx context.Context, f PassListFilter) ([]PassRecord, error) {
+	sb := strings.Builder{}
+	sb.WriteString(`
+		SELECT pass_id, role, context, arrow_id, grid_version,
+		       state, opened_at, closed_at, close_reason, recovered_at
+		FROM   passes
+		WHERE  1 = 1`)
+	args := []any{}
+	if f.State != "" {
+		sb.WriteString(` AND state = ?`)
+		args = append(args, f.State)
+	}
+	if f.ArrowID != "" {
+		sb.WriteString(` AND arrow_id = ?`)
+		args = append(args, f.ArrowID)
+	}
+	if f.Role != "" {
+		sb.WriteString(` AND role = ?`)
+		args = append(args, f.Role)
+	}
+	if f.Context != "" {
+		sb.WriteString(` AND context = ?`)
+		args = append(args, f.Context)
+	}
+	sb.WriteString(` ORDER BY opened_at ASC`)
+	limit, offset := normalizePaging(f.Limit, f.Offset)
+	sb.WriteString(` LIMIT ? OFFSET ?`)
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("ListPasses: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []PassRecord{}
+	for rows.Next() {
+		rec, err := scanPass(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListPasses scan: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ListPasses rows: %w", err)
+	}
+	return out, nil
+}
+
+// scanPass reads one row into a PassRecord. Used by GetPass and
+// ListPasses.
+func scanPass(scanner interface {
+	Scan(...any) error
+}) (PassRecord, error) {
+	var p PassRecord
+	var grid int64
+	err := scanner.Scan(
+		&p.PassID, &p.Role, &p.Context, &p.ArrowID, &grid,
+		&p.State, &p.OpenedAt, &p.ClosedAt, &p.CloseReason, &p.RecoveredAt,
+	)
+	if err != nil {
+		return PassRecord{}, err
+	}
+	p.GridVersion = uint64(grid)
+	return p, nil
+}
+
+// CountPasses reports the total pass count across all states.
+// Mirrors the CountX pattern (replaces ListX truncation per C7).
+func (s *Store) CountPasses(ctx context.Context) (int, error) {
+	return s.countSimple(ctx, "passes")
+}
 
 // Compile-time check that errors are wrapped via standard package.
 var _ = errors.New

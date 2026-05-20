@@ -107,8 +107,9 @@ func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 
 // schemaVersion is the engine's current schema generation. Bumped
 // when a migration that can't be expressed by `CREATE ... IF NOT
-// EXISTS` ships. Validation-pass-10 C7.
-const schemaVersion = 2
+// EXISTS` ships. Validation-pass-10 C7. Tier 1 (ADR-015) bumps
+// from 2 to 3 for the evaluation_runs.recovery_source ALTER.
+const schemaVersion = 3
 
 // ErrEngineSchemaMismatch is returned when a DB written by a newer
 // ghyll binary is opened by an older one. The operator-friendly
@@ -142,6 +143,14 @@ func (s *Store) ensureSchemaVersion() error {
 				ErrEngineSchemaMismatch, existingVer, schemaVersion)
 		}
 	}
+	// v2 → v3 migration: add recovery_source to evaluation_runs.
+	// IF NOT EXISTS can't apply to columns, so this is conditional
+	// on the column being absent. Safe to re-run; PRAGMA returns
+	// the column list and the migration is idempotent.
+	if err := s.ensureRecoverySourceColumn(); err != nil {
+		return fmt.Errorf("v3 migration: %w", err)
+	}
+
 	_, err = s.db.Exec(`
 		INSERT INTO engine_meta(key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -149,6 +158,42 @@ func (s *Store) ensureSchemaVersion() error {
 	`, "schema_version", fmt.Sprintf("%d", schemaVersion))
 	if err != nil {
 		return fmt.Errorf("engine_meta write: %w", err)
+	}
+	return nil
+}
+
+// ensureRecoverySourceColumn adds evaluation_runs.recovery_source if
+// it doesn't exist yet. Idempotent: skips when the column is already
+// present (so v3-fresh and v2-upgraded DBs converge).
+func (s *Store) ensureRecoverySourceColumn() error {
+	rows, err := s.db.Query(`PRAGMA table_info(evaluation_runs)`)
+	if err != nil {
+		return fmt.Errorf("PRAGMA table_info: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			ctype        string
+			notnull      int
+			defaultValue sql.NullString
+			pk           int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("PRAGMA scan: %w", err)
+		}
+		if name == "recovery_source" {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("PRAGMA rows: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`ALTER TABLE evaluation_runs ADD COLUMN recovery_source TEXT NOT NULL DEFAULT ''`,
+	); err != nil {
+		return fmt.Errorf("ALTER TABLE evaluation_runs: %w", err)
 	}
 	return nil
 }
@@ -358,4 +403,23 @@ CREATE INDEX IF NOT EXISTS idx_attestations_arrow
 	ON attestations(arrow_id);
 CREATE INDEX IF NOT EXISTS idx_attestations_clause
 	ON attestations(clause_id) WHERE clause_id IS NOT NULL;
+
+-- Passes table (ADR-015 Part A, Tier 1). One row per pass_id.
+-- runner.Pass mirrors columns 1:1 plus recovered_at (set-once by
+-- engine.Recovery for attestation-pending preservation).
+CREATE TABLE IF NOT EXISTS passes (
+	pass_id        TEXT PRIMARY KEY,
+	role           TEXT NOT NULL,
+	context        TEXT NOT NULL,
+	arrow_id       TEXT NOT NULL,
+	grid_version   INTEGER NOT NULL DEFAULT 0,
+	state          TEXT NOT NULL CHECK (state IN ('open','closed','aborted')),
+	opened_at      TEXT NOT NULL DEFAULT '',
+	closed_at      TEXT NOT NULL DEFAULT '',
+	close_reason   TEXT NOT NULL DEFAULT '',
+	recovered_at   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_passes_state    ON passes(state);
+CREATE INDEX IF NOT EXISTS idx_passes_arrow    ON passes(arrow_id);
+CREATE INDEX IF NOT EXISTS idx_passes_role_ctx ON passes(role, context);
 `
