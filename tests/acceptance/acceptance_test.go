@@ -119,6 +119,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// Attestation deferred batch — verifier-reads-attestation-log
 	// scenario (attestation.feature).
 	registerAttestationDeferredSteps(ctx, state)
+
+	// Tier 1 crash-recovery — 7 deferred scenarios across
+	// state-machine.feature + runner.feature (ADR-015).
+	registerTier1RecoverySteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

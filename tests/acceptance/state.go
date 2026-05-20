@@ -5,6 +5,7 @@ import (
 
 	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/catalogue"
+	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
 	"github.com/witlox/ghyll/types"
 )
@@ -276,6 +277,22 @@ type ScenarioState struct {
 	RPAmendQueue  *runner.AmendmentQueue
 	RPFindings    *runner.FindingsStore
 	RPGridVersion uint64
+
+	// Tier 1 crash-recovery scenarios (state-machine.feature +
+	// runner.feature deferred). Each scenario seeds engine rows
+	// to simulate a crashed session, runs engine.Recovery, and
+	// asserts on the report + post-recovery row state.
+	TR1Workdir        string
+	TR1Store          *engine.Store
+	TR1Atts           *runner.AttestationStore
+	TR1Passes         *runner.PassRegistry
+	TR1LockTable      *runner.RoleContextLockTable
+	TR1RecoveryRep    engine.RecoveryReport
+	TR1RecoveryErr    error
+	TR1PassRec        engine.PassRecord
+	TR1PassFound      bool
+	TR1HistoricalPass engine.PassRecord
+	TR1HistoryFound   bool
 
 	// Adversarial deferred batch (multi-round remediation +
 	// loop-bomb + convergence/escalation flows).

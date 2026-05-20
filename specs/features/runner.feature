@@ -166,14 +166,12 @@ Feature: Machine-clause runner (enforcement spine)
 
   # ---- Per-pass checkpoint emission ----
 
-  @deferred
   Scenario: Pass completes and emits checkpoint
     Given pass P1 has reached terminal arrow status
     When the runner finalizes the pass
     Then the runner emits a checkpoint with pass-id, arrow-id, grid-version, clause-by-clause status, finding ids raised, pass-status "completed", and timestamps
     And the checkpoint is appended to the project's checkpoint log
 
-  @deferred
   Scenario: Pass aborted records reason in checkpoint
     Given pass P1 was aborted mid-phase
     When the runner finalizes the aborted pass

@@ -184,14 +184,15 @@ func (r *PassRegistry) Register(p *Pass) {
 	p.registry = r
 	r.mu.Unlock()
 	r.emit(PassEvent{
-		Kind:     PassEventOpen,
-		PassID:   p.ID(),
-		Role:     p.Role(),
-		Context:  p.Context(),
-		ArrowID:  p.ArrowID(),
-		State:    p.State(),
-		OpenedAt: p.OpenedAt(),
-		At:       time.Now(),
+		Kind:        PassEventOpen,
+		PassID:      p.ID(),
+		Role:        p.Role(),
+		Context:     p.Context(),
+		ArrowID:     p.ArrowID(),
+		GridVersion: p.GridVersion(),
+		State:       p.State(),
+		OpenedAt:    p.OpenedAt(),
+		At:          time.Now(),
 	})
 }
 

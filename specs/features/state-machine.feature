@@ -123,7 +123,6 @@ Feature: Status state machine engine
     Then the engine transitions P1 to "aborted" with that reason
     And findings from P1 are tagged with their original grid-version
 
-  @deferred
   Scenario: Pass aborted by crash recovery
     Given pass P1 was "running" but the runner crashed
     When the engine performs crash recovery on restart
@@ -157,14 +156,12 @@ Feature: Status state machine engine
 
   # ---- Snapshot and replay ----
 
-  @deferred
   Scenario: Restart from checkpoint log
     Given the harness was running and is restarted
     When the engine initializes
     Then it reads the checkpoint log to reconstruct all "running" passes (treated as "aborted" with reason "crash"), all "completed"/"aborted" passes (kept in log, not in in-memory store), current grid version, and current arrow statuses (per the latest completed pass per arrow)
     And the engine is ready to accept new pass starts
 
-  @deferred
   Scenario: Query historical pass
     Given a query for pass P5 (completed and flushed)
     When the engine receives the query
@@ -201,7 +198,6 @@ Feature: Status state machine engine
 
   # ---- Adversarial additions: crash recovery boundary cases ----
 
-  @deferred
   Scenario: Crash while clause is awaiting-attestation
     Given pass P1 has clause C5 with status "awaiting-attestation"
     And the hint has been published to the operator event bus
@@ -211,7 +207,6 @@ Feature: Status state machine engine
     And the attestation request is re-published on the event bus on restart (so a UI client that reconnected sees it again)
     And C5's status remains "awaiting-attestation" after recovery
 
-  @deferred
   Scenario: Crash between attestation write and clause-status flip
     Given the operator submitted verdict "pass" for clause C5
     And the JSONL record was appended successfully
