@@ -590,20 +590,7 @@ func (s *AttestationStore) LoadFromJSONL(path string, engineHasRows bool) (loade
 			if err := json.Unmarshal([]byte(line), &rec); err != nil {
 				return loaded, false, fmt.Errorf("%w: line %d: %w", ErrAttestationAuditLost, lineNo, err)
 			}
-			attRec := AttestationRecord{
-				ID:             rec.ID,
-				Kind:           AttestationKind(rec.Kind),
-				ArrowID:        rec.ArrowID,
-				ClauseID:       rec.ClauseID,
-				OpID:           rec.OpID,
-				AttestedByRole: rec.AttestedByRole,
-				SourceRole:     rec.SourceRole,
-				TargetRole:     rec.TargetRole,
-				Verdict:        AttestationVerdict(rec.Verdict),
-				Reason:         rec.Reason,
-				Timestamp:      rec.Timestamp,
-				GridVersion:    rec.GridVersion,
-			}
+			attRec := jsonlRecordToAttRec(rec)
 			if err := s.recordReplay(attRec); err != nil {
 				return loaded, false, fmt.Errorf("%w: line %d: %w", ErrAttestationAuditLost, lineNo, err)
 			}
@@ -714,20 +701,7 @@ func (s *AttestationStore) loadOneTreeFile(path string) (loaded int, truncated b
 			if jerr := json.Unmarshal([]byte(line), &rec); jerr != nil {
 				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, jerr)
 			}
-			attRec := AttestationRecord{
-				ID:             rec.ID,
-				Kind:           AttestationKind(rec.Kind),
-				ArrowID:        rec.ArrowID,
-				ClauseID:       rec.ClauseID,
-				OpID:           rec.OpID,
-				AttestedByRole: rec.AttestedByRole,
-				SourceRole:     rec.SourceRole,
-				TargetRole:     rec.TargetRole,
-				Verdict:        AttestationVerdict(rec.Verdict),
-				Reason:         rec.Reason,
-				Timestamp:      rec.Timestamp,
-				GridVersion:    rec.GridVersion,
-			}
+			attRec := jsonlRecordToAttRec(rec)
 			if rerr := s.recordReplay(attRec); rerr != nil {
 				return loaded, false, fmt.Errorf("%s line %d: %w", path, lineNo, rerr)
 			}

@@ -331,24 +331,74 @@ type jsonlRecord struct {
 	Reason         string `json:"reason,omitempty"`
 	Timestamp      int64  `json:"timestamp"`
 	GridVersion    uint64 `json:"grid_version"`
+
+	// Tier 2 additions (ADR-016 / gate-1 F-3,F-6,F-25):
+	PassID          string `json:"pass_id,omitempty"`
+	Context         string `json:"context,omitempty"`
+	Stratum         string `json:"stratum,omitempty"`
+	AdversaryRole   string `json:"adversary_role,omitempty"`
+	Unit            string `json:"unit,omitempty"`
+	UnitPayloadJSON string `json:"unit_payload_json,omitempty"`
+	HintJSON        string `json:"hint_json,omitempty"`
 }
 
 // newJsonlRecord builds the wire shape from an AttestationRecord.
 func newJsonlRecord(rec AttestationRecord) jsonlRecord {
 	return jsonlRecord{
-		ID:             rec.ID,
-		Kind:           string(rec.Kind),
-		ArrowID:        rec.ArrowID,
-		ClauseID:       rec.ClauseID,
-		OpID:           rec.OpID,
-		AttestedByRole: rec.AttestedByRole,
-		SourceRole:     rec.SourceRole,
-		TargetRole:     rec.TargetRole,
-		Verdict:        string(rec.Verdict),
-		Reason:         rec.Reason,
-		Timestamp:      rec.Timestamp,
-		GridVersion:    rec.GridVersion,
+		ID:              rec.ID,
+		Kind:            string(rec.Kind),
+		ArrowID:         rec.ArrowID,
+		ClauseID:        rec.ClauseID,
+		OpID:            rec.OpID,
+		AttestedByRole:  rec.AttestedByRole,
+		SourceRole:      rec.SourceRole,
+		TargetRole:      rec.TargetRole,
+		Verdict:         string(rec.Verdict),
+		Reason:          rec.Reason,
+		Timestamp:       rec.Timestamp,
+		GridVersion:     rec.GridVersion,
+		PassID:          rec.PassID,
+		Context:         rec.Context,
+		Stratum:         rec.Stratum,
+		AdversaryRole:   rec.AdversaryRole,
+		Unit:            string(rec.Unit),
+		UnitPayloadJSON: rec.UnitPayloadJSON,
+		HintJSON:        rec.HintJSON,
 	}
+}
+
+// jsonlRecordToAttRec hydrates a JSONL line into an
+// AttestationRecord. Tier 2 fields default to their zero values
+// for pre-Tier-2 rows. UnitPayload is parsed from UnitPayloadJSON
+// when present so callers see the typed shape; an unparseable
+// payload leaves UnitPayload zero and stamps the raw JSON only
+// (the verifier flags it).
+func jsonlRecordToAttRec(rec jsonlRecord) AttestationRecord {
+	out := AttestationRecord{
+		ID:              rec.ID,
+		Kind:            AttestationKind(rec.Kind),
+		ArrowID:         rec.ArrowID,
+		ClauseID:        rec.ClauseID,
+		OpID:            rec.OpID,
+		AttestedByRole:  rec.AttestedByRole,
+		SourceRole:      rec.SourceRole,
+		TargetRole:      rec.TargetRole,
+		Verdict:         AttestationVerdict(rec.Verdict),
+		Reason:          rec.Reason,
+		Timestamp:       rec.Timestamp,
+		GridVersion:     rec.GridVersion,
+		PassID:          rec.PassID,
+		Context:         rec.Context,
+		Stratum:         rec.Stratum,
+		AdversaryRole:   rec.AdversaryRole,
+		Unit:            VerdictUnit(rec.Unit),
+		UnitPayloadJSON: rec.UnitPayloadJSON,
+		HintJSON:        rec.HintJSON,
+	}
+	if rec.UnitPayloadJSON != "" {
+		_ = json.Unmarshal([]byte(rec.UnitPayloadJSON), &out.UnitPayload)
+	}
+	return out
 }
 
 // writeLine emits the JSON payload + newline as a SINGLE Write

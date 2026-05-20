@@ -164,6 +164,51 @@ func (v *AttestationVerifier) checkLine(lineNo int, raw string) (bool, []VerifyI
 		add(fmt.Sprintf("self-cert: attested_by_role %q equals target_role", att))
 	}
 
+	// Tier 2 self-cert extension (gate-1 F-3): adversary_role
+	// MUST NOT equal source/target. Empty adversary_role skips —
+	// only adversary-phase records carry it.
+	adv := strings.TrimSpace(rec.AdversaryRole)
+	if adv != "" {
+		if src != "" && strings.EqualFold(adv, src) {
+			add(fmt.Sprintf("self-cert: adversary_role %q equals source_role", adv))
+		}
+		if tgt != "" && strings.EqualFold(adv, tgt) {
+			add(fmt.Sprintf("self-cert: adversary_role %q equals target_role", adv))
+		}
+		if strings.Contains(adv, "__") {
+			add(`adversary_role must not contain "__" (reserved separator)`)
+		}
+	}
+
+	// Tier 2 per-unit payload validation (gate-1 F-25). Empty
+	// unit field tolerated (pre-Tier-2 rows); when present, the
+	// payload JSON MUST parse to a valid shape for the unit.
+	if rec.Unit != "" {
+		switch VerdictUnit(rec.Unit) {
+		case VerdictUnitConfirm, VerdictUnitRecordLocationsInspected, VerdictUnitWriteResidueNote:
+			// OK
+		default:
+			add(fmt.Sprintf("unit %q not in {confirm, record-locations-inspected, write-residue-note}", rec.Unit))
+		}
+		if rec.UnitPayloadJSON != "" {
+			var payload VerdictUnitPayload
+			if err := json.Unmarshal([]byte(rec.UnitPayloadJSON), &payload); err != nil {
+				add(fmt.Sprintf("unit_payload_json malformed: %v", err))
+			} else if pverr := ValidateUnitPayload(VerdictUnit(rec.Unit), payload, 0); pverr != nil {
+				add(fmt.Sprintf("unit_payload_json fails ValidateUnitPayload: %v", pverr))
+			}
+		}
+	}
+
+	// Tier 2 hint_json must parse as a JSON object when present
+	// (gate-1 F-25). Empty or "{}" both accepted.
+	if rec.HintJSON != "" && rec.HintJSON != "{}" {
+		var anyJSON map[string]any
+		if err := json.Unmarshal([]byte(rec.HintJSON), &anyJSON); err != nil {
+			add(fmt.Sprintf("hint_json malformed: %v", err))
+		}
+	}
+
 	if len(issues) == 0 {
 		return true, nil
 	}
@@ -197,3 +242,76 @@ func (r VerifyResult) String() string {
 // header-only) file. Operators triaging an "empty audit trail"
 // see a typed error instead of a meaningless OK=0/Failed=0.
 var ErrVerifyFileEmpty = errors.New("attestation-verify: file has no records")
+
+// AggregateResult is the per-ID consistency report from
+// VerifyAggregateConsistency.
+type AggregateResult struct {
+	FlatLoaded    int
+	TreeLoaded    int
+	OnlyInFlat    []string // attestation IDs present in flat but not tree
+	OnlyInTree    []string // attestation IDs present in tree but not flat
+	DivergentByID []string // attestation IDs present in both but with non-equal records
+}
+
+// VerifyAggregateConsistency loads both the flat JSONL audit file
+// and the tree-structured per-pass JSONL collection, then reports
+// ID-level divergence between the two surfaces (gate-1 F-12: the
+// tree is the primary writer; flat is a forward-only Observer).
+// Any divergence is a wire bug, not normal drift.
+//
+// Returns ErrAttestationAggregateDivergence wrapping the diff
+// summary when there is at least one OnlyInFlat / OnlyInTree /
+// DivergentByID. Nil if both surfaces agree.
+//
+// Either path may be missing (fresh project) — VerifyAggregate-
+// Consistency tolerates that case and returns a zero AggregateResult
+// + nil error.
+func (v *AttestationVerifier) VerifyAggregateConsistency(flatPath, treeRoot string) (AggregateResult, error) {
+	res := AggregateResult{}
+	flatStore := NewAttestationStore()
+	if flatPath != "" {
+		loaded, _, lerr := flatStore.LoadFromJSONL(flatPath, false)
+		if lerr != nil && !errors.Is(lerr, os.ErrNotExist) {
+			return res, fmt.Errorf("verify-aggregate: load flat: %w", lerr)
+		}
+		res.FlatLoaded = loaded
+	}
+	treeStore := NewAttestationStore()
+	if treeRoot != "" {
+		loaded, _, terr := treeStore.LoadFromTree(treeRoot, false)
+		if terr != nil && !errors.Is(terr, os.ErrNotExist) {
+			return res, fmt.Errorf("verify-aggregate: load tree: %w", terr)
+		}
+		res.TreeLoaded = loaded
+	}
+	// Walk each store to build ID sets.
+	flatByID := map[string]AttestationRecord{}
+	for _, rec := range flatStore.All() {
+		flatByID[rec.ID] = rec
+	}
+	treeByID := map[string]AttestationRecord{}
+	for _, rec := range treeStore.All() {
+		treeByID[rec.ID] = rec
+	}
+	for id, flatRec := range flatByID {
+		treeRec, ok := treeByID[id]
+		if !ok {
+			res.OnlyInFlat = append(res.OnlyInFlat, id)
+			continue
+		}
+		if !AttestationRecordsEqual(flatRec, treeRec) {
+			res.DivergentByID = append(res.DivergentByID, id)
+		}
+	}
+	for id := range treeByID {
+		if _, ok := flatByID[id]; !ok {
+			res.OnlyInTree = append(res.OnlyInTree, id)
+		}
+	}
+	if len(res.OnlyInFlat)+len(res.OnlyInTree)+len(res.DivergentByID) > 0 {
+		return res, fmt.Errorf("%w: only-in-flat=%d only-in-tree=%d divergent=%d",
+			ErrAttestationAggregateDivergence,
+			len(res.OnlyInFlat), len(res.OnlyInTree), len(res.DivergentByID))
+	}
+	return res, nil
+}
