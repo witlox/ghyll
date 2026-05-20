@@ -277,27 +277,58 @@ func (d *modalDriver) DrainPending(ctx context.Context) error {
 		if len(snapshot) == 0 {
 			return nil
 		}
-		for _, req := range snapshot {
-			if err := d.handleRequest(ctx, req); err != nil {
-				// Re-queue the request so the next turn sees it; but
-				// only if it was a ctx-cancel (transient). Other errors
-				// drop the request to avoid an infinite loop.
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					d.mu.Lock()
-					d.pending = append([]modalRequest{req}, d.pending...)
-					d.mu.Unlock()
-				} else if req.attestRef != "" {
+		for i, req := range snapshot {
+			err := d.handleRequest(ctx, req)
+			if err == nil {
+				// Success: clear inFlight (allows future re-publish
+				// of the same ref to enqueue cleanly).
+				if req.attestRef != "" {
 					d.mu.Lock()
 					delete(d.inFlight, req.attestRef)
 					d.mu.Unlock()
 				}
-				return err
+				continue
 			}
-			if req.attestRef != "" {
-				d.mu.Lock()
-				delete(d.inFlight, req.attestRef)
-				d.mu.Unlock()
+			// Gate-2 CONC-C-3/C-4: on ANY error path, preserve the
+			// unprocessed tail (snapshot[i+1:]) plus the failing
+			// item itself when transient. Without this, items
+			// after the first error in a snapshot were silently
+			// lost AND their attestRefs stayed in inFlight,
+			// disabling future re-publish dedup.
+			transient := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			d.mu.Lock()
+			// Build the new pending: failing item first iff
+			// transient, then the rest of the snapshot, then any
+			// items the OnEvent fanout queued while we were
+			// presenting.
+			var requeued []modalRequest
+			if transient {
+				requeued = append(requeued, req)
+			} else {
+				// Non-transient: drop the failing item. Clear its
+				// inFlight entry so a future re-publish queues.
+				if req.attestRef != "" {
+					delete(d.inFlight, req.attestRef)
+				}
 			}
+			if i+1 < len(snapshot) {
+				requeued = append(requeued, snapshot[i+1:]...)
+			}
+			requeued = append(requeued, d.pending...)
+			d.pending = requeued
+			d.mu.Unlock()
+			if !transient && d.bus != nil {
+				// Surface the non-transient drop so operators
+				// know which clause's verdict was abandoned.
+				d.bus.Publish(runner.OperatorEvent{
+					Kind:     runner.OpEventModalBackpressure,
+					ArrowID:  req.arrowID,
+					ClauseID: req.clauseID,
+					PassID:   req.passID,
+					Detail:   fmt.Sprintf("modal request dropped: %v", err),
+				})
+			}
+			return err
 		}
 	}
 	if d.bus != nil {
