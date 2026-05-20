@@ -86,6 +86,14 @@ type Session struct {
 	// tests inject a StubModal.
 	modalPrompt modal.OperatorModalPrompt
 
+	// sessionCtx is the session-scoped cancellation channel for
+	// long-blocking operations (currently: modal reads). /exit
+	// fires sessionCancel so an in-flight PresentVerdict aborts
+	// cleanly with ctx.Err() instead of hanging the shutdown
+	// (gate-1 F-14).
+	sessionCtx    gocontext.Context
+	sessionCancel gocontext.CancelFunc
+
 	// warnedEmptyWorkdir gates the one-shot empty-workdir warning
 	// from flushStagedBeforeModelSwitch (validation-pass-10 H10).
 	warnedEmptyWorkdir bool
@@ -159,6 +167,7 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	if s.modalPrompt == nil {
 		s.modalPrompt = &modal.TermModal{In: os.Stdin, Out: os.Stdout}
 	}
+	s.sessionCtx, s.sessionCancel = gocontext.WithCancel(gocontext.Background())
 
 	if s.renderer == nil {
 		s.renderer = stream.NewRenderer(ui.Stdout())
@@ -407,6 +416,12 @@ func (s *Session) Close() {
 	if s == nil {
 		return
 	}
+	// Cancel any in-flight modal read (gate-1 F-14). Belt-and-
+	// braces; /exit already calls cancel but Close may also be
+	// invoked via signal handler or test cleanup.
+	if s.sessionCancel != nil {
+		s.sessionCancel()
+	}
 	if s.engine == nil {
 		return
 	}
@@ -651,6 +666,18 @@ func normalizeDialect(d string) (string, error) {
 		return "", fmt.Errorf("%w: %q (known families: glm, minimax, deepseek, qwen)",
 			errUnknownDialect, d)
 	}
+}
+
+// SessionContext returns the session-scoped cancellation context.
+// REPL + other long-blocking operations honor this so /exit can
+// abort cleanly (gate-1 F-14). Falls back to Background if the
+// session predates the ctx wiring (test fixtures that construct
+// Session directly without NewSession).
+func (s *Session) SessionContext() gocontext.Context {
+	if s == nil || s.sessionCtx == nil {
+		return gocontext.Background()
+	}
+	return s.sessionCtx
 }
 
 // DrainModalPending blocks until every queued operator verdict /
@@ -1213,6 +1240,12 @@ func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
 
 	switch line {
 	case "/exit":
+		// Gate-1 F-14: cancel any in-flight modal read so the
+		// shutdown doesn't hang on a blocked PresentVerdict.
+		// Idempotent — Close() also calls cancel.
+		if s.sessionCancel != nil {
+			s.sessionCancel()
+		}
 		return SlashCommandResult{Handled: true, ExitRequested: true}
 	case "/deep":
 		if s.modelLocked {
