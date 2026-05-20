@@ -1,28 +1,121 @@
 # Operator Guide — gate-and-arrow flow
 
 This guide shows the human-operator surface of ghyll's
-gate-and-arrow runtime. It assumes you've already:
+gate-and-arrow runtime. The four canonical role contracts and the
+machine-clause concept catalogue are embedded into the binary
+(integrator findings H-1 / H-2), so a fresh install needs no
+manual file-placement to get to a working grid.
 
-- Installed ghyll and configured a model endpoint
-  (`~/.ghyll/config.toml`).
-- Run `ghyll run .` once so the project's
-  `.ghyll/engine.db` exists.
-- Initialized the project's grid (`gates/concepts/`,
-  `.ghyll/grid.v1.yaml`).
+## First run / bootstrap
 
-The operator surface is divided into four interactive commands
-inside `ghyll run` and three offline CLI commands.
+The first-time path is four commands:
 
-## In-session commands
+```
+# 1. install ghyll, then run once to seed the config
+ghyll run .
+# → "wrote default config at ~/.ghyll/config.toml; edit the model
+#    endpoints and re-run"
 
-Run `ghyll run <project>` and use these slash commands in the
-REPL.
+# 2. edit ~/.ghyll/config.toml — drop in real model endpoints
+#    (the template ships with the canonical four entries; only the
+#    base_url + api_key fields typically need to change)
+$EDITOR ~/.ghyll/config.toml
 
-### `/op-id <identity>`
+# 3. produce the project's first grid
+ghyll init --op-id alice@example.com .
+# → "init complete: <N> arrows across <M> contexts; grid at
+#    /path/to/project/.ghyll/grid.v1.yaml"
 
-Declare your operator identity for the session. Required before
-`/attest`. Identities are arbitrary strings (typically an email
-or username); whitespace is rejected.
+# 4. start the session
+ghyll run .
+```
+
+What happens under the hood:
+
+- **Step 1**: `ghyll run` calls the config bootstrap. When
+  `~/.ghyll/config.toml` is missing, the embedded
+  `config/example.toml` template is written verbatim at mode 0o600
+  (it may carry endpoint URLs that look like secrets), and the
+  process exits cleanly so you can fill in the real values
+  before reconnecting. Existing files are never clobbered — a
+  malformed TOML surfaces the parse error, not an overwrite. (C-2)
+- **Step 3**: `ghyll init` runs the four-stage bootstrap pipeline
+  end-to-end (C-1):
+  1. Profile the project directory (greenfield vs brownfield,
+     bounded-context detection, language detection).
+  2. Load the embedded concept catalogue (H-1).
+  3. For each of the four diamond role-pair arrows
+     (`init → analyst`, `analyst → architect`,
+     `architect → implementer`, `implementer → integrator`) and
+     for each bounded context, build a clause proposal from the
+     upstream role's exit-gate clauses (H-2 — the role files are
+     embedded; you do NOT need a copy of
+     `specs/architecture/roles/` on disk).
+  4. Auto-confirm every clause whose default args satisfy the
+     concept schema; auto-skip any clause whose schema requires
+     args that have no default. Skipped clauses are NOT silently
+     dropped — they land in the grid's residue list with a
+     machine-parseable reason (`init-v1: auto-skipped (required
+     args without defaults): …`) so a later amendment can supply
+     the missing values.
+  5. Persist `.ghyll/grid.v1.yaml` atomically (temp → fsync →
+     rename, ADR-010). The grid file is immutable after write;
+     subsequent amendments produce `grid.v2.yaml`, `grid.v3.yaml`,
+     etc.
+
+  If `.ghyll/grid.v1.yaml` already exists, `ghyll init` refuses
+  to clobber it. If profiling finds no bounded contexts (typical
+  for a greenfield repo), a single `default` context is
+  auto-declared so the resulting grid is non-empty; you can
+  rename or split it later via an amendment.
+
+- **Step 4**: The session opens, restores any prior attestation
+  + pass + finding state from `.ghyll/engine.db`, and presents
+  the prompt. Use `/list-arrows` to see what's been declared and
+  `/run-arrow <id>` to drive a specific arrow.
+
+```
+ghyll [m25] /path/to/project ▸ /list-arrows
+grid arrows (4, version=1):
+  init→analyst/default        init → analyst        stratum=L0 context=default clauses=3
+  analyst→architect/default   analyst → architect   stratum=L1 context=default clauses=5
+  ...
+ghyll [m25] /path/to/project ▸ /run-arrow analyst→architect/default
+  · pass-opened   pass=p-7 role=analyst context=default
+  · pass-closed   pass=p-7 role=analyst state/reason=closed:ok
+✓ arrow analyst→architect/default dispatched: pass=p-7 status=valid clauses=5 ...
+```
+
+Pass-open / pass-close and insufficient-basis-rounds-exceeded
+events surface inline; the operator-verdict modal (Tier 2) drains
+through the standard REPL pre-prompt drain so an attestation
+prompt that fires mid-dispatch still gets your attention before
+the next input.
+
+## Slash commands
+
+All commands accepted in the REPL:
+
+| Command | Effect |
+|---|---|
+| `/deep` | Temporarily switch to the deep-tier model. Refused when `--model` was passed. |
+| `/fast` | Restore auto-routing and clear plan mode. |
+| `/plan` | Enter plan mode (deeper reasoning, higher tier preference). |
+| `/status` | Show active model, lock state, deep/plan flags, turn count, tool depth. |
+| `/exit` | End the session cleanly. Cancels any in-flight modal read; creates a final checkpoint. |
+| `/quit` | REPL alias for `/exit`. |
+| `/op-id <id>` | Declare the operator identity for this session. Required before `/attest`. |
+| `/op-id` | Show the active op-id (or "(none)"). |
+| `/op-id none` (or `clear`) | Clear the active op-id. |
+| `/attest <ref> <verdict> [reason]` | Record an attestation verdict on a depth-type or on-the-spot attestation. |
+| `/attestations [<arrow-id>]` | List recorded attestations, optionally filtered by arrow. |
+| `/passes` | List currently-open passes from the PassRegistry. |
+| `/passes <pass-id>` | Show one pass's full state. |
+| `/list-arrows` | Render the grid snapshot (sorted arrow IDs + source→target / stratum / context / clause count). Hints when the grid is empty. |
+| `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass-open/close + IB-rounds-exceeded events inline. (C-3) |
+| `/<name>` | User-defined slash command loaded from `.ghyll/commands/<name>.md`. The file contents are injected as user input for the next turn. |
+
+### `/op-id <identity>` — example
 
 ```
 ghyll [m25] /path/to/project ▸ /op-id alice@example.com
@@ -32,59 +125,48 @@ op-id set: alice@example.com
 To clear: `/op-id clear` or `/op-id none`. To inspect: `/op-id`
 with no argument.
 
-### `/attest <attestation-id> <verdict> [reason]`
-
-Record an operator verdict on a depth-type or on-the-spot
-attestation. The attestation-id is the deterministic ID the
-runtime computes from `(arrow-id, clause-id, grid-version)`:
-
-- `att-<arrow-id>-<clause-id>-v<N>` for depth-type
-  attestations.
-- `att-<arrow-id>-v<N>` for on-the-spot attestations.
-
-The `verdict` is one of `pass`, `fail`, `insufficient-basis`
-(plus aliases: `p`, `ok`, `f`, `no`, `ib`).
+### `/attest <attestation-id> <verdict> [reason]` — example
 
 ```
 ghyll [m25] /path/to/project ▸ /attest att-A-checkout-C1-v1 pass "verified test coverage"
 ✓ attestation att-A-checkout-C1-v1 recorded: verdict=pass by op-id=alice@example.com
 ```
 
+Attestation IDs come from the runtime:
+
+- `att-<arrow-id>-<clause-id>-v<N>` for depth-type attestations.
+- `att-<arrow-id>-v<N>` for on-the-spot attestations.
+
+The `verdict` is one of `pass`, `fail`, `insufficient-basis`
+(plus aliases: `p`, `ok`, `f`, `no`, `ib`).
+
 The verdict flows through the AttestationStore — persisted to
 the engine sqlite table, audited to the flat
 `.ghyll/attestations.jsonl` AND to the per-pass tree at
-`.ghyll/attestations/v<N>/<context>/stratum-<S>/<role-pair>/
-<pass-id>.jsonl`. fsync runs before the verdict is reported
-accepted (operator-spec durability invariant).
+`.ghyll/attestations/v<N>/<context>/stratum-<S>/<role-pair>/<pass-id>.jsonl`.
+fsync runs before the verdict is reported accepted (operator-spec
+durability invariant).
 
 Three consecutive `insufficient-basis` verdicts on the same
 clause fire the escalation event configured by
 `insufficient-basis-rounds-max` in the grid file.
 
-### `/attestations [<arrow-id>]`
-
-List recorded attestations. With no argument, every attestation
-in the store. With an arrow-id, filter to that arrow.
+### `/run-arrow` — example
 
 ```
-ghyll [m25] /path/to/project ▸ /attestations A-checkout
-attestations (2):
-  att-A-checkout-C1-v1  arrow=A-checkout clause=C1 verdict=pass op=alice
-  att-A-checkout-C2-v1  arrow=A-checkout clause=C2 verdict=insufficient-basis op=alice
+ghyll [m25] /path/to/project ▸ /run-arrow A-checkout
+  · pass-opened   pass=p-7 role=analyst context=checkout
+  · pass-closed   pass=p-7 role=analyst state/reason=closed:ok
+✓ arrow A-checkout dispatched: pass=p-7 status=valid clauses=2 blocking-clauses=0 blocking-findings=0
 ```
 
-### `/passes`
-
-List currently-open passes from the PassRegistry. Useful for
-seeing what the runtime is in the middle of.
-
-```
-ghyll [m25] /path/to/project ▸ /passes
-open passes (1):
-  p-7  role=analyst context=checkout arrow=A-checkout state=open
-```
-
-An empty registry surfaces as `no open passes`.
+The depth tier is resolved by `runner.RouteArrow` over the
+arrow's clauses (max-over-clauses per gates.md §8). The context
+defaults to the arrow's own declared context; pass
+`--context <ctx>` to override. When the role/context lock is
+held by another pass the command surfaces
+`ErrRoleContextBusy` with the holding pass ID; when the grid is
+empty, the hint is `no grid; run \`ghyll init\` first`.
 
 ### Verdict modal (Tier 2 / ADR-016)
 
@@ -133,6 +215,32 @@ re-present on the next session start (Recovery republishes).
 ## Offline CLI commands
 
 These work without a running session.
+
+### `ghyll init --op-id <id> [project-dir]`
+
+The bootstrap pipeline driver covered in detail above. The
+positional `project-dir` defaults to `.` when omitted. Refuses
+to overwrite an existing grid; rejects op-ids that contain
+control bytes, path separators, ".." substrings, Unicode format
+runes (RTL override, ZWSP, ZWJ, BOM), a leading dot or dash,
+a trailing dot, or > 256 bytes.
+
+### `ghyll init attest --op-id <id> [--dir <path>]`
+
+Tier 3 / gate-2 CORR-A-18: the production producer for init
+AttestationRecords. Reads the project grid via `bootstrap.Read`,
+emits one on-the-spot record per arrow with
+`AttestedByRole=init`, persists through the standard Record
+path (tree writer primary + engine catch-up). Idempotent on
+re-run.
+
+```
+$ ghyll init attest --op-id alice@example.com --dir /path/to/project
+ghyll init attest: 3 init attestations recorded for op-id=alice@example.com (grid v1, 3 arrows)
+```
+
+Op-id reject criteria mirror `ghyll init` and the `/op-id`
+slash command (same validator).
 
 ### `ghyll engine status [--dir <path>]`
 
@@ -209,24 +317,6 @@ attestation-verify: 5/5 records OK
 
 A failed audit returns a non-zero exit code and prints each
 issue's line number + reason.
-
-### `ghyll init attest --op-id <id> [--dir <path>]`
-
-Tier 3 / gate-2 CORR-A-18: the production producer for init
-AttestationRecords. Reads the project grid via `bootstrap.Read`,
-emits one on-the-spot record per arrow with
-`AttestedByRole=init`, persists through the standard Record
-path (tree writer primary + engine catch-up). Idempotent on
-re-run.
-
-```
-$ ghyll init attest --op-id alice@example.com --dir /path/to/project
-ghyll init attest: 3 init attestations recorded for op-id=alice@example.com (grid v1, 3 arrows)
-```
-
-Reject criteria mirror `/op-id`: control bytes, path separators,
-".." substring, Unicode format runes (RTL override, ZWSP, ZWJ,
-BOM), leading dot or dash, trailing dot, or > 256 bytes.
 
 ### `ghyll memory <subcommand>`
 
@@ -308,6 +398,8 @@ operator must intervene.
 | Background sync errors | `.ghyll/ghyll.log` (slog file) |
 | Operator events lost | The OperatorBus is in-process; check the JSONL writer + status output |
 | Lock contention ("role-context-busy") | `ghyll arrow show` the arrow; `/passes` to see who holds the lock |
+| `/list-arrows` says "no grid; run `ghyll init` first" | Run `ghyll init --op-id <id>` to produce `.ghyll/grid.v1.yaml`. |
+| `ghyll run` exits with "wrote default config" | First-run config bootstrap — edit `~/.ghyll/config.toml` and re-run. |
 
 ## Sandbox setup
 
