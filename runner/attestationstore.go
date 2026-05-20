@@ -131,6 +131,18 @@ const DefaultMaxResidueNoteBytes = 16 * 1024
 // is fine since the runtime always constructs the slice in a
 // deterministic order.
 func AttestationRecordsEqual(a, b AttestationRecord) bool {
+	// HintJSON: empty string and "{}" both denote "no hint";
+	// engine reads back "{}" by default. Normalize before compare
+	// so idempotent re-Record from JSONL doesn't trip the conflict
+	// probe (gate-2 CORR-A-2).
+	hintA := a.HintJSON
+	if hintA == "" {
+		hintA = "{}"
+	}
+	hintB := b.HintJSON
+	if hintB == "" {
+		hintB = "{}"
+	}
 	if a.ID != b.ID || a.Kind != b.Kind || a.ArrowID != b.ArrowID ||
 		a.ClauseID != b.ClauseID || a.OpID != b.OpID ||
 		a.AttestedByRole != b.AttestedByRole ||
@@ -140,7 +152,7 @@ func AttestationRecordsEqual(a, b AttestationRecord) bool {
 		a.PassID != b.PassID || a.Context != b.Context ||
 		a.Stratum != b.Stratum || a.AdversaryRole != b.AdversaryRole ||
 		a.Unit != b.Unit || a.UnitPayloadJSON != b.UnitPayloadJSON ||
-		a.HintJSON != b.HintJSON {
+		hintA != hintB {
 		return false
 	}
 	if len(a.UnitPayload.Inspected) != len(b.UnitPayload.Inspected) {

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -44,12 +45,16 @@ func (s *Store) insertAttestation(ctx context.Context, rec runner.AttestationRec
 		INSERT OR IGNORE INTO attestations (
 			attestation_id, kind, arrow_id, clause_id, op_id,
 			attested_by_role, source_role, target_role, verdict,
-			reason, timestamp, grid_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reason, timestamp, grid_version,
+			pass_id, context, stratum, adversary_role,
+			unit, unit_payload_json, hint_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		rec.ID, string(rec.Kind), rec.ArrowID, clauseID, rec.OpID,
 		rec.AttestedByRole, rec.SourceRole, rec.TargetRole, string(rec.Verdict),
 		rec.Reason, rec.Timestamp, rec.GridVersion,
+		rec.PassID, rec.Context, rec.Stratum, rec.AdversaryRole,
+		string(rec.Unit), rec.UnitPayloadJSON, rec.HintJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("attestation insert %s: %w", rec.ID, err)
@@ -76,27 +81,44 @@ func (s *Store) insertAttestation(ctx context.Context, rec runner.AttestationRec
 // insertAttestation's conflict probe.
 func (s *Store) readAttestation(ctx context.Context, id string) (runner.AttestationRecord, error) {
 	var rec runner.AttestationRecord
-	var kind, verdict string
+	var kind, verdict, unit string
 	var clauseID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT attestation_id, kind, arrow_id, clause_id, op_id,
 		       attested_by_role, source_role, target_role, verdict,
-		       reason, timestamp, grid_version
+		       reason, timestamp, grid_version,
+		       pass_id, context, stratum, adversary_role,
+		       unit, unit_payload_json, hint_json
 		FROM attestations WHERE attestation_id = ?
 	`, id).Scan(
 		&rec.ID, &kind, &rec.ArrowID, &clauseID, &rec.OpID,
 		&rec.AttestedByRole, &rec.SourceRole, &rec.TargetRole, &verdict,
 		&rec.Reason, &rec.Timestamp, &rec.GridVersion,
+		&rec.PassID, &rec.Context, &rec.Stratum, &rec.AdversaryRole,
+		&unit, &rec.UnitPayloadJSON, &rec.HintJSON,
 	)
 	if err != nil {
 		return runner.AttestationRecord{}, err
 	}
 	rec.Kind = runner.AttestationKind(kind)
 	rec.Verdict = runner.AttestationVerdict(verdict)
+	rec.Unit = runner.VerdictUnit(unit)
 	if clauseID.Valid {
 		rec.ClauseID = clauseID.String
 	}
+	hydrateUnitPayload(&rec)
 	return rec, nil
+}
+
+// hydrateUnitPayload parses UnitPayloadJSON into the typed
+// UnitPayload field so callers see both representations. A
+// malformed payload leaves UnitPayload zero — the verifier surfaces
+// the issue at audit time.
+func hydrateUnitPayload(rec *runner.AttestationRecord) {
+	if rec.UnitPayloadJSON == "" {
+		return
+	}
+	_ = json.Unmarshal([]byte(rec.UnitPayloadJSON), &rec.UnitPayload)
 }
 
 // listAttestations returns every persisted attestation, ordered by
@@ -106,7 +128,9 @@ func (s *Store) listAttestations(ctx context.Context) ([]runner.AttestationRecor
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT attestation_id, kind, arrow_id, clause_id, op_id,
 		       attested_by_role, source_role, target_role, verdict,
-		       reason, timestamp, grid_version
+		       reason, timestamp, grid_version,
+		       pass_id, context, stratum, adversary_role,
+		       unit, unit_payload_json, hint_json
 		FROM attestations
 		ORDER BY timestamp ASC, attestation_id ASC
 	`)
@@ -118,20 +142,24 @@ func (s *Store) listAttestations(ctx context.Context) ([]runner.AttestationRecor
 	var out []runner.AttestationRecord
 	for rows.Next() {
 		var rec runner.AttestationRecord
-		var kind, verdict string
+		var kind, verdict, unit string
 		var clauseID sql.NullString
 		if err := rows.Scan(
 			&rec.ID, &kind, &rec.ArrowID, &clauseID, &rec.OpID,
 			&rec.AttestedByRole, &rec.SourceRole, &rec.TargetRole, &verdict,
 			&rec.Reason, &rec.Timestamp, &rec.GridVersion,
+			&rec.PassID, &rec.Context, &rec.Stratum, &rec.AdversaryRole,
+			&unit, &rec.UnitPayloadJSON, &rec.HintJSON,
 		); err != nil {
 			return nil, fmt.Errorf("attestation scan: %w", err)
 		}
 		rec.Kind = runner.AttestationKind(kind)
 		rec.Verdict = runner.AttestationVerdict(verdict)
+		rec.Unit = runner.VerdictUnit(unit)
 		if clauseID.Valid {
 			rec.ClauseID = clauseID.String
 		}
+		hydrateUnitPayload(&rec)
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -230,12 +258,16 @@ func (s *Store) upsertAttestationInTx(
 		INSERT OR IGNORE INTO attestations (
 			attestation_id, kind, arrow_id, clause_id, op_id,
 			attested_by_role, source_role, target_role, verdict,
-			reason, timestamp, grid_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reason, timestamp, grid_version,
+			pass_id, context, stratum, adversary_role,
+			unit, unit_payload_json, hint_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		rec.ID, string(rec.Kind), rec.ArrowID, clauseID, rec.OpID,
 		rec.AttestedByRole, rec.SourceRole, rec.TargetRole, string(rec.Verdict),
 		rec.Reason, rec.Timestamp, rec.GridVersion,
+		rec.PassID, rec.Context, rec.Stratum, rec.AdversaryRole,
+		string(rec.Unit), rec.UnitPayloadJSON, rec.HintJSON,
 	)
 	if err != nil {
 		return false, false, err
@@ -258,22 +290,31 @@ func (s *Store) upsertAttestationInTx(
 	// JSONL wins on conflict (H-3 / G2-F-7).
 	_, err = tx.ExecContext(ctx, `
 		UPDATE attestations
-		SET    kind             = ?,
-		       arrow_id         = ?,
-		       clause_id        = ?,
-		       op_id            = ?,
-		       attested_by_role = ?,
-		       source_role      = ?,
-		       target_role      = ?,
-		       verdict          = ?,
-		       reason           = ?,
-		       timestamp        = ?,
-		       grid_version     = ?
-		WHERE  attestation_id   = ?
+		SET    kind              = ?,
+		       arrow_id          = ?,
+		       clause_id         = ?,
+		       op_id             = ?,
+		       attested_by_role  = ?,
+		       source_role       = ?,
+		       target_role       = ?,
+		       verdict           = ?,
+		       reason            = ?,
+		       timestamp         = ?,
+		       grid_version      = ?,
+		       pass_id           = ?,
+		       context           = ?,
+		       stratum           = ?,
+		       adversary_role    = ?,
+		       unit              = ?,
+		       unit_payload_json = ?,
+		       hint_json         = ?
+		WHERE  attestation_id    = ?
 	`,
 		string(rec.Kind), rec.ArrowID, clauseID, rec.OpID,
 		rec.AttestedByRole, rec.SourceRole, rec.TargetRole, string(rec.Verdict),
 		rec.Reason, rec.Timestamp, rec.GridVersion,
+		rec.PassID, rec.Context, rec.Stratum, rec.AdversaryRole,
+		string(rec.Unit), rec.UnitPayloadJSON, rec.HintJSON,
 		rec.ID,
 	)
 	if err != nil {
@@ -285,27 +326,33 @@ func (s *Store) upsertAttestationInTx(
 // readAttestationInTx is the tx-bound variant of readAttestation.
 func (s *Store) readAttestationInTx(ctx context.Context, tx *sql.Tx, id string) (runner.AttestationRecord, error) {
 	var rec runner.AttestationRecord
-	var kind, verdict string
+	var kind, verdict, unit string
 	var clauseID sql.NullString
 	err := tx.QueryRowContext(ctx, `
 		SELECT attestation_id, kind, arrow_id, clause_id, op_id,
 		       attested_by_role, source_role, target_role, verdict,
-		       reason, timestamp, grid_version
+		       reason, timestamp, grid_version,
+		       pass_id, context, stratum, adversary_role,
+		       unit, unit_payload_json, hint_json
 		FROM   attestations
 		WHERE  attestation_id = ?
 	`, id).Scan(
 		&rec.ID, &kind, &rec.ArrowID, &clauseID, &rec.OpID,
 		&rec.AttestedByRole, &rec.SourceRole, &rec.TargetRole, &verdict,
 		&rec.Reason, &rec.Timestamp, &rec.GridVersion,
+		&rec.PassID, &rec.Context, &rec.Stratum, &rec.AdversaryRole,
+		&unit, &rec.UnitPayloadJSON, &rec.HintJSON,
 	)
 	if err != nil {
 		return runner.AttestationRecord{}, err
 	}
 	rec.Kind = runner.AttestationKind(kind)
 	rec.Verdict = runner.AttestationVerdict(verdict)
+	rec.Unit = runner.VerdictUnit(unit)
 	if clauseID.Valid {
 		rec.ClauseID = clauseID.String
 	}
+	hydrateUnitPayload(&rec)
 	return rec, nil
 }
 
