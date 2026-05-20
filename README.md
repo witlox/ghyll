@@ -15,18 +15,6 @@ migrations, glue code, and rapid prototyping, where throughput is the
 win and ghyll's gate ceremony is pure overhead. Stating the second half
 is the position.
 
-> **Status.** Tier 0 → 4 of the production-readiness roadmap are
-> shipped. The correctness mechanism — typed gate clauses, role
-> transitions as first-class arrows, the operator-verdict modal,
-> the integrator feedback cycle — is implemented end-to-end, with
-> persistence, crash recovery, and signed checkpoint sync. First
-> tagged release: [`v2026.30.228`](https://github.com/witlox/ghyll/releases/tag/v2026.30.228).
-> See the [CHANGELOG](CHANGELOG.md), the
-> [operator guide](docs/operator-guide.md), and the
-> [architecture flows](docs/architecture-flows.md) for the current
-> surface. Full design reference in
-> [`specs/architecture/`](specs/architecture/).
-
 > ## :warning: SANDBOX REQUIRED
 >
 > **ghyll executes tool calls from LLM output directly** --- no confirmation, no permission checks, no filtering. This is by design.
