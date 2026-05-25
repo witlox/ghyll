@@ -210,7 +210,11 @@ cd ~/repos/myproject
 ghyll init --op-id you@example.com
 
 # 5. Start a session. Run /list-arrows to see what was generated;
-#    /run-arrow <id> dispatches the first pass.
+#    /run-arrow <id> dispatches the first pass. The §11 adversarial
+#    cycle is auto-enabled when a dialect endpoint resolves; toggle
+#    it with /adversary {enable|disable|status}. Use
+#    /drain-amendments to apply pending grid amendments (FIFO under
+#    your /op-id) and /invalidate-arrow to retire a stale arrow.
 ghyll run .
 ```
 

@@ -53,3 +53,23 @@ columns; the cycle never ran for those passes so NULL is correct.
   `runner.Grid.Invalidations`; `/run-arrow` consults this map and
   forces re-traversal even if the cached arrow status is
   `complete`.
+
+**Producer:**
+
+The `/invalidate-arrow <arrow-id> [--reason <text>]` slash command
+(implemented at `cmd/ghyll/invalidate_arrow_cmd.go`) is the
+operator-facing producer for `OpEventArrowInvalidated`. The handler:
+
+1. Refuses without an active `/op-id` (the row carries operator
+   identity).
+2. Refuses on unknown arrow-id (looked up via the live `Grid`).
+3. Publishes `OpEventArrowInvalidated` with the typed Payload per
+   ADR-v4-005: `arrow_id`, `op_id`, `reason`, `source=operator`.
+
+The subscriber wired in `cmd/ghyll/session_engine.go:attachJournal`
+fans out the publish to `engine.Store.InsertArrowInvalidation`
+synchronously, so by the time the operator sees the confirmation
+line the row is on disk. Integrator-pass I-C-1 (2026-05-25) closed
+the original "consumer chain without producer" gap; the table now
+receives rows from operator input, not only from direct-test
+publishes.

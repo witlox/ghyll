@@ -259,6 +259,40 @@ Feature: Grid version is universally visible
 - **Amendment ↔ on-disk grid files.** The component owns
   `.ghyll/grid.v*.yaml` files and `.ghyll/grid.current`.
 
+## Diamond v4 wire (ADR-v4-003)
+
+The in-process commit path (`runner.AmendmentCommitter.Commit`)
+implements the language-binding-aware variant of the above F-3
+contract. See [ADR-v4-003](../../../docs/decisions/v4/003-amendment-driven-re-register-ordering.md)
+for the rationale; the commit pseudocode is:
+
+1. Pre-validate via `BindingsReRegister(req)` → registry snapshot
+   built from a deep-copy of the live registry plus the amendment's
+   `NewLanguageBindings`. Failure here bumps no grid version.
+2. Append `req.NewArrows` to the in-memory `runner.Grid`. Partial
+   append surfaces as a wrapped error; subsequent steps still run
+   so the operator sees the desync (event payload outcome=
+   `partial-append-error`).
+3. Atomic `swap()` invocation: the snapshot becomes the live
+   registry. Concurrent dispatchers see OLD or NEW bindings, never
+   partial.
+4. Pass-abort: in-flight passes on the SourceArrow abort. The
+   `OpEventPassClosed` event fires AFTER the binding swap (I-M-1
+   ordering), so subscribers correlating close events to live-
+   registry lookups see the contract that superseded the aborted
+   pass, not the contract that just died.
+5. `Queue.MarkDrained` + journal observer writes the `drained_at`
+   timestamp.
+6. `OpEventAmendmentDrained` publishes on the bus with a typed
+   Payload per [ADR-v4-005](../../../docs/decisions/v4/005-operator-event-typed-payload.md):
+   `outcome` ∈ {`complete`, `partial-append-error`,
+   `binding-re-register-error`}, `grid_version_before`,
+   `grid_version_after`, `arrows_added`, `passes_aborted`.
+
+`/drain-amendments` is the operator-facing trigger for steps 1-6
+under the active `/op-id`; the slash command refuses without an
+op-id since the audit row carries the operator identity.
+
 ---
 
 ## Assumptions

@@ -160,4 +160,11 @@ ghyll version                         # print version
 | `/plan` | Enter plan mode (deeper reasoning) |
 | `/status` | Show model, turn count, tool depth, plan mode |
 | `/exit` | End session (creates final checkpoint) |
+| `/op-id <id>` | Declare operator identity for this session (required before `/attest`, `/drain-amendments`, `/invalidate-arrow`) |
+| `/attest <ref> <verdict> [reason]` | Record an attestation verdict on a depth-type or on-the-spot attestation |
+| `/list-arrows` | Render the grid snapshot (sorted arrow IDs + source→target / stratum / context) |
+| `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass + adversarial-cycle events inline |
+| `/drain-amendments` | FIFO-drain the pending amendment queue under the active op-id (refuses without `/op-id`) |
+| `/adversary {enable\|disable\|status}` | Toggle the §11 adversarial-cycle hook bundle (refuses `enable` when no dialect is configured) |
+| `/invalidate-arrow <arrow-id> [--reason <text>]` | Invalidate an arrow; persists an audit row to `.ghyll/engine.db arrow_invalidations` |
 | `/<name>` | Run user-defined slash command from .ghyll/commands/ |

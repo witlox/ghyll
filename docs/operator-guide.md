@@ -133,7 +133,10 @@ All commands accepted in the REPL:
 | `/passes` | List currently-open passes from the PassRegistry. |
 | `/passes <pass-id>` | Show one pass's full state. |
 | `/list-arrows` | Render the grid snapshot (sorted arrow IDs + source→target / stratum / context / clause count). Hints when the grid is empty. |
-| `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass-open/close + IB-rounds-exceeded events inline. (C-3) |
+| `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass-open/close + IB-rounds-exceeded + adversarial-cycle round events inline. (C-3 / I-H-2) |
+| `/drain-amendments` | FIFO-drain the pending amendment queue under the active op-id; refuses without `/op-id`. Each commit fires `OpEventAmendmentDrained` with typed `outcome` per ADR-v4-005. (diamond v4 / Gap 2) |
+| `/adversary {enable\|disable\|status}` | Toggle the §11 adversarial-cycle hook bundle the dispatcher consults on depth-sensitive arrows. `enable` refuses with `no-dialect-configured` when no active model resolves to a configured endpoint. (diamond v4 / Gap 1) |
+| `/invalidate-arrow <arrow-id> [--reason <text>]` | Invalidate one arrow; persists an audit row to `.ghyll/engine.db arrow_invalidations` (ADR-v4-008). Refuses without `/op-id`. The audit row carries operator identity, reason, and timestamp. |
 | `/<name>` | User-defined slash command loaded from `.ghyll/commands/<name>.md`. The file contents are injected as user input for the next turn. |
 
 ### `/op-id <identity>` — what it is and why it matters
@@ -514,6 +517,10 @@ operator must intervene.
 | Lock contention ("role-context-busy") | `ghyll arrow show` the arrow; `/passes` to see who holds the lock |
 | `/list-arrows` says "no grid; run `ghyll init` first" | Run `ghyll init --op-id <id>` to produce `.ghyll/grid.v1.yaml`. |
 | `ghyll run` exits with "wrote default config" | First-run config bootstrap — edit `~/.ghyll/config.toml` and re-run. |
+| `/drain-amendments` refuses with "no op-id set" | Declare your operator identity first via `/op-id you@example.com`; the audit row needs it. |
+| `/adversary enable` returns "no-dialect-configured" | No active model resolves to a configured endpoint. Set `routing.default_model` in `~/.ghyll/config.toml` to a model whose `endpoint` is reachable, OR start with `--model <name>` that maps to a dialect. |
+| `/invalidate-arrow` refuses with "no op-id set" | Declare the operator identity first; `arrow_invalidations` rows carry op-id, reason, timestamp. |
+| `/invalidate-arrow` refuses with "arrow ... not in grid" | Use `/list-arrows` to confirm the arrow id; the wire form is the canonical `<source-role>→<target-role>/<context>` shape produced by `ghyll init`. |
 | I made a wrong verdict | Attestations are immutable; the only correction is a new attestation on a later pass OR a grid amendment that supersedes the arrow. |
 | Pass / clause / attestation state looks wrong | `ghyll engine status` first, then `ghyll arrow show <id>` for specifics. |
 

@@ -5,6 +5,19 @@ the four load-bearing wiring gaps surfaced by
 `specs/v4/code-eval-2026-05-25.md`. The implementation contract is
 `specs/v4/diamond-load-bearing-revised-v2.md`.
 
+**Integrator-pass status (2026-05-25):** All eight ADRs now ship a
+complete producer→bus→consumer chain. The post-substrate integrator
+pass surfaced one structural incompleteness (I-C-1: ADR-v4-008's
+`arrow_invalidations` table had a full consumer chain but no
+producer) which was closed by shipping the `/invalidate-arrow`
+operator slash command. Three High findings (I-H-1 unsubscribe
+parity, I-H-2 `/run-arrow` cycle-event filter, I-H-3 TOCTOU on
+`AdversarialHooks.Load`) and three Medium findings (I-M-1 amendment
+swap-before-abort ordering, I-M-2 unified-membership registry
+predicate, I-M-3 typed Payload on partial-append) were closed in the
+same diamond-close pass. ADR-v4-008 is now `accepted` (no longer
+`partial`).
+
 | ADR | Title |
 |---|---|
 | [ADR-v4-001](001-registry-key-shape.md) | Registry key shape: `<concept>.<language>` flat key |
