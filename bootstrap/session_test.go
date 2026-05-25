@@ -45,6 +45,19 @@ func TestStartSession_TooLongOpID(t *testing.T) {
 	}
 }
 
+// TestStartSession_OversizedOpID_5000Runes pins the wire form for
+// the "(string of length 5000)" meta-descriptor row that lived in
+// attestation.feature's deferred op-id outline. Gherkin can't
+// materialize a 5000-rune table cell; the contract is asserted
+// here against the canonical validator instead.
+func TestStartSession_OversizedOpID_5000Runes(t *testing.T) {
+	huge := strings.Repeat("a", 5000)
+	_, err := StartSession(huge)
+	if !errors.Is(err, ErrOpIDTooLong) {
+		t.Errorf("StartSession(5000-rune) error = %v; want ErrOpIDTooLong", err)
+	}
+}
+
 func TestStartSession_AtMaxLength(t *testing.T) {
 	atMax := strings.Repeat("a", MaxOpIDLength)
 	if _, err := StartSession(atMax); err != nil {

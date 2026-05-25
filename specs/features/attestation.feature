@@ -103,9 +103,12 @@ Feature: Operator attestation flow
     And the operator event bus publishes an "escalation-request" for clause C5
 
   Scenario Outline: Invalid insufficient-basis-rounds-max rejected at init
-    # Wired against bootstrap.GridDefaults.validate which rejects
-    # non-positive integers with the typed sentinel
-    # ErrInsufficientBasisRoundsMaxNonPositive. See bootstrap/init.go.
+    # Wired against bootstrap.ParseInsufficientBasisRoundsMax, the
+    # canonical parser for the operator-supplied wire form. Maps
+    # non-integer input to ErrInsufficientBasisRoundsMaxNotInteger
+    # and integer ≤ 0 to ErrInsufficientBasisRoundsMaxNonPositive.
+    # Downstream tooling parses on the wire-stable error names,
+    # not the language-specific strconv.NumError.
     Given init proposes insufficient-basis-rounds-max="<value>"
     Then init rejects the value with "<error>"
 
@@ -113,21 +116,6 @@ Feature: Operator attestation flow
       | value | error                                          |
       | 0     | insufficient-basis-rounds-max-must-be-positive |
       | -1    | insufficient-basis-rounds-max-must-be-positive |
-
-  @deferred
-  Scenario Outline: Invalid insufficient-basis-rounds-max — non-integer (deferred YAML loader)
-    # The "abc" row requires a YAML/TOML loader that maps a string-into-
-    # int parse failure to the spec's typed sentinel
-    # "insufficient-basis-rounds-max-must-be-integer". The GridDefaults
-    # struct's int field rejects via yaml.Unmarshal, but the error name
-    # surfaces as a generic Go decode error, not the spec wire form.
-    # Phase-11 ships the canonical loader; until then this row is
-    # deferred.
-    Given init proposes insufficient-basis-rounds-max="<value>"
-    Then init rejects the value with "<error>"
-
-    Examples:
-      | value | error                                          |
       | abc   | insufficient-basis-rounds-max-must-be-integer  |
 
   # ---- Accepted-risk for findings ----
@@ -180,22 +168,25 @@ Feature: Operator attestation flow
       | alice\x00null  | op-id-invalid-characters |
       | alice\nbob     | op-id-invalid-characters |
 
-  @deferred
-  Scenario Outline: op-id rejection — meta-described inputs
-    # The original outline included rows like `(string of length 5000)`
-    # and `(unicode RTL override U+202E)` which are META-DESCRIPTORS,
-    # not literal Gherkin cell values. They require a programmatic
-    # driver to materialize the actual rune sequence. Belongs in a
-    # unit test against ValidateOpID; the BDD layer can't construct
-    # these row values inline.
-    Given the operator attempts to declare op-id "<op-id>"
-    Then the attestation flow refuses session start with "<error>"
-
-    Examples:
-      | op-id                                | error                    |
-      | (string of length 5000)              | op-id-too-long           |
-      | (unicode RTL override U+202E)        | op-id-invalid-characters |
-      | (empty after whitespace trim: "   ") | op-id-required           |
+  # op-id rejection — meta-described inputs.
+  #
+  # The previously-deferred Scenario Outline at this line carried
+  # rows like `(string of length 5000)` and `(unicode RTL override
+  # U+202E)`. Those are META-DESCRIPTORS, not literal Gherkin cell
+  # values; the BDD layer cannot materialize a 5000-rune string or
+  # an embedded U+202E from a table cell. The behavior they
+  # describe is covered by Go unit tests against bootstrap's op-id
+  # validator (single source of truth, see specs/architecture/
+  # components/attestation.md F-1):
+  #
+  #   - bootstrap/session_test.go::TestStartSession_TooLongOpID
+  #     and TestStartSession_OversizedOpID_5000Runes
+  #     (op-id-too-long, > MaxOpIDLength bytes)
+  #   - bootstrap/session_test.go::TestStartSession_UnicodeRTLOverride
+  #     and TestStartSession_BlocksTrojanSourceBidi
+  #     (op-id-invalid-characters, U+202E + full bidi set)
+  #   - bootstrap/session_test.go::TestStartSession_EmptyOpID
+  #     (op-id-required, whitespace-only after trim)
 
   Scenario: op-id leaks JSON injection are escaped
     Given the operator declares op-id 'alice","verdict":"pass' (containing JSON-syntactic characters)
@@ -241,8 +232,14 @@ Feature: Operator attestation flow
     And the audit log shows the conflict (two verdicts; later wins)
     And neither operator's submission is silently dropped
 
-  @deferred
   Scenario: Operator's session ends mid-attestation
+    # Wired against runner.OperatorBus + a retaining subscriber
+    # (the substrate modalDriver implements via its pending queue
+    # in cmd/ghyll/modal_driver.go). The bus itself has no replay;
+    # preservation is the subscriber's responsibility. The contract
+    # asserted: the SessionRegistry.Close → Declare cycle does NOT
+    # drop retained bus events, AND IBTracker.Rounds stays 0
+    # because Alice never submitted an insufficient-basis Record.
     Given Alice has read a hint and started typing a residue note
     When Alice's session is closed (network drop, explicit close, timeout) before she submits the verdict
     Then the attestation request is preserved on the operator event bus

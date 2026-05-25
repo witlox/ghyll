@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // GridDefaults names the policy values BuildInitGrid bakes into the
@@ -80,10 +81,35 @@ func (d GridDefaults) validate() error {
 // contract; downstream tooling parses on this name.
 var (
 	ErrInsufficientBasisRoundsMaxNonPositive = errors.New("insufficient-basis-rounds-max-must-be-positive")
+	ErrInsufficientBasisRoundsMaxNotInteger  = errors.New("insufficient-basis-rounds-max-must-be-integer")
 	ErrRemediationRoundsMaxNonPositive       = errors.New("remediation-rounds-max-must-be-positive")
 	ErrResidueNoteMaxBytesNonPositive        = errors.New("residue-note-max-bytes-must-be-positive")
 	ErrModalPendingMaxLenNonPositive         = errors.New("modal-pending-max-len-must-be-positive")
 )
+
+// ParseInsufficientBasisRoundsMax parses an operator-supplied string
+// value for the `insufficient-basis-rounds-max` setting and returns
+// the typed sentinel errors the attestation surface contract
+// requires:
+//
+//   - Non-integer input ("abc", "3.14", "") → ErrInsufficientBasisRoundsMaxNotInteger
+//   - Integer ≤ 0 → ErrInsufficientBasisRoundsMaxNonPositive
+//   - Integer ≥ 1 → returns (n, nil)
+//
+// Use this at the loader boundary (CLI flag, YAML/TOML decode hook,
+// init-flow operator prompt) so the wire-stable error names surface
+// to downstream tooling rather than the language-specific
+// strconv.NumError. attestation.feature §11 anchors the names.
+func ParseInsufficientBasisRoundsMax(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q", ErrInsufficientBasisRoundsMaxNotInteger, raw)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%w: %d", ErrInsufficientBasisRoundsMaxNonPositive, n)
+	}
+	return n, nil
+}
 
 // BuildInit errors.
 var (

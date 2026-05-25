@@ -300,3 +300,46 @@ func TestClauseSourceString(t *testing.T) {
 		}
 	}
 }
+
+// TestParseInsufficientBasisRoundsMax_NonInteger pins the wire form
+// for the non-integer rejection path that attestation.feature's
+// "Invalid insufficient-basis-rounds-max" outline asserts on.
+func TestParseInsufficientBasisRoundsMax_NonInteger(t *testing.T) {
+	cases := []string{"abc", "", "3.14", "  ", "1_000"}
+	for _, c := range cases {
+		_, err := ParseInsufficientBasisRoundsMax(c)
+		if !errors.Is(err, ErrInsufficientBasisRoundsMaxNotInteger) {
+			t.Errorf("ParseInsufficientBasisRoundsMax(%q) = %v; want ErrInsufficientBasisRoundsMaxNotInteger",
+				c, err)
+		}
+	}
+}
+
+// TestParseInsufficientBasisRoundsMax_NonPositive pins the typed
+// sentinel for the integer-but-≤0 rejection path.
+func TestParseInsufficientBasisRoundsMax_NonPositive(t *testing.T) {
+	cases := []string{"0", "-1", "-100"}
+	for _, c := range cases {
+		_, err := ParseInsufficientBasisRoundsMax(c)
+		if !errors.Is(err, ErrInsufficientBasisRoundsMaxNonPositive) {
+			t.Errorf("ParseInsufficientBasisRoundsMax(%q) = %v; want ErrInsufficientBasisRoundsMaxNonPositive",
+				c, err)
+		}
+	}
+}
+
+// TestParseInsufficientBasisRoundsMax_Valid verifies the happy path
+// returns the parsed integer.
+func TestParseInsufficientBasisRoundsMax_Valid(t *testing.T) {
+	cases := map[string]int{"1": 1, "3": 3, "5": 5, "10": 10}
+	for raw, want := range cases {
+		n, err := ParseInsufficientBasisRoundsMax(raw)
+		if err != nil {
+			t.Errorf("ParseInsufficientBasisRoundsMax(%q) errored: %v", raw, err)
+			continue
+		}
+		if n != want {
+			t.Errorf("ParseInsufficientBasisRoundsMax(%q) = %d; want %d", raw, n, want)
+		}
+	}
+}

@@ -23,10 +23,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/cucumber/godog"
+
 	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/runner"
 )
@@ -578,25 +578,11 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 
 	ctx.Step(`^init proposes insufficient-basis-rounds-max="([^"]*)"$`,
 		func(value string) error {
-			// Parse the value as int; the YAML loader deferred surface
-			// handles non-integer rejection. For the wirable rows
-			// (0 / -1), the int parse succeeds and the bootstrap
-			// validation surface returns ErrInsufficientBasisRoundsMaxNonPositive.
-			n, parseErr := strconv.Atoi(value)
-			if parseErr != nil {
-				// Deferred surface — record a sentinel-shaped error so
-				// the assertion can detect it. The row is @deferred-tagged.
-				state.AttOperatorErr = fmt.Errorf("insufficient-basis-rounds-max-must-be-integer: %s", value)
-				return nil
-			}
-			// Directly check the validation contract (unexported
-			// validate() lives in bootstrap; we mirror its check here so
-			// the BDD layer doesn't reach into private state).
-			if n < 1 {
-				state.AttOperatorErr = bootstrap.ErrInsufficientBasisRoundsMaxNonPositive
-			} else {
-				state.AttOperatorErr = nil
-			}
+			// Route through the canonical parser so both the typed-
+			// integer sentinel and the non-positive sentinel surface
+			// with the wire-stable names downstream tooling parses on.
+			_, err := bootstrap.ParseInsufficientBasisRoundsMax(value)
+			state.AttOperatorErr = err
 			return nil
 		})
 
@@ -608,10 +594,16 @@ func registerAttestationSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		if !strings.Contains(got, wantErr) {
 			return fmt.Errorf("error %q does not contain %q", got, wantErr)
 		}
-		// errors.Is sentinel check for the wirable subset.
-		if wantErr == "insufficient-basis-rounds-max-must-be-positive" &&
-			!errors.Is(state.AttOperatorErr, bootstrap.ErrInsufficientBasisRoundsMaxNonPositive) {
-			return fmt.Errorf("not ErrInsufficientBasisRoundsMaxNonPositive: %v", state.AttOperatorErr)
+		// errors.Is sentinel check for both wire forms.
+		switch wantErr {
+		case "insufficient-basis-rounds-max-must-be-positive":
+			if !errors.Is(state.AttOperatorErr, bootstrap.ErrInsufficientBasisRoundsMaxNonPositive) {
+				return fmt.Errorf("not ErrInsufficientBasisRoundsMaxNonPositive: %v", state.AttOperatorErr)
+			}
+		case "insufficient-basis-rounds-max-must-be-integer":
+			if !errors.Is(state.AttOperatorErr, bootstrap.ErrInsufficientBasisRoundsMaxNotInteger) {
+				return fmt.Errorf("not ErrInsufficientBasisRoundsMaxNotInteger: %v", state.AttOperatorErr)
+			}
 		}
 		return nil
 	})
