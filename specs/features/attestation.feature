@@ -1,9 +1,11 @@
-# Implementation: PARTIAL.
-#   Built today: §7.1 dispatch-pending response, op-id session start,
-#   on-the-spot creation suspension. Deferred surface (full operator
-#   event bus, multi-operator handoff, typed JSONL verdict records,
-#   insufficient-basis-rounds-max escalation) is tagged `@deferred`
-#   and skipped until those flows ship.
+# Implementation: COMPLETE.
+#   Tier 2 (ADR-016) shipped the operator event bus, multi-operator
+#   handoff, typed JSONL verdict records, and insufficient-basis-
+#   rounds-max escalation. The 2026-05-25 polish sprint closed the
+#   last remaining @deferred items (YAML loader sentinel, meta-
+#   described op-id rows moved to bootstrap unit tests, session-
+#   ends-mid-attestation wired via the modalDriver pending queue).
+#   No @deferred scenarios remain in this feature.
 Feature: Operator attestation flow
 
   # Coordinates operator verdicts on attested clauses. Owns the operator

@@ -38,6 +38,7 @@ Feature: Status state machine engine
     # peer mechanism, not as additional clause statuses). These rows
     # exercise the runtime's behavior when the operator surface that
     # introduces those statuses lands.
+    # Tracked: github.com/witlox/ghyll/issues/25 (invalidated-status enum).
     @deferred
     Examples:
       | from                 | to                   |
@@ -46,6 +47,7 @@ Feature: Status state machine engine
       | insufficient-basis   | pending              |
       | running              | awaiting-attestation |
 
+  # Tracked: github.com/witlox/ghyll/issues/25 (invalidated-status enum).
   @deferred
   Scenario: Attested clause awaits operator
     Given an attested clause with hint emitted
@@ -69,6 +71,7 @@ Feature: Status state machine engine
     When the engine derives the arrow status
     Then the result is "blocked" (fail > unevaluated > provisional > complete)
 
+  # Tracked: github.com/witlox/ghyll/issues/25 (invalidated-status enum).
   @deferred
   Scenario: Invalidation supersedes derived status
     Given arrow A1 with all clauses "pass" (would derive to "complete")
@@ -76,6 +79,7 @@ Feature: Status state machine engine
     Then querying A1's status returns "invalidated"
     And the underlying clause statuses are unchanged in the store
 
+  # Tracked: github.com/witlox/ghyll/issues/25 (invalidated-status enum).
   @deferred
   Scenario: Re-traversal clears invalidated
     Given arrow A1 has status "invalidated" from grid vN
@@ -130,6 +134,7 @@ Feature: Status state machine engine
 
   # ---- Project-level status query ----
 
+  # Tracked: github.com/witlox/ghyll/issues/24 (residue calculator).
   @deferred
   Scenario: All declared cells complete
     Given a grid vN with every declared arrow at status "complete"
@@ -138,6 +143,7 @@ Feature: Status state machine engine
     When a project-status query is issued
     Then the result is "(complete-against-grid-vN, R=0, C=0)"
 
+  # Tracked: github.com/witlox/ghyll/issues/24 (residue calculator).
   @deferred
   Scenario: Some unevaluated cells
     Given a grid vN with 10 arrows: 9 "complete", 1 "unevaluated"
@@ -145,6 +151,7 @@ Feature: Status state machine engine
     Then the result includes "C=1"
     And the result lists the unevaluated arrow's id in detail
 
+  # Tracked: github.com/witlox/ghyll/issues/24 (residue calculator).
   @deferred
   Scenario: Residue computation
     Given a grid with 5 undeclared (stratum, context) cells
@@ -234,6 +241,7 @@ Feature: Status state machine engine
 
   # ---- Adversarial additions: residue computation edge cases ----
 
+  # Tracked: github.com/witlox/ghyll/issues/24 (residue calculator).
   @deferred
   Scenario: Residue with undeclared binding
     Given an undeclared cell whose role exit-gate template includes a clause referencing language "rust"
@@ -242,6 +250,7 @@ Feature: Status state machine engine
     Then the cost computation surfaces the missing binding (cannot compute final cost) and the residue entry carries `imputed-cost: unknown-pending-bindings`
     And the project-level R reports a count of such pending-binding cells separately from the numeric R
 
+  # Tracked: github.com/witlox/ghyll/issues/24 (residue calculator).
   @deferred
   Scenario: Residue with arithmetic overflow
     Given a degenerate grid declaration where per-clause costs sum to more than 2^31

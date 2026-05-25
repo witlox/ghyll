@@ -35,6 +35,7 @@ Feature: Grid amendment and global lock
 
   # ---- Dependency-check against in-flight passes ----
 
+  # Tracked: github.com/witlox/ghyll/issues/23 (artifact-level deps).
   @deferred
   Scenario: Affected pass aborts
     Given pass P1 on (implementer, contextA) is running
@@ -52,6 +53,7 @@ Feature: Grid amendment and global lock
     Then P2 continues running against vN
     And records its completion against vN (not v(N+1))
 
+  # Tracked: github.com/witlox/ghyll/issues/23 (artifact-level deps).
   @deferred
   Scenario: Conservative fallback for no-deps arrows
     Given pass P3 on (architect, contextB) is running
@@ -92,6 +94,7 @@ Feature: Grid amendment and global lock
     And A2 commits, producing v(N+2)
     And the audit log shows v(N+1) and v(N+2) as separate commits, not merged
 
+  # Tracked: github.com/witlox/ghyll/issues/23 (artifact-level deps).
   @deferred
   Scenario: Two amendments touch the same artifact
     Given A1 changes lines 1-20 of cross-context/A-B.md
