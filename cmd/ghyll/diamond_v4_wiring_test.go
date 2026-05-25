@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/witlox/ghyll/bootstrap"
+	"github.com/witlox/ghyll/config"
 	"github.com/witlox/ghyll/runner"
 )
 
@@ -256,6 +257,11 @@ func TestScenario_PassDispatcher_RunDispatcherAdversarialPhase_Wired(t *testing.
 // TestScenario_AdversaryCommand_EnableDisableStatus verifies C-9
 // closure: /adversary {enable,disable,status} toggles the atomic
 // pointer and reports state.
+//
+// W-C-1 update: the session needs a dialect-configured cfg for
+// `/adversary enable` to install a real bundle. Without it the
+// command refuses with `no-dialect-configured` (see
+// TestScenario_AdversaryCommand_RefusesWithoutDialect below).
 func TestScenario_AdversaryCommand_EnableDisableStatus(t *testing.T) {
 	t.Parallel()
 	workdir := t.TempDir()
@@ -265,7 +271,11 @@ func TestScenario_AdversaryCommand_EnableDisableStatus(t *testing.T) {
 		t.Fatalf("openEngineWithOptions: %v", err)
 	}
 	t.Cleanup(rt.closeEngine)
-	s := &Session{engine: rt}
+	s := &Session{
+		engine:      rt,
+		cfg:         dialectTestConfig(),
+		activeModel: "m25",
+	}
 
 	// Initial status: disabled.
 	res := s.handleAdversaryCommand("status")
@@ -295,6 +305,23 @@ func TestScenario_AdversaryCommand_EnableDisableStatus(t *testing.T) {
 	}
 	if rt.AdversarialHooks().Load() != nil {
 		t.Fatal("expected nil bundle after /adversary disable")
+	}
+}
+
+// dialectTestConfig builds a *config.Config with a single dialect-
+// configured model (m25 / minimax) pointing at a placeholder endpoint
+// so dialectConfigured() returns true. The endpoint is never dialed
+// — the adversary-bundle's V1 hooks are no-op LLM-free.
+func dialectTestConfig() *config.Config {
+	return &config.Config{
+		Models: map[string]config.ModelConfig{
+			"m25": {
+				Endpoint:   "http://localhost:65535/v1",
+				Dialect:    "minimax",
+				MaxContext: 100000,
+			},
+		},
+		Routing: config.RoutingConfig{DefaultModel: "m25"},
 	}
 }
 
@@ -402,5 +429,323 @@ func TestScenario_RemediationMigrations_PassesColumnsExist(t *testing.T) {
 	}
 	if _, ok := cols["remediation_rounds_used"]; !ok {
 		t.Fatal("expected passes.remediation_rounds_used after migration")
+	}
+}
+
+// TestScenario_AdversaryCommand_RefusesWithoutDialect verifies W-C-1
+// closure (ADR-v4-002): `/adversary enable` returns the typed
+// `no-dialect-configured` refusal when no active model resolves to a
+// configured endpoint. The pre-fix behavior silently installed a stub
+// bundle whose Attack was a semantic no-op.
+func TestScenario_AdversaryCommand_RefusesWithoutDialect(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	// Session with NO active model + nil cfg → dialectConfigured()
+	// returns false → /adversary enable refuses.
+	s := &Session{engine: rt}
+	res := s.handleAdversaryCommand("enable")
+	if !strings.Contains(res.Output, "no-dialect-configured") {
+		t.Fatalf("expected `no-dialect-configured` refusal, got: %s", res.Output)
+	}
+	if rt.AdversarialHooks().Load() != nil {
+		t.Fatal("expected NO bundle stored after refusal (W-C-1)")
+	}
+	// Status echoes the no-dialect state.
+	res = s.handleAdversaryCommand("status")
+	if !strings.Contains(res.Output, "no-dialect-configured") {
+		t.Fatalf("status missing dialect=no-dialect-configured, got: %s", res.Output)
+	}
+}
+
+// TestScenario_AdversaryCommand_RealBundleAttacks verifies W-C-1
+// closure (ADR-v4-002): `/adversary enable` installs a REAL bundle
+// (not a stub) — the bundle's Factory returns an Adversary whose
+// Attack drives clause falsification through the runtime's
+// evaluators against the runtime's stores, not a no-op.
+func TestScenario_AdversaryCommand_RealBundleAttacks(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatalf("replayEngine: %v", err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatalf("attachJournal: %v", err)
+	}
+	s := &Session{engine: rt, cfg: dialectTestConfig(), activeModel: "m25"}
+
+	res := s.handleAdversaryCommand("enable")
+	if !strings.Contains(res.Output, "enabled") {
+		t.Fatalf("expected enabled confirmation, got: %s", res.Output)
+	}
+	bundle := rt.AdversarialHooks().Load()
+	if bundle == nil {
+		t.Fatal("expected bundle stored after /adversary enable")
+	}
+	if !bundle.Validate() {
+		t.Fatal("bundle Validate() must return true")
+	}
+	// The bundle's Factory must return a non-nil Adversary that is
+	// not the stub-noop (`NewAdversary(nil,nil,nil)`): the Factory
+	// should already populate runtime FindingsStore +
+	// ClassificationsStore. The dispatcher-side wrapper would have
+	// filled them otherwise, but the Factory's own injection makes
+	// the bundle self-contained for direct-test paths.
+	a := bundle.Factory(0)
+	if a == nil {
+		t.Fatal("Factory(0) returned nil — bundle is a stub-noop")
+	}
+	if a.FindingsStore == nil || a.ClassificationsStore == nil {
+		t.Fatalf("Factory(0) returned Adversary with nil runtime stores; got findings=%v classifications=%v",
+			a.FindingsStore != nil, a.ClassificationsStore != nil)
+	}
+	if a.AdversaryRole == "" || a.AdversaryRole == "adversary" {
+		t.Fatalf("expected dialect-stamped AdversaryRole, got %q", a.AdversaryRole)
+	}
+}
+
+// TestScenario_AutoEnableAdversarial_DialectAvailable verifies W-C-1
+// closure (ADR-v4-002 auto-enable): when a dialect is configured at
+// session-open time, autoEnableAdversarial wires the bundle without
+// requiring `/adversary enable`. The CI path (no dialect) sees the
+// disabled banner; both code paths emit a banner so operators
+// observe the resolved state.
+func TestScenario_AutoEnableAdversarial_DialectAvailable(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatalf("replayEngine: %v", err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatalf("attachJournal: %v", err)
+	}
+	var lines []string
+	s := &Session{
+		engine:      rt,
+		cfg:         dialectTestConfig(),
+		activeModel: "m25",
+		output:      func(msg string) { lines = append(lines, msg) },
+	}
+	s.autoEnableAdversarial()
+	if rt.AdversarialHooks().Load() == nil {
+		t.Fatal("expected bundle wired after autoEnableAdversarial with dialect=m25")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "adversarial cycle: enabled") {
+		t.Fatalf("expected enabled banner, got: %s", joined)
+	}
+}
+
+func TestScenario_AutoEnableAdversarial_NoDialect_Banner(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	var lines []string
+	// Session with NO cfg / NO activeModel mimics the CI path.
+	s := &Session{
+		engine: rt,
+		output: func(msg string) { lines = append(lines, msg) },
+	}
+	s.autoEnableAdversarial()
+	if rt.AdversarialHooks().Load() != nil {
+		t.Fatal("expected NO bundle wired when dialect missing (CI path)")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "no dialect configured") {
+		t.Fatalf("expected `no dialect configured` banner, got: %s", joined)
+	}
+}
+
+// TestScenario_AuditFloor_GatedOnJSONLWriter verifies W-H-1 closure:
+// the audit-tagged bus subscription is registered IFF the JSONL
+// writer opened successfully. The dispatcher's RequireAuditSubscriber
+// predicate now reflects writer presence, not a placebo no-op.
+func TestScenario_AuditFloor_GatedOnJSONLWriter(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatalf("replayEngine: %v", err)
+	}
+	// Before attachJournal, the audit tag is absent.
+	if rt.Bus().HasAuditSubscriber() {
+		t.Fatal("audit-tagged subscriber should NOT be registered before attachJournal")
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatalf("attachJournal: %v", err)
+	}
+	// JSONL writer opened in this fixture → audit tag present.
+	if !rt.Bus().HasAuditSubscriber() {
+		t.Fatal("audit-tagged subscriber must be registered when JSONL writer is open (W-H-1)")
+	}
+	// The unsubscribe handle must be captured so closeEngine drops
+	// the dangling callback (W-M-2 belt-and-braces).
+	if rt.auditTagUnsubscribe == nil {
+		t.Fatal("expected auditTagUnsubscribe handle stored on engineRuntime")
+	}
+	// RequireAuditSubscriber dispatcher predicate passes.
+	if err := runner.RequireAuditSubscriber(rt.Bus()); err != nil {
+		t.Fatalf("RequireAuditSubscriber: %v", err)
+	}
+}
+
+// TestScenario_BindingMissing_ModalDriverObserves verifies W-H-2
+// closure: OpEventBindingMissing landed in the modal driver's ring
+// buffer (the dispatch arm at modal_driver.go:155). Pre-fix the
+// publish raced the modal-driver subscription and the event was
+// silently dropped.
+func TestScenario_BindingMissing_ModalDriverObserves(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatalf("replayEngine: %v", err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatalf("attachJournal: %v", err)
+	}
+	// Mimic session.initEngine ordering: modal driver subscribed
+	// FIRST, then binding-coverage publishes.
+	var notifLines []string
+	d := newModalDriver(nil, rt.AttestationStore(), rt.Passes(),
+		rt.Bus(), rt.InsufficientBasisTracker(),
+		func() string { return "op-test" }, nil, 64)
+	d.output = func(msg string) { notifLines = append(notifLines, msg) }
+	t.Cleanup(d.Stop)
+	// Now publish (post-replay binding coverage may or may not fire
+	// for this grid shape; publish directly for the focused
+	// observation test).
+	rt.Bus().Publish(runner.OperatorEvent{
+		Kind:   runner.OpEventBindingMissing,
+		Detail: "test-fixture",
+	})
+	got := d.NotificationsSnapshot()
+	if len(got) == 0 {
+		t.Fatal("modal driver dropped OpEventBindingMissing — W-H-2 regression")
+	}
+	found := false
+	for _, ev := range got {
+		if ev.Kind == runner.OpEventBindingMissing {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OpEventBindingMissing not in modal-driver ring; got: %v", got)
+	}
+	// W-H-3: the surfaceNotification path also writes to d.output so
+	// operators see the event inline.
+	if len(notifLines) == 0 {
+		t.Fatal("W-H-3: expected console line from surfaceNotification, got none")
+	}
+}
+
+// TestScenario_SurfaceNotification_RendersOutputLine verifies W-H-3
+// closure: the modal driver's surfaceNotification now WRITES a status
+// line via d.output (operator sees the activity inline). Pre-fix the
+// method was a documented no-op stub.
+func TestScenario_SurfaceNotification_RendersOutputLine(t *testing.T) {
+	t.Parallel()
+	bus := runner.NewOperatorBus()
+	var lines []string
+	d := newModalDriver(nil, runner.NewAttestationStore(),
+		runner.NewPassRegistry(), bus,
+		runner.NewInsufficientBasisTracker(3, nil),
+		func() string { return "op" }, nil, 64)
+	d.output = func(msg string) { lines = append(lines, msg) }
+	t.Cleanup(d.Stop)
+	bus.Publish(runner.OperatorEvent{
+		Kind:    runner.OpEventRemediationConverged,
+		ArrowID: "A1",
+		PassID:  "P1",
+		Detail:  "outcome=converged",
+	})
+	if len(lines) == 0 {
+		t.Fatal("expected output line from surfaceNotification (W-H-3); got none")
+	}
+	if !strings.Contains(lines[0], "remediation-converged") &&
+		!strings.Contains(lines[0], "OpEventRemediationConverged") &&
+		!strings.Contains(lines[0], "converged") {
+		t.Fatalf("expected converged in rendered line; got: %s", lines[0])
+	}
+}
+
+// TestScenario_AdversaryFactoryContract_NilReturnRefuses verifies
+// W-H-4 closure: runDispatcherAdversarialPhase calls Factory(0)
+// early and refuses with ErrAdversaryFactoryContract when the
+// returned Adversary is nil.
+func TestScenario_AdversaryFactoryContract_NilReturnRefuses(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	g := makeMinimalGrid(t, workdir, nil)
+	rt, err := openEngineWithOptions(workdir, nil, 3, g)
+	if err != nil {
+		t.Fatalf("openEngineWithOptions: %v", err)
+	}
+	t.Cleanup(rt.closeEngine)
+	if _, err := rt.replayEngine(context.Background()); err != nil {
+		t.Fatalf("replayEngine: %v", err)
+	}
+	if err := rt.attachJournal(nil); err != nil {
+		t.Fatalf("attachJournal: %v", err)
+	}
+	// Bad bundle: Factory returns nil — wrapper cannot fill in
+	// pointers on a non-existent Adversary.
+	badBundle := &runner.AdversarialHooks{
+		Factory: func(int) *runner.Adversary { return nil },
+		OpenSweep: func(context.Context, runner.AdversaryAttack) ([]runner.FindingRecord, error) {
+			return nil, nil
+		},
+		Classify: func(context.Context, runner.AdversaryAttack) ([]runner.Classification, error) {
+			return nil, nil
+		},
+		ProducerFix: func(context.Context, []runner.FindingRecord, int) ([]byte, error) {
+			return []byte("ok"), nil
+		},
+		RemediationConfigDefaults: runner.RemediationConfig{RoundsMax: 1},
+	}
+	rt.AdversarialHooks().Store(badBundle)
+	req := &runner.DispatchRequest{
+		Arrow: runner.ArrowDefinition{
+			ID:      "A1",
+			Clauses: []runner.Clause{{Concept: "no-todo-marker", DepthType: runner.DepthTypeSensitive}},
+		},
+		ActualTier: runner.DepthRankShallow,
+	}
+	_, _, gotErr := rt.runDispatcherAdversarialPhase(context.Background(),
+		req, "P1", req.Arrow.Clauses)
+	if !errors.Is(gotErr, ErrAdversaryFactoryContract) {
+		t.Fatalf("expected ErrAdversaryFactoryContract, got: %v", gotErr)
 	}
 }

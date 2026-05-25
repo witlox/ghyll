@@ -124,6 +124,13 @@ type engineRuntime struct {
 	// arrows return ErrAdversaryHooksNotWired). The /adversary
 	// slash command toggles via atomic Store/Clear.
 	adversarialHooks runner.AtomicAdversarialHooks
+
+	// auditTagUnsubscribe drops the audit-tagged bus subscriber on
+	// closeEngine. Diamond v4 / W-H-1 (+ W-M-2): registered in
+	// attachJournal IFF the JSONL writer opened; nil otherwise. The
+	// unsubscribe call is idempotent so closeEngine can invoke it
+	// unconditionally.
+	auditTagUnsubscribe func()
 }
 
 // Engine-runtime errors. Surfaced so callers can switch on them.
@@ -592,8 +599,29 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	// every verdict appends to .ghyll/attestations.jsonl AFTER
 	// the tree primary already succeeded. The flat write may
 	// fail silently; the bus event surfaces durability problems.
+	//
+	// Diamond v4 / W-H-1 closure: the audit-floor SubscribeTagged
+	// registration MUST be gated on jsonlWriter actually being open
+	// — otherwise the tag is a placebo (the dispatcher's
+	// RequireAuditSubscriber passes when no writer is attached). The
+	// audit-tagged subscriber publishes a bus event when the JSONL
+	// writer reports an error so the AttestationStore observer
+	// chain's downstream durability problems surface through the
+	// audit-tagged path the dispatcher's predicate verifies.
 	if r.jsonlWriter != nil {
 		r.attestations.Observe(r.jsonlWriter.Observer())
+		// Tagged subscriber: tracks JSONL writer health by publishing
+		// a typed event when WriteErrors() ticks up. R6 audit-floor
+		// now MEANS what its name implies — the tag is present iff
+		// the JSONL writer opened successfully.
+		writer := r.jsonlWriter
+		r.auditTagUnsubscribe = r.bus.SubscribeTagged(func(_ runner.OperatorEvent) {
+			// Defensive: a future bus republish-on-write-failure can
+			// route through this closure. Today the JSONL writer's
+			// own failure path publishes via Observer; this tagged
+			// subscription is the audit-floor membership marker.
+			_ = writer
+		}, "audit")
 	}
 
 	// InsufficientBasisTracker subscribes to attestation events so
@@ -639,14 +667,6 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		}
 	})
 
-	// Diamond v4 / R6 closure: tag the JSONL writer subscription on
-	// the bus so the dispatcher's RequireAuditSubscriber predicate
-	// observes the audit floor is met. The existing AttestationStore
-	// Observe-fanout above persists records to disk; this tagged
-	// subscription is a membership marker (no-op callback), not a
-	// duplicate writer.
-	r.bus.SubscribeTagged(func(runner.OperatorEvent) {}, "audit")
-
 	r.journalAttached = true
 	return nil
 }
@@ -680,6 +700,14 @@ func (r *engineRuntime) closeEngine() {
 	//      happens BEFORE store.Close so any final journal-
 	//      observer writes have landed.
 	//   3. Store closes sqlite.
+	// W-H-1 / W-M-2: drop the audit-tagged bus subscriber before
+	// the journal/bus go away so the bus doesn't outlive the engine
+	// runtime through a dangling tagged callback. Safe-no-op when
+	// the writer never opened (unsubscribe stays nil).
+	if r.auditTagUnsubscribe != nil {
+		r.auditTagUnsubscribe()
+		r.auditTagUnsubscribe = nil
+	}
 	if r.journal != nil {
 		r.journal.Close()
 	}

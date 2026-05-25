@@ -49,6 +49,13 @@ type modalDriver struct {
 	// OpEventArrowInvalidated, OpEventBindingMissing). Tests assert
 	// the dispatch arm was reached via NotificationsSnapshot.
 	notifications []runner.OperatorEvent
+
+	// Diamond v4 / W-H-3 closure: console writer for inline
+	// notification rendering. session.initEngine wires this to
+	// s.output so the 7 new event kinds surface to the operator
+	// without grepping logs. Nil-safe: when unset, surfaceNotification
+	// only appends to the ring buffer (test-fixture behavior).
+	output func(string)
 }
 
 // Stop cancels the modal driver's bus subscription. Idempotent.
@@ -178,23 +185,58 @@ func (d *modalDriver) OnEvent(ev runner.OperatorEvent) {
 
 // surfaceNotification renders a non-modal status line for events that
 // don't require operator action but should be visible inline.
-// Implementation today is a no-op stub (the modal driver carries no
-// status pane); the BDD scenario verifies the subscription exists
-// and the dispatch arm is reached. A future Tier-3 modal pane wires
-// the rendering side.
+//
+// Diamond v4 / W-H-3 closure: the surfacing side is now wired through
+// d.output (session.initEngine binds this to s.output). The ring
+// buffer is retained for tests + future status CLI integration via
+// NotificationsSnapshot; the console write makes the operator see
+// activity inline.
 func (d *modalDriver) surfaceNotification(ev runner.OperatorEvent) {
 	if d == nil {
 		return
 	}
-	// Subscription proof: appending to a small ring buffer (capped
-	// at 32 entries) lets tests verify the dispatch arm was reached
-	// without forcing a goroutine sync against the bus.
 	d.mu.Lock()
 	d.notifications = append(d.notifications, ev)
 	if len(d.notifications) > modalNotificationRingCap {
 		d.notifications = d.notifications[len(d.notifications)-modalNotificationRingCap:]
 	}
 	d.mu.Unlock()
+	if d.output != nil {
+		d.output(renderNotification(ev))
+	}
+}
+
+// renderNotification formats one operator event for console output.
+// One line per event; Detail is sanitized by the caller upstream
+// (publishers do not embed control bytes).
+func renderNotification(ev runner.OperatorEvent) string {
+	prefix := notificationPrefix(ev.Kind)
+	parts := []string{prefix, string(ev.Kind)}
+	if ev.ArrowID != "" {
+		parts = append(parts, "arrow="+ev.ArrowID)
+	}
+	if ev.PassID != "" {
+		parts = append(parts, "pass="+ev.PassID)
+	}
+	if ev.Detail != "" {
+		parts = append(parts, ev.Detail)
+	}
+	return strings.Join(parts, " ")
+}
+
+// notificationPrefix returns the leading badge for a notification.
+// Escalations + refusals get ⚠ so operators distinguish them from
+// progress events at a glance.
+func notificationPrefix(kind runner.OperatorEventKind) string {
+	switch kind {
+	case runner.OpEventRemediationEscalated,
+		runner.OpEventAmendmentEnqueueRefused,
+		runner.OpEventArrowInvalidated,
+		runner.OpEventBindingMissing:
+		return "⚠"
+	default:
+		return "ℹ"
+	}
 }
 
 // modalNotificationRingCap caps the in-memory notification ring.

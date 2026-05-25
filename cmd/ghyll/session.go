@@ -351,6 +351,31 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		rt.closeEngine()
 		return
 	}
+	s.engine = rt
+	// Tier 2 (ADR-016 Part D / Step 7+8): construct the modal
+	// driver now that the engine + bus are live. arrowResolver
+	// closes over the live grid; opIDProvider reads s.opID at
+	// call-time (gate-1 F-20).
+	//
+	// Diamond v4 / W-H-2 closure: construct + subscribe the modal
+	// driver BEFORE the binding-coverage check so the
+	// OpEventBindingMissing publish below has a subscriber. Pre-fix
+	// the publish raced the construction at session.go:385 and the
+	// event was silently dropped (modal-driver ring buffer never saw
+	// it). With the driver constructed here first, the dispatch arm
+	// (modal_driver.go:155) consistently observes the event.
+	s.modalDriver = newModalDriver(
+		s.modalPrompt,
+		rt.AttestationStore(),
+		rt.Passes(),
+		rt.Bus(),
+		rt.InsufficientBasisTracker(),
+		func() string { return s.opID },
+		s.buildArrowResolver(rt),
+		modalPendingMaxLen,
+	)
+	s.modalDriver.output = s.output
+	s.modalDriver.residueNoteMaxBytes = residueNoteMaxBytes
 	// Diamond v4 / Gap 3 (R17 closure): post-Replay binding-coverage
 	// check. Walks both the typed runner.Grid and the untyped
 	// bootstrap.Grid; a miss surfaces via OpEventBindingMissing AND
@@ -358,6 +383,10 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	// clauses simply fail at evaluate-time with ErrConceptNotRegistered;
 	// the operator sees the warning and either runs `ghyll init` or
 	// fixes the grid manually.
+	//
+	// W-H-2: must publish AFTER s.modalDriver is constructed (and the
+	// modal driver's bus.Subscribe has attached at newModalDriver:144)
+	// so the event lands in the dispatch arm's ring buffer.
 	if cerr := rt.verifyBindingsCoveragePostReplay(); cerr != nil {
 		var mbe *bootstrap.MissingBindingError
 		keys := ""
@@ -377,22 +406,6 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 			})
 		}
 	}
-	s.engine = rt
-	// Tier 2 (ADR-016 Part D / Step 7+8): construct the modal
-	// driver now that the engine + bus are live. arrowResolver
-	// closes over the live grid; opIDProvider reads s.opID at
-	// call-time (gate-1 F-20).
-	s.modalDriver = newModalDriver(
-		s.modalPrompt,
-		rt.AttestationStore(),
-		rt.Passes(),
-		rt.Bus(),
-		rt.InsufficientBasisTracker(),
-		func() string { return s.opID },
-		s.buildArrowResolver(rt),
-		modalPendingMaxLen,
-	)
-	s.modalDriver.residueNoteMaxBytes = residueNoteMaxBytes
 	// Mirror the cap onto the AttestationStore so Record-time
 	// validation (gate-2 CORR-A-4 / SEC-H-1) sees the same value
 	// the modal driver applies. atomic.Int64 on the store side,
@@ -454,6 +467,13 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 			s.output(fmt.Sprintf("  - %s %s", ev.Kind, sanitizeOneLine(ev.Detail)))
 		}
 	}
+
+	// Diamond v4 / W-C-1 closure (ADR-v4-002): auto-enable the
+	// adversarial cycle if a dialect is configured at session start.
+	// CI paths (no API key / no endpoint) see the disabled banner and
+	// never call an LLM-backed hook. Production paths with a resolvable
+	// dialect get the cycle wired without an operator command.
+	s.autoEnableAdversarial()
 
 	// Diamond v4 / Gap 2 (H-1 closure): surface pending amendments
 	// recovered from disk. Replay loads drained amendments; any with

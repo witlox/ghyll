@@ -55,6 +55,20 @@ func (r *engineRuntime) runDispatcherAdversarialPhase(
 		return nil, nil, runner.ErrAdversaryHooksNotWired
 	}
 
+	// Diamond v4 / W-H-4 closure: early Factory probe. The
+	// AdversaryBuilder closure below assumes the Factory returns a
+	// non-nil Adversary AND that this codepath fills in the required
+	// pointers (FindingsStore / ClassificationsStore / Runner). A
+	// future refactor that moves the per-round init pattern to a
+	// different lifecycle, or an operator-supplied bundle whose
+	// Factory pre-assigns these to wrong values, must surface here
+	// rather than silently inside RunRemediationLoop. Validate this
+	// invariant by probing Factory(0) + checking the wrapper's
+	// post-condition holds.
+	if err := r.validateAdversaryFactoryContract(hooks, req); err != nil {
+		return nil, nil, err
+	}
+
 	// Surface a round-start event so the modal driver + operator
 	// UI can render adversarial progress inline. M9 closure: the
 	// tier_label carries the cycle's depth context.
@@ -171,4 +185,51 @@ func (r *engineRuntime) runDispatcherAdversarialPhase(
 func remediationConvergedDriver(o runner.RemediationOutcome) bool {
 	return o == runner.RemediationConverged ||
 		o == runner.RemediationConvergedWithUnevaluated
+}
+
+// ErrAdversaryFactoryContract is returned by validateAdversaryFactoryContract
+// when the bundle's Factory contradicts the per-round wrapper's
+// assumption (returns nil; doesn't accept the wrapper's pointer
+// injection). Surfaces as a typed dispatch error so operators see
+// "bundle malformed" rather than a panic deep inside Attack.
+var ErrAdversaryFactoryContract = errors.New("dispatcher-adversarial: adversary-factory-contract-violation")
+
+// validateAdversaryFactoryContract probes Factory(0), runs the per-
+// round injection wrapper against the result, and asserts the
+// Adversary's required pointers end up non-nil after injection. The
+// probe Adversary is discarded — it has not been Attacked, so the
+// single-shot used flag stays clean for the real per-round Adversary
+// instances built by RunRemediationLoop.
+func (r *engineRuntime) validateAdversaryFactoryContract(
+	hooks *runner.AdversarialHooks, req *runner.DispatchRequest,
+) error {
+	probe := hooks.Factory(0)
+	if probe == nil {
+		return fmt.Errorf("%w: Factory(0) returned nil", ErrAdversaryFactoryContract)
+	}
+	// Apply the same wrapper logic runDispatcherAdversarialPhase
+	// uses per-round. If after injection any required pointer is
+	// still nil, the contract is broken.
+	if probe.FindingsStore == nil {
+		probe.FindingsStore = r.findings
+	}
+	if probe.ClassificationsStore == nil {
+		probe.ClassificationsStore = r.classifications
+	}
+	if probe.Runner == nil {
+		probe.Runner = r.NewRunner(req.ActualTier)
+	}
+	if probe.FindingsStore == nil {
+		return fmt.Errorf("%w: FindingsStore still nil after wrapper injection",
+			ErrAdversaryFactoryContract)
+	}
+	if probe.ClassificationsStore == nil {
+		return fmt.Errorf("%w: ClassificationsStore still nil after wrapper injection",
+			ErrAdversaryFactoryContract)
+	}
+	if probe.Runner == nil {
+		return fmt.Errorf("%w: Runner still nil after wrapper injection",
+			ErrAdversaryFactoryContract)
+	}
+	return nil
 }
