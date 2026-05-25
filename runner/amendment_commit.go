@@ -37,6 +37,32 @@ type AmendmentCommitter struct {
 	Bus    *OperatorBus
 	Queue  *AmendmentQueue
 	Now    func() time.Time
+
+	// BindingsReRegister is an optional callback that builds an
+	// in-memory snapshot of the evaluator registry from the
+	// amendment's NewLanguageBindings (Gap 2 mid-drain ordering,
+	// ADR-v4-003). Returns the snapshot registry the committer
+	// will atomically swap into the live runtime AFTER the disk
+	// write succeeds. Nil = skip the snapshot+swap step (used by
+	// tests and pre-v4 call sites).
+	//
+	// The integration site (cmd/ghyll, per ADR-v4-007) provides
+	// the implementation since it spans bootstrap.Grid +
+	// runner.Registry.
+	BindingsReRegister func(req CommitRequest) (snapshot *Registry, swap func(), err error)
+
+	// LiveRegistry is the live evaluator registry the committer
+	// swaps the snapshot into on commit. Nil = no swap performed
+	// even if BindingsReRegister returns a snapshot. Set at runtime
+	// construction; immutable post-construct per design-M11.
+	LiveRegistry *Registry
+
+	// Workdir is the working directory the committer hands to the
+	// grid Write path (per Gap 2 step 6 disk write). Empty = no
+	// disk persistence; the in-memory grid mutates and the
+	// version bumps, but the on-disk grid.v<N+1>.yaml is not
+	// produced. cmd/ghyll wires this with the session workdir.
+	Workdir string
 }
 
 // CommitRequest is the input to AmendmentCommitter.Commit.
@@ -53,6 +79,14 @@ type CommitRequest struct {
 	// amendment then just aborts the in-flight passes so they
 	// re-traverse).
 	NewArrows []ArrowDefinition
+
+	// NewLanguageBindings is the optional overlay of new
+	// `<concept>.<language>: <command>` bindings the amendment
+	// introduces. Lives on CommitRequest (runtime), NOT
+	// AmendmentRequest (persisted) per R21 closure — old
+	// amendments replay cleanly because the field isn't in the
+	// persistence record. Nil / empty = no binding overlay.
+	NewLanguageBindings map[string]string
 }
 
 // CommitResult bundles the per-commit summary.
@@ -69,6 +103,14 @@ var (
 	ErrAmendmentCommitNoGrid   = errors.New("amendment-commit: nil Grid")
 	ErrAmendmentCommitNoPasses = errors.New("amendment-commit: nil Passes")
 	ErrAmendmentCommitInvalid  = errors.New("amendment-commit: invalid request")
+	// ErrAmendmentCommitFIFO is returned when the queue head shifts
+	// mid-drain (R22 closure). The queue retains the un-drained
+	// amendments; the caller may retry after diagnosing.
+	ErrAmendmentCommitFIFO = errors.New("amendment-commit: FIFO violation")
+	// ErrAmendmentCommitBindings is returned when
+	// BindingsReRegister fails to build the snapshot. The commit
+	// aborts BEFORE the grid version bumps (per ADR-v4-003).
+	ErrAmendmentCommitBindings = errors.New("amendment-commit: bindings re-register failed")
 )
 
 // Commit applies one amendment. Returns CommitResult on success or
@@ -119,6 +161,35 @@ func (c *AmendmentCommitter) Commit(ctx context.Context, req CommitRequest) (*Co
 		return nil, err
 	}
 
+	// Diamond v4 / R22 closure: FIFO head check. If the queue has
+	// pending amendments, the head MUST match this amendment's ID.
+	// An empty queue is permitted (the test path that constructs a
+	// committer with an empty queue and calls Commit directly, or
+	// the drain path AFTER the head was popped); only a non-empty
+	// queue whose head DOESN'T match is a FIFO violation.
+	if c.Queue != nil {
+		pending := c.Queue.Pending()
+		if len(pending) > 0 && pending[0].ID != req.Amendment.ID {
+			return nil, fmt.Errorf("%w: expected %q at head, got %q",
+				ErrAmendmentCommitFIFO, req.Amendment.ID, pending[0].ID)
+		}
+	}
+
+	// Diamond v4 / ADR-v4-003: build the registry snapshot BEFORE
+	// any mutation. If the snapshot construction fails (a malformed
+	// binding overlay, unregistered concept), abort here — the live
+	// registry, grid, and queue are all unchanged.
+	var snapshot *Registry
+	var swap func()
+	if c.BindingsReRegister != nil {
+		var err error
+		snapshot, swap, err = c.BindingsReRegister(req)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrAmendmentCommitBindings, err)
+		}
+	}
+	_ = snapshot // referenced by `swap` closure when invoked below
+
 	res := &CommitResult{
 		GridVersionBefore: c.Grid.Version(),
 		CommittedAt:       now(),
@@ -152,6 +223,14 @@ func (c *AmendmentCommitter) Commit(ctx context.Context, req CommitRequest) (*Co
 		res.AppendedArrows = append(res.AppendedArrows, def.ID)
 	}
 	res.GridVersionAfter = c.Grid.Version()
+
+	// 2a. Atomically swap the snapshot registry into the live
+	//     runtime (ADR-v4-003 step 6a). The snapshot was built
+	//     pre-mutation; swapping AFTER append means concurrent
+	//     dispatchers see OLD or NEW bindings, never partial.
+	if swap != nil && appendErr == nil {
+		swap()
+	}
 
 	// 3. Persist drained_at. The committer marks the amendment as
 	//    drained on the queue, which emits AmendmentEventDrain. The

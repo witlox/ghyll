@@ -73,6 +73,23 @@ const (
 	OpEventRecoveryAttestationReplay      OperatorEventKind = "recovery-attestation-replay"
 	OpEventRecoveryJSONLTruncated         OperatorEventKind = "recovery-jsonl-truncated"
 
+	// Diamond v4 / ADR-v4-005 — typed-payload event kinds.
+
+	// OpEventAmendmentEnqueueRefused — Enqueue refused due to a
+	// full queue or duplicate ID. Payload: arrow_id, amendment_id,
+	// outcome ∈ {queue-full, duplicate-id}.
+	OpEventAmendmentEnqueueRefused OperatorEventKind = "amendment-enqueue-refused"
+
+	// OpEventRecoveryAmendmentsPending — recovery surfaced one or
+	// more amendments with no drained_at; operator must
+	// /drain-amendments. Payload: count, amendment_ids.
+	OpEventRecoveryAmendmentsPending OperatorEventKind = "recovery-amendments-pending"
+
+	// OpEventArrowInvalidated — operator typed `/invalidate-arrow`;
+	// the arrow is marked ArrowStatusInvalidated. Payload: arrow_id,
+	// op_id, reason, timestamp.
+	OpEventArrowInvalidated OperatorEventKind = "arrow-invalidated"
+
 	// Tier 2 events (ADR-016 + gate-1 remediation).
 
 	// OpEventClauseFailVerdict — operator submitted verdict=fail
@@ -129,10 +146,14 @@ type OperatorBus struct {
 }
 
 // subscriberEntry pairs an id with its callback so Unsubscribe
-// can remove by handle. Gate-2 CONC-H-4.
+// can remove by handle. Gate-2 CONC-H-4. Diamond v4 (ADR-v4-005)
+// adds an optional tag; SubscribeTagged registers a tagged entry so
+// HasAuditSubscriber can verify the JSONL writer is attached before
+// the dispatcher proceeds.
 type subscriberEntry struct {
-	id uint64
-	fn OperatorEventSubscriber
+	id  uint64
+	fn  OperatorEventSubscriber
+	tag string
 }
 
 // NewOperatorBus returns an empty bus with time.Now as the
@@ -202,6 +223,47 @@ func (b *OperatorBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.subscribers)
+}
+
+// SubscribeTagged registers a subscriber with a string tag (diamond
+// v4 / R6 closure). The tag enables predicates like
+// HasAuditSubscriber. Returns the same closer-shape Subscribe does.
+//
+// Tagged and untagged subscribers coexist on the same bus; the bus
+// fans out to all of them without inspecting tags. Tags are
+// metadata for membership predicates, NOT routing.
+func (b *OperatorBus) SubscribeTagged(fn OperatorEventSubscriber, tag string) func() {
+	b.mu.Lock()
+	b.nextID++
+	id := b.nextID
+	b.subscribers = append(b.subscribers, subscriberEntry{id: id, fn: fn, tag: tag})
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		for i, e := range b.subscribers {
+			if e.id == id {
+				b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
+				break
+			}
+		}
+		b.mu.Unlock()
+	}
+}
+
+// HasAuditSubscriber reports whether at least one subscriber
+// registered via SubscribeTagged carries the "audit" tag. The
+// dispatcher's pre-check (diamond v4 / R6 closure) uses this to
+// refuse a dispatch whose lifecycle would not be persisted to the
+// JSONL audit log.
+func (b *OperatorBus) HasAuditSubscriber() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, e := range b.subscribers {
+		if e.tag == "audit" {
+			return true
+		}
+	}
+	return false
 }
 
 // Gate-2 CONC-H-4: docstring drift correction. The original

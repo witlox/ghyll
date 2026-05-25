@@ -77,6 +77,16 @@ const (
 	// clause status); DeriveArrowStatus never returns this — it
 	// is a sticky state the runner reads from durable state.
 	ArrowStatusInvalidated
+
+	// ArrowStatusAbortedRemediation: the adversarial cycle ran but
+	// escalated rather than converging (rounds-max, no-progress,
+	// hook-error, context-cancelled). Set externally by the
+	// dispatcher on adversarial-cycle abort; NOT derivable from
+	// clause statuses (the status carries cycle-level
+	// information not in the clause grid). DeriveArrowStatus
+	// never returns this — same external-set pattern as
+	// ArrowStatusInvalidated (diamond v4 / R23 closure).
+	ArrowStatusAbortedRemediation
 )
 
 // IsPersisted reports whether the status is one of gates.md §7.2's
@@ -85,7 +95,8 @@ const (
 func (s ArrowStatus) IsPersisted() bool {
 	switch s {
 	case ArrowStatusComplete, ArrowStatusBlocked, ArrowStatusUnevaluated,
-		ArrowStatusProvisional, ArrowStatusInvalidated:
+		ArrowStatusProvisional, ArrowStatusInvalidated,
+		ArrowStatusAbortedRemediation:
 		return true
 	}
 	return false
@@ -108,6 +119,8 @@ func (s ArrowStatus) String() string {
 		return "provisional"
 	case ArrowStatusInvalidated:
 		return "invalidated"
+	case ArrowStatusAbortedRemediation:
+		return "aborted-remediation"
 	default:
 		return fmt.Sprintf("invalid-arrow-status(%d)", int(s))
 	}
