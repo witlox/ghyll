@@ -157,7 +157,8 @@ Suite at **343 active scenarios** (up from 322 in v2026.30.228).
 - **Batch 5** (`f94599c`) — `adversarial.feature`: 2 scenarios.
   Producer-fix re-attack, accepted-risk proposal.
 
-16 `@deferred` scenarios remain — all structurally substrate-gated
+16 `@deferred` scenarios remain (reduced to 12 in the polish sprint
+below) — all structurally substrate-gated
 (artifact dep-check schema, residue imputed-cost calculator,
 invalidated-status enum + history layer, YAML-loader wire-form,
 bus-buffered pending-attestation-request semantics).
@@ -186,6 +187,7 @@ brought to production readiness, end-to-end.
   finding remediated, no deferrals.
 - Integrator pass — cross-package seam issues remediated.
 - 312 BDD scenarios passing (20 lifted from @deferred in-batch).
+  (→ now 345; see the polish sprint above.)
 
 ### Tier 3 — operational completeness
 

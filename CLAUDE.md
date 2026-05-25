@@ -61,8 +61,8 @@ ui/                   user-facing terminal output (CLI). slog handles diagnostic
 stream/               SSE streaming client + terminal renderer
 dialect/              model-specific code + routing decision table
   router.go           context-depth routing
-  glm5.go             GLM-5 dialect
-  minimax_m25.go      MiniMax M2.5 dialect
+  glm.go              GLM-5 dialect
+  minimax.go          MiniMax M2.5 dialect
   deepseek.go         DeepSeek dialect
   qwen.go             Qwen dialect
   parse.go            shared OpenAI tool call parser

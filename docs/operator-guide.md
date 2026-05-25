@@ -30,6 +30,27 @@ ghyll init --op-id alice@example.com .
 ghyll run .
 ```
 
+### What to edit in `~/.ghyll/config.toml`
+
+The seeded config ships placeholder endpoints. Step 2 ("drop in real
+model endpoints") means changing the `endpoint = "..."` line under
+each `[models.*]` block to your provider's base URL. A minimal edit
+looks like:
+
+```toml
+[models.minimax]
+endpoint = "https://api.example.com/v1/minimax-m25"
+api_key  = "sk-..."
+
+[models.glm]
+endpoint = "https://api.example.com/v1/glm5"
+api_key  = "sk-..."
+```
+
+Leave the rest of the template alone unless you have a specific
+reason to override defaults; the depth ladder, routing thresholds,
+and sandbox settings ship with sane values.
+
 What happens under the hood:
 
 - **Step 1**: `ghyll run` calls the config bootstrap. When
@@ -115,7 +136,18 @@ All commands accepted in the REPL:
 | `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass-open/close + IB-rounds-exceeded events inline. (C-3) |
 | `/<name>` | User-defined slash command loaded from `.ghyll/commands/<name>.md`. The file contents are injected as user input for the next turn. |
 
-### `/op-id <identity>` — example
+### `/op-id <identity>` — what it is and why it matters
+
+An **op-id** is an email-like string identifying the human at the
+keyboard. You set it once per session with `/op-id you@example.com`.
+Every attestation you record is tagged with this op-id. §12.2
+(self-cert) enforces that you cannot attest your own work — if you
+played the analyst role on an arrow, your op-id cannot also serve as
+the attesting authority on that arrow's clauses. The CLI rejects
+op-ids with control bytes, separators, or Unicode-format runes (see
+`validateAndNormalizeOpID`).
+
+Example:
 
 ```
 ghyll [m25] /path/to/project ▸ /op-id alice@example.com
@@ -127,15 +159,25 @@ with no argument.
 
 ### `/attest <attestation-id> <verdict> [reason]` — example
 
+`/op-id` must be set first; the slash command stamps every attestation
+with the active op-id:
+
 ```
-ghyll [m25] /path/to/project ▸ /attest att-A-checkout-C1-v1 pass "verified test coverage"
-✓ attestation att-A-checkout-C1-v1 recorded: verdict=pass by op-id=alice@example.com
+ghyll [m25] /path/to/project ▸ /op-id alice@example.com
+op-id set: alice@example.com
+ghyll [m25] /path/to/project ▸ /attest att-analyst→architect/checkout-C1-v1 pass "verified test coverage"
+✓ attestation att-analyst→architect/checkout-C1-v1 recorded: verdict=pass by op-id=alice@example.com
 ```
 
 Attestation IDs come from the runtime:
 
 - `att-<arrow-id>-<clause-id>-v<N>` for depth-type attestations.
 - `att-<arrow-id>-v<N>` for on-the-spot attestations.
+
+The canonical `<arrow-id>` shape emitted by the bootstrap is
+`<source-role>→<target-role>/<context>` (for example,
+`analyst→architect/default`); use that form anywhere an arrow ID is
+expected.
 
 The `verdict` is one of `pass`, `fail`, `insufficient-basis`
 (plus aliases: `p`, `ok`, `f`, `no`, `ib`).
@@ -154,10 +196,10 @@ clause fire the escalation event configured by
 ### `/run-arrow` — example
 
 ```
-ghyll [m25] /path/to/project ▸ /run-arrow A-checkout
+ghyll [m25] /path/to/project ▸ /run-arrow analyst→architect/checkout
   · pass-opened   pass=p-7 role=analyst context=checkout
   · pass-closed   pass=p-7 role=analyst state/reason=closed:ok
-✓ arrow A-checkout dispatched: pass=p-7 status=valid clauses=2 blocking-clauses=0 blocking-findings=0
+✓ arrow analyst→architect/checkout dispatched: pass=p-7 status=valid clauses=2 blocking-clauses=0 blocking-findings=0
 ```
 
 The depth tier is resolved by `runner.RouteArrow` over the
@@ -170,15 +212,23 @@ empty, the hint is `no grid; run \`ghyll init\` first`.
 
 ### Verdict modal (Tier 2 / ADR-016)
 
+The four verdicts, in operator terms:
+
+- **pass**: I looked at the work, it meets the clause's contract.
+- **fail**: I looked, it does not — record what I inspected.
+- **insufficient-basis**: I cannot evaluate from what I have — record
+  a residue note describing what's missing.
+- **skip**: punt to next round (the same prompt re-presents).
+
 When the dispatcher signals that a clause is awaiting attestation,
 the REPL drains a verdict modal BEFORE the next prompt. You see:
 
 ```
 ── attestation request ─────────────────
-  arrow:           A-checkout
+  arrow:           analyst→architect/checkout
   clause:          C2
   concept:         lint-clean
-  attestation-ref: att-A-checkout-C2-v1
+  attestation-ref: att-analyst→architect/checkout-C2-v1
 ────────────────────────────────────────
 verdict? [pass / fail / insufficient-basis / skip]:
 ```
@@ -196,7 +246,7 @@ escalation prompt fires:
 
 ```
 ── escalation: 3 insufficient-basis rounds ──
-  arrow:    A-checkout
+  arrow:    analyst→architect/checkout
   clause:   C2
   options:
     1) accept risk     (record residue note; finding → accepted-risk)
@@ -211,6 +261,60 @@ must choose.
 
 `/exit` cancels any in-flight modal cleanly; the queued items
 re-present on the next session start (Recovery republishes).
+
+### Residue notes
+
+When you pick `insufficient-basis`, you're recording why you couldn't
+decide — what evidence was missing, what would change your verdict.
+A good residue note names the artifact you wanted to inspect and
+didn't have. The grid's `residue-note-max-bytes` caps the field.
+
+### Bootstrap residue
+
+Clauses the bootstrap couldn't auto-confirm (required args missing)
+land in the grid's residue list with a machine-parseable reason. A
+later grid amendment can supply the missing values — until then,
+the affected arrow's clause stays `unevaluated`.
+
+## State at a glance
+
+A novice reading `ghyll arrow show` needs to know how three layered
+statuses interact: clause, pass, arrow. Sketch:
+
+| Status family | Values | Where you see it |
+|---|---|---|
+| **Clause status** | `unevaluated`, `pass`, `fail`, `insufficient-basis`, `skipped` | `ghyll arrow show` per-clause line; verdict modal |
+| **Pass status** | `open`, `closed:ok`, `closed:failed`, `aborted` | `/passes` listing; pass-opened / pass-closed events |
+| **Arrow status** | `unevaluated`, `valid`, `invalid` (derived from the pass + the clause set) | `/list-arrows`; `ghyll arrow show` header |
+
+An arrow with any `unevaluated` clause cannot transition to `valid`;
+a pass cannot close `ok` while any of its clauses still need an
+attestation.
+
+## Amendments
+
+When the grid needs to evolve (a new bounded context appears, an
+arrow needs a clause added, a residue note is being resolved), the
+integrator role enqueues an **amendment**. The amendment serializes
+through a global lock, aborts any open passes on the affected arrow,
+appends the new arrow definitions, and bumps the grid version. The
+CLI for triggering one manually is not yet exposed — today it's
+runtime-driven by the integrator role.
+
+## The adversarial cycle (operator's view)
+
+ghyll periodically runs an adversarial pass — a fresh adversary
+attacks the current state of an arrow's evidence, raises findings,
+and the original producer is asked to fix them. The operator sees
+`producer-fix-signal` events; when the producer plateaus (loop-bomb
+detected, see below), the operator is asked to break the deadlock.
+
+## Op-ids on a team
+
+Use stable, distinct op-ids per operator (email addresses are
+recommended). The self-cert rule (§12.2) means two operators on a
+project MUST have different op-ids — sharing one breaks the
+cross-check.
 
 ## Offline CLI commands
 
@@ -335,8 +439,8 @@ role, clauses, requirements), open findings on the arrow, and
 all recorded attestations.
 
 ```
-$ ghyll arrow show A-checkout --dir /path/to/project
-arrow: A-checkout
+$ ghyll arrow show analyst→architect/checkout --dir /path/to/project
+arrow: analyst→architect/checkout
   source-role:  analyst
   target-role:  architect
   stratum:      L1
@@ -348,8 +452,8 @@ arrow: A-checkout
     [0] R1 (min-depth=2)
   findings:     0
   attestations: 2
-    att-A-checkout-C1-v1  kind=depth-type  clause=C1  verdict=pass  op=alice
-    att-A-checkout-C2-v1  kind=depth-type  clause=C2  verdict=insufficient-basis  op=alice
+    att-analyst→architect/checkout-C1-v1  kind=depth-type  clause=C1  verdict=pass  op=alice
+    att-analyst→architect/checkout-C2-v1  kind=depth-type  clause=C2  verdict=insufficient-basis  op=alice
 ```
 
 ## Environment variables
@@ -362,6 +466,11 @@ arrow: A-checkout
 | `GHYLL_LOG_FORMAT` | `text` (default) or `json`. |
 
 ## §12.2 self-cert in plain terms
+
+You can't grade your own homework. If you were the analyst on an
+arrow, you cannot also be the attestor — someone else (or,
+equivalently, a session using a different op-id and declaring a
+different role) must verify.
 
 When you attest a clause, your declared role MUST NOT equal the
 arrow's source role or its target role. ghyll enforces this at
@@ -380,6 +489,11 @@ self-cert in the on-disk JSONL — so a tampered audit file
 surfaces failure.
 
 ## Loop-bomb detection in the producer-fix cycle
+
+When the adversarial cycle runs and the model is asked to fix what
+the adversary surfaced, ghyll fingerprints the model's output each
+round. Two rounds with identical output and unresolved findings =
+the model is stuck; ghyll aborts and asks the operator to step in.
 
 When the adversary loop runs with a producer hook (typically
 the model itself responding to findings), the harness computes
@@ -400,6 +514,8 @@ operator must intervene.
 | Lock contention ("role-context-busy") | `ghyll arrow show` the arrow; `/passes` to see who holds the lock |
 | `/list-arrows` says "no grid; run `ghyll init` first" | Run `ghyll init --op-id <id>` to produce `.ghyll/grid.v1.yaml`. |
 | `ghyll run` exits with "wrote default config" | First-run config bootstrap — edit `~/.ghyll/config.toml` and re-run. |
+| I made a wrong verdict | Attestations are immutable; the only correction is a new attestation on a later pass OR a grid amendment that supersedes the arrow. |
+| Pass / clause / attestation state looks wrong | `ghyll engine status` first, then `ghyll arrow show <id>` for specifics. |
 
 ## Sandbox setup
 

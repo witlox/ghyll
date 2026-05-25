@@ -31,3 +31,4 @@ operator interaction), see the per-round
 | [ADR-010](010-versioned-grid-files.md) | Versioned grid files + `grid.current` pointer | D31 |
 | [ADR-011](011-init-auto-propose.md) | Initialization is auto-propose + operator-confirm | D20, D41 |
 | [ADR-012](012-amendment-serialization.md) | Global write-lock with FIFO amendment queue | D22 |
+| [ADR-013](013-add-tests-pass-concept.md) | Add `tests-pass` to the concept catalogue (catalogue grows to 18) | cold-validation pass on role files |
