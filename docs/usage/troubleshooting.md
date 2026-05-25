@@ -6,9 +6,9 @@
 
 Only one ghyll session can run per repository at a time. Check if another terminal is running ghyll in the same directory. If the previous session crashed, the stale lockfile will be automatically reclaimed.
 
-### "no config found at ~/.ghyll/config.toml"
+### "wrote default config at ~/.ghyll/config.toml; edit the model endpoints and re-run"
 
-Create the configuration file. See [Configuration](configuration.md) for the full reference.
+First run wrote a default config and exited --- edit `~/.ghyll/config.toml` (drop in real model endpoints) and re-run. The auto-bootstrap is implemented in `cmd/ghyll/config_bootstrap.go` (the C-2 surface): when no config exists, the embedded default template is written with `0o600` and ghyll exits cleanly so the operator can fill in endpoints. See [Configuration](configuration.md) for the full reference.
 
 ### "default model 'm25' has no endpoint configured"
 
@@ -39,8 +39,8 @@ ghyll uses character-based estimation (~4 chars/token for M2.5, ~3 chars/token f
 
 ### Sync is slow on first run
 
-The initial orphan branch creation clones the repo. Subsequent syncs are fast (append-only).
+The first sync creates the orphan branch (an `--orphan` checkout on the existing clone, not a re-clone of the repo) and pushes; subsequent syncs are incremental.
 
 ### Tool depth limit
 
-ghyll limits tool call chains to 50 sequential calls. If a model keeps requesting tool calls, the session stops with an error. This prevents runaway loops from buggy models.
+After `tool_depth_threshold` (default 5) the router escalates to the deep tier; a hard ceiling of 50 sequential calls aborts the chain (ADR-004). The escalation threshold is NOT the abort --- it's the routing signal that shifts the next call to the deeper model. If a model keeps requesting tool calls past the ceiling, the session stops with an error. This prevents runaway loops from buggy models.

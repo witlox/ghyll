@@ -15,7 +15,7 @@ Every dialect exports the same set of functions:
 | `TokenCount(msgs)` | Estimate token count for a message list |
 | `HandoffSummary(cp, recent)` | Format context for handoff to this model |
 
-## MiniMax M2.5 (`dialect/minimax_m25.go`)
+## MiniMax M2.5 (`dialect/minimax.go`)
 
 The fast tier. Handles 80% of routine coding tasks.
 
@@ -24,7 +24,7 @@ The fast tier. Handles 80% of routine coding tasks.
 - **Compaction prompt**: General-purpose summary instruction
 - **System prompt**: Concise, action-oriented
 
-## GLM-5 (`dialect/glm5.go`)
+## GLM-5 (`dialect/glm.go`)
 
 The deep tier. Handles complex reasoning and multi-step debugging.
 
@@ -37,7 +37,7 @@ The deep tier. Handles complex reasoning and multi-step debugging.
 
 To add support for a new model (e.g., Kimi K2):
 
-1. Create `dialect/kimi_k2.go` with all six functions
+1. Create `dialect/kimi.go` with all six functions
 2. Add the dialect name to `resolveDialect()` in `cmd/ghyll/session.go`
 3. Add model config in `config.toml`
 4. Recompile

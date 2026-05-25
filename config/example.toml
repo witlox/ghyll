@@ -17,6 +17,10 @@ deep_model = "glm5"
 context_depth_threshold = 32000
 tool_depth_threshold = 5
 enable_auto_routing = true
+# v2 gate-floor escalation: when a v2 gate declares MinTier at or above
+# this DepthRank (0=NONE, 1=SHALLOW, 2=MOCKED, 3=REALISTIC), routing
+# pins to deep_model and de-escalation is blocked. Default 2 (MOCKED).
+# gate_floor_escalate_at_rank = 2
 
 [memory]
 branch = "ghyll/memory"
@@ -35,6 +39,21 @@ dimensions = 384
 bash_timeout_seconds = 30
 file_timeout_seconds = 5
 prefer_ripgrep = true
+# web_timeout_seconds = 30          # timeout for web_fetch/web_search
+# web_max_response_tokens = 10000   # cap on web_fetch payload (truncation marker appended)
+# web_search_backend = "duckduckgo" # search backend (currently only duckduckgo)
+
+# Sub-agent budgets (the `agent` tool the model dispatches for focused sub-tasks).
+# [sub_agent]
+# default_model = "m25"       # model name; defaults to routing.default_model
+# max_turns = 20              # cap on the sub-agent turn-loop iterations
+# token_budget = 50000        # total token cap across the sub-agent run
+# timeout_seconds = 300       # wall-clock timeout for the entire sub-agent
+
+# Workflow instruction loading (project + global instructions, roles, commands).
+# [workflow]
+# instruction_budget_tokens = 2000   # cap on instructions+role in the system prompt
+# fallback_folders = [".claude"]     # folders to consult if .ghyll/ is absent
 
 # Optional: team memory search server
 # [vault]

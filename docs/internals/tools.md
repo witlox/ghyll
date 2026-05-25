@@ -1,6 +1,6 @@
 # Tool Execution
 
-ghyll provides twelve tools for direct OS operations and model coordination. All tools execute immediately with no permission checks --- the operator's sandbox handles isolation. See [Why ghyll — sandbox-only execution](../why.md#5-sandbox-only-execution) for the rationale and the [Operator Guide sandbox table](../operator-guide.md#sandbox-setup) for setup recipes.
+ghyll provides twelve tools for direct OS operations and model coordination (`enter_plan_mode` and `exit_plan_mode` are counted as 2 of the 12 even though they share one section below). All tools execute immediately with no permission checks --- the operator's sandbox handles isolation. See [Why ghyll — sandbox-only execution](../why.md#5-sandbox-only-execution) for the rationale and the [Operator Guide sandbox table](../operator-guide.md#sandbox-setup) for setup recipes.
 
 ## Available Tools
 

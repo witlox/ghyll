@@ -1,5 +1,7 @@
 # Sub-Agents
 
+Sub-agents are how the model delegates a self-contained sub-task ("go read these three files and summarize") without consuming the parent session's context. You don't trigger them; the model calls the `agent` tool on its own. The output lands in your transcript as a tool-result, the same shape as any other tool call --- you'll see the sub-agent's streaming output rendered inline, followed by the final answer when it returns. Sub-agents are useful when the parent's context is already large or when the task is narrow enough that the parent doesn't need the intermediate steps.
+
 Sub-agents are focused model inference calls dispatched by the parent session via the `agent` tool. They run on the fast tier with isolated context and return their findings as a tool result.
 
 ## How It Works
@@ -13,8 +15,9 @@ Sub-agents are focused model inference calls dispatched by the parent session vi
 
 Sub-agents are intentionally isolated from the parent:
 
-- **No parent history**: the sub-agent sees only the system prompt and task description.
-- **No role overlay**: even if the parent is in "analyst" mode, the sub-agent operates with bare instructions.
+- **No parent turn history**: the sub-agent sees only the system prompt and the task description --- not the parent session's prior messages or tool results.
+- **Workflow instructions ARE inherited**: the parent's `GlobalInstructions` and `ProjectInstructions` are appended to the sub-agent's system prompt (`cmd/ghyll/subagent.go` lines 78-86). The sub-agent runs against the same project conventions as the parent.
+- **No role overlay**: even if the parent is in "analyst" mode, the sub-agent operates with bare workflow instructions --- no role-specific constraints.
 - **No plan mode**: sub-agents are fast, focused tasks --- reasoning overhead is unnecessary.
 - **No checkpoints**: sub-agent turns are not checkpointed or synced.
 - **No drift detection**: no embedding, no backfill.
