@@ -133,7 +133,7 @@ Controls project instruction loading:
 
 ```toml
 [workflow]
-instruction_budget_tokens = 2000  # Max tokens for instructions + role in system prompt
+instruction_budget_tokens = 2000  # Max tokens for instructions in the system prompt
 fallback_folders = [".claude"]    # Folders to check if .ghyll/ is absent
 ```
 
@@ -142,11 +142,12 @@ Workflow files are loaded from `<repo>/.ghyll/` (or fallback folders):
 ```
 .ghyll/
   instructions.md    # Project-level behavioral instructions
-  roles/             # Role constraint definitions (analyst.md, implementer.md, etc.)
   commands/          # Slash command definitions (review.md, verify.md, etc.)
 ```
 
 Global instructions from `~/.ghyll/instructions.md` are prepended; project instructions are appended (project has the "last word"). If combined content exceeds the token budget, global instructions are dropped first.
+
+The four diamond roles (analyst / architect / implementer / integrator) are NOT loaded from `<repo>/.ghyll/roles/`. Per [ADR-008](../decisions/008-v2-fixed-roles-deprecate-runtime-workflow-roles.md), they are contracts embedded into the binary at build time from `specs/architecture/roles/*.md`. A `roles/` subdirectory under `.ghyll/` or `.claude/` is intentionally ignored — see [Workflow System](../internals/workflow.md) for the loader's behavior.
 
 ## Vault (optional)
 

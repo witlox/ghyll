@@ -7,7 +7,7 @@ Sub-agents are focused model inference calls dispatched by the parent session vi
 ## How It Works
 
 1. The parent model calls `agent(task: "...")`.
-2. ghyll creates a fresh context with the dialect's system prompt + workflow instructions (no role, no plan mode).
+2. ghyll creates a fresh context with the dialect's system prompt + workflow instructions (no plan mode).
 3. A mini turn-loop runs: send to model, parse tool calls, execute tools, repeat.
 4. When the model returns without tool calls (or limits are hit), the final answer is returned to the parent.
 
@@ -17,7 +17,7 @@ Sub-agents are intentionally isolated from the parent:
 
 - **No parent turn history**: the sub-agent sees only the system prompt and the task description --- not the parent session's prior messages or tool results.
 - **Workflow instructions ARE inherited**: the parent's `GlobalInstructions` and `ProjectInstructions` are appended to the sub-agent's system prompt (`cmd/ghyll/subagent.go` lines 78-86). The sub-agent runs against the same project conventions as the parent.
-- **No role overlay**: even if the parent is in "analyst" mode, the sub-agent operates with bare workflow instructions --- no role-specific constraints.
+- **No "role" state to inherit**: per [ADR-008](../decisions/008-v2-fixed-roles-deprecate-runtime-workflow-roles.md) ghyll has no runtime role-overlay layer in the system prompt — the four diamond roles are contracts attached to arrows, not modes the session is "in". A sub-agent is dispatched by the model from whatever arrow's pass is currently open in the parent; it carries no role tag of its own.
 - **No plan mode**: sub-agents are fast, focused tasks --- reasoning overhead is unnecessary.
 - **No checkpoints**: sub-agent turns are not checkpointed or synced.
 - **No drift detection**: no embedding, no backfill.

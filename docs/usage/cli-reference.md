@@ -166,9 +166,8 @@ ghyll reads configuration from `~/.ghyll/config.toml`. The following paths are u
 | `~/.ghyll/keys/` | Ed25519 signing keys |
 | `~/.ghyll/models/` | ONNX embedding model |
 | `~/.ghyll/instructions.md` | Global workflow instructions |
-| `~/.ghyll/roles/` | Global role definitions |
 | `~/.ghyll/commands/` | Global slash commands |
-| `<repo>/.ghyll/` | Project workflow (instructions, roles, commands) |
+| `<repo>/.ghyll/` | Project workflow (instructions + commands; `roles/` here is ignored — see ADR-008) |
 | `<repo>/.ghyll.lock` | Session lockfile |
 
 The memory-sync git worktree is NOT in the project tree --- it is created in a system temp dir via `os.MkdirTemp` (`memory/sync.go:67`) so the working copy stays clean.
