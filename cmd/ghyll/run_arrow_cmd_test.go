@@ -264,6 +264,141 @@ func TestScenario_RunArrow_BadParse_SurfacesUsage(t *testing.T) {
 	}
 }
 
+// TestScenario_RunArrow_AdversarialCycleEventsCaptured covers I-H-2
+// closure: the /run-arrow subscriber filter must include the three
+// adversarial-cycle round events (round-start / converged /
+// escalated) so the per-command summary string mirrors what the
+// modal driver prints during the dispatch.
+//
+// The test publishes the events on a fresh bus matching the handler's
+// subscriber-shape filter, then asserts each event lands in the
+// captured slice. Then it exercises the renderer's switch to confirm
+// each kind produces a non-empty rendered line.
+func TestScenario_RunArrow_AdversarialCycleEventsCaptured(t *testing.T) {
+	bus := runner.NewOperatorBus()
+	var (
+		mu     sync.Mutex
+		events []runner.OperatorEvent
+	)
+	// MUST match the filter in handleRunArrowCommand (run_arrow_cmd.go).
+	unsubscribe := bus.Subscribe(func(e runner.OperatorEvent) {
+		switch e.Kind {
+		case runner.OpEventPassOpened,
+			runner.OpEventPassClosed,
+			runner.OpEventInsufficientBasisRoundsExceeded,
+			runner.OpEventAdversarialRoundStart,
+			runner.OpEventRemediationConverged,
+			runner.OpEventRemediationEscalated:
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		}
+	})
+	defer unsubscribe()
+
+	// Publish one of each cycle event.
+	for _, k := range []runner.OperatorEventKind{
+		runner.OpEventAdversarialRoundStart,
+		runner.OpEventRemediationConverged,
+		runner.OpEventRemediationEscalated,
+	} {
+		bus.Publish(runner.OperatorEvent{
+			Kind: k, ArrowID: "A1", PassID: "P1", Detail: "tier=1 rounds=2",
+		})
+	}
+
+	mu.Lock()
+	captured := append([]runner.OperatorEvent(nil), events...)
+	mu.Unlock()
+	if len(captured) != 3 {
+		t.Fatalf("I-H-2: expected 3 cycle events captured, got %d (%v)",
+			len(captured), captured)
+	}
+	// The renderer in handleRunArrowCommand must produce a non-empty
+	// line per cycle event. Run the captured events through the same
+	// formatting expression used by the handler (mirrored here so
+	// the test exercises the rendered-output shape).
+	var out strings.Builder
+	for _, e := range captured {
+		switch e.Kind {
+		case runner.OpEventAdversarialRoundStart:
+			out.WriteString("adversarial-round-start arrow=" + e.ArrowID + "\n")
+		case runner.OpEventRemediationConverged:
+			out.WriteString("remediation-converged arrow=" + e.ArrowID + "\n")
+		case runner.OpEventRemediationEscalated:
+			out.WriteString("remediation-escalated arrow=" + e.ArrowID + "\n")
+		}
+	}
+	if !strings.Contains(out.String(), "adversarial-round-start") {
+		t.Error("missing adversarial-round-start in rendered output")
+	}
+	if !strings.Contains(out.String(), "remediation-converged") {
+		t.Error("missing remediation-converged in rendered output")
+	}
+	if !strings.Contains(out.String(), "remediation-escalated") {
+		t.Error("missing remediation-escalated in rendered output")
+	}
+}
+
+// TestScenario_RunArrow_AdversarialCycleEventsRenderedEndToEnd is the
+// END-TO-END counterpart for I-H-2: drive /run-arrow through the live
+// handler, publish a cycle event after dispatch starts but before it
+// returns (via a synchronous bus.Subscribe arm that publishes once and
+// detaches), and assert the rendered SlashCommandResult.Output line
+// contains the new event's prefix.
+//
+// We exploit the synchronous nature of OperatorBus.Publish: the
+// handler subscribes on the engine's bus, so any synchronous publish
+// during dispatch is captured. We register a transient subscriber on
+// the engine's bus that, on first PassOpened, publishes a
+// remediation-converged event. This is the minimal end-to-end seam
+// short of standing up a full adversarial cycle.
+func TestScenario_RunArrow_AdversarialCycleEventsRenderedEndToEnd(t *testing.T) {
+	s := newRunArrowSession(t)
+	def := runner.ArrowDefinition{
+		ID:         "A-cycle",
+		SourceRole: "analyst",
+		TargetRole: "architect",
+		Stratum:    "L1",
+		Context:    "checkout",
+		Clauses: []runner.Clause{{
+			Concept:  "no-todo-marker",
+			ClauseID: "C1",
+			Args:     map[string]any{"scope": "**", "markers": []any{"TODO"}},
+		}},
+	}
+	if _, err := s.engine.Grid().Append(def); err != nil {
+		t.Fatal(err)
+	}
+	// Inject a synthetic cycle event by publishing on the engine
+	// bus while dispatch runs. Use a one-shot trigger so the
+	// publish lands once.
+	var publishOnce sync.Once
+	uns := s.engine.Bus().Subscribe(func(e runner.OperatorEvent) {
+		if e.Kind != runner.OpEventPassOpened {
+			return
+		}
+		publishOnce.Do(func() {
+			s.engine.Bus().Publish(runner.OperatorEvent{
+				Kind:    runner.OpEventRemediationConverged,
+				ArrowID: "A-cycle",
+				PassID:  e.PassID,
+				Detail:  "outcome=converged rounds=1",
+			})
+		})
+	})
+	defer uns()
+
+	r := s.DispatchSlashCommand("/run-arrow A-cycle")
+	if !r.Handled {
+		t.Fatal("expected handled")
+	}
+	if !strings.Contains(r.Output, "remediation-converged") {
+		t.Fatalf("I-H-2: expected remediation-converged in /run-arrow output; got:\n%s",
+			r.Output)
+	}
+}
+
 // TestScenario_RunArrow_LateEventNotDropped covers post-prod-readiness
 // adversarial L-A. The previous /run-arrow code captured the events
 // snapshot BEFORE unsubscribe ran (via defer), so a publisher firing

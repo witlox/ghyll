@@ -38,9 +38,64 @@ func TestScenario_RunDispatcherAdversarialPhase_UnwiredRefuses(t *testing.T) {
 	req := &runner.DispatchRequest{
 		Arrow: runner.ArrowDefinition{ID: "A1"},
 	}
-	_, _, err := rt.runDispatcherAdversarialPhase(context.Background(), req, "P1", nil)
+	// I-H-3 closure: dispatcher passes its loaded hooks snapshot;
+	// here we pass nil to exercise the defensive fallback that
+	// re-loads from the atomic pointer (unwired -> refuses).
+	_, _, err := rt.runDispatcherAdversarialPhase(context.Background(), req, "P1", nil, nil)
 	if err == nil {
 		t.Fatal("expected ErrAdversaryHooksNotWired with no bundle")
+	}
+}
+
+// TestScenario_RunDispatcherAdversarialPhase_HooksParamPreferred
+// verifies I-H-3 closure: when the dispatcher passes its already-
+// loaded hooks snapshot, the phase fn drives the cycle through that
+// snapshot rather than re-loading from the atomic pointer. A
+// concurrent `/adversary disable` swap of the AtomicAdversarialHooks
+// to nil between the dispatcher gate and this call no longer races
+// — the cycle runs against the snapshot.
+func TestScenario_RunDispatcherAdversarialPhase_HooksParamPreferred(t *testing.T) {
+	t.Parallel()
+	rt := newAdvRuntime(t)
+	bundle := &runner.AdversarialHooks{
+		Factory: func(int) *runner.Adversary {
+			return runner.NewAdversary(nil, nil, nil)
+		},
+		OpenSweep: func(context.Context, runner.AdversaryAttack) ([]runner.FindingRecord, error) {
+			return nil, nil
+		},
+		Classify: func(context.Context, runner.AdversaryAttack) ([]runner.Classification, error) {
+			return nil, nil
+		},
+		ProducerFix: func(context.Context, []runner.FindingRecord, int) ([]byte, error) {
+			return []byte("ok"), nil
+		},
+		RemediationConfigDefaults: runner.RemediationConfig{RoundsMax: 1},
+	}
+	// Simulate the I-H-3 race: the atomic pointer is nil (operator
+	// just typed `/adversary disable`) BUT the dispatcher captured
+	// `bundle` BEFORE the swap. The phase fn must drive through
+	// `bundle`, not the now-nil pointer.
+	if rt.AdversarialHooks().Load() != nil {
+		t.Fatal("setup: expected AtomicAdversarialHooks to be nil")
+	}
+	req := &runner.DispatchRequest{
+		Arrow: runner.ArrowDefinition{
+			ID:      "A1",
+			Clauses: []runner.Clause{{Concept: "no-todo-marker", DepthType: runner.DepthTypeSensitive}},
+		},
+		ActualTier: runner.DepthRankShallow,
+		ProjectDir: t.TempDir(),
+	}
+	sensitive, _ := runner.PartitionClauses(req.Arrow.Clauses)
+	report, _, err := rt.runDispatcherAdversarialPhase(
+		context.Background(), req, "P1", sensitive, bundle,
+	)
+	if err != nil {
+		t.Fatalf("I-H-3: phase fn should drive through param bundle; got err=%v", err)
+	}
+	if report == nil || report.Outcome != runner.RemediationConverged {
+		t.Fatalf("I-H-3: expected converged via param bundle; got %v", report)
 	}
 }
 
@@ -76,7 +131,7 @@ func TestScenario_RunDispatcherAdversarialPhase_StubBundleConverges(t *testing.T
 	}
 	sensitive, _ := runner.PartitionClauses(req.Arrow.Clauses)
 	report, verifyClauses, err := rt.runDispatcherAdversarialPhase(
-		context.Background(), req, "P1", sensitive,
+		context.Background(), req, "P1", sensitive, bundle,
 	)
 	if err != nil {
 		t.Fatalf("driver: %v", err)

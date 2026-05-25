@@ -184,7 +184,17 @@ func (s *Session) handleRunArrowCommand(arg string) SlashCommandResult {
 		switch e.Kind {
 		case runner.OpEventPassOpened,
 			runner.OpEventPassClosed,
-			runner.OpEventInsufficientBasisRoundsExceeded:
+			runner.OpEventInsufficientBasisRoundsExceeded,
+			// I-H-2 closure: extend the filter to capture the
+			// adversarial-cycle round events so the per-command
+			// summary mirrors what the modal driver renders inline.
+			// Pre-fix, the operator saw cycle progress in the modal
+			// pane (via the modal driver's d.output) but the
+			// /run-arrow output string never reflected the rounds —
+			// an observable inconsistency between the two surfaces.
+			runner.OpEventAdversarialRoundStart,
+			runner.OpEventRemediationConverged,
+			runner.OpEventRemediationEscalated:
 			mu.Lock()
 			events = append(events, e)
 			mu.Unlock()
@@ -238,6 +248,24 @@ func (s *Session) handleRunArrowCommand(arg string) SlashCommandResult {
 			fmt.Fprintf(&out, "  ⚠ ib-rounds-exceeded  arrow=%s clause=%s detail=%s\n",
 				sanitizeOneLine(e.ArrowID),
 				sanitizeOneLine(e.ClauseID),
+				sanitizeOneLine(e.Detail))
+		case runner.OpEventAdversarialRoundStart:
+			// I-H-2 closure: mirror the modal driver's per-event
+			// surfacing so the summary string includes the cycle's
+			// rounds.
+			fmt.Fprintf(&out, "  · adversarial-round-start  arrow=%s pass=%s %s\n",
+				sanitizeOneLine(e.ArrowID),
+				sanitizeOneLine(e.PassID),
+				sanitizeOneLine(e.Detail))
+		case runner.OpEventRemediationConverged:
+			fmt.Fprintf(&out, "  · remediation-converged  arrow=%s pass=%s %s\n",
+				sanitizeOneLine(e.ArrowID),
+				sanitizeOneLine(e.PassID),
+				sanitizeOneLine(e.Detail))
+		case runner.OpEventRemediationEscalated:
+			fmt.Fprintf(&out, "  ⚠ remediation-escalated  arrow=%s pass=%s %s\n",
+				sanitizeOneLine(e.ArrowID),
+				sanitizeOneLine(e.PassID),
 				sanitizeOneLine(e.Detail))
 		}
 	}

@@ -44,7 +44,7 @@ func TestScenario_Dispatcher_DepthSensitive_AdversaryHooksUnwired_Refuses(t *tes
 	// to trigger the pre-flight check.
 	var hooks AtomicAdversarialHooks
 	d.Hooks = &hooks
-	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause) (*RemediationReport, []Clause, error) {
+	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause, _ *AdversarialHooks) (*RemediationReport, []Clause, error) {
 		return nil, nil, nil
 	}
 	arrow := happyArrow()
@@ -85,7 +85,7 @@ func TestScenario_Dispatcher_AdversaryConverged_VerifiesOverRobust(t *testing.T)
 	hooks.Store(bundle)
 	d.Hooks = &hooks
 	verifyCount := 0
-	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause) (*RemediationReport, []Clause, error) {
+	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause, _ *AdversarialHooks) (*RemediationReport, []Clause, error) {
 		verifyCount++
 		// Return a converged report + one explicit verify clause.
 		return &RemediationReport{Outcome: RemediationConverged},
@@ -128,7 +128,7 @@ func TestScenario_Dispatcher_AdversaryNonConverged_AbortsWithRemediationStatus(t
 		ProducerFix: func(context.Context, []FindingRecord, int) ([]byte, error) { return nil, nil },
 	})
 	d.Hooks = &hooks
-	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause) (*RemediationReport, []Clause, error) {
+	d.AdversarialPhase = func(_ context.Context, _ *DispatchRequest, _ string, _ []Clause, _ *AdversarialHooks) (*RemediationReport, []Clause, error) {
 		return &RemediationReport{Outcome: RemediationEscalatedRounds}, nil, nil
 	}
 	arrow := happyArrow()

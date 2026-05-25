@@ -46,11 +46,21 @@ func (r *engineRuntime) runDispatcherAdversarialPhase(
 	req *runner.DispatchRequest,
 	passID string,
 	sensitive []runner.Clause,
+	hooks *runner.AdversarialHooks,
 ) (*runner.RemediationReport, []runner.Clause, error) {
 	if r == nil {
 		return nil, nil, errors.New("dispatcher-adversarial: nil runtime")
 	}
-	hooks := r.adversarialHooks.Load()
+	// Integrator-pass I-H-3 closure: the dispatcher passes its
+	// already-loaded hooks snapshot rather than have us re-load
+	// from r.adversarialHooks. A concurrent `/adversary disable`
+	// between the dispatcher gate and this call no longer races —
+	// we drive the cycle through the validated snapshot regardless.
+	// Defensive fallback: if the caller passed nil, fall back to a
+	// fresh Load so direct test paths still work.
+	if hooks == nil {
+		hooks = r.adversarialHooks.Load()
+	}
 	if hooks == nil || !hooks.Validate() {
 		return nil, nil, runner.ErrAdversaryHooksNotWired
 	}

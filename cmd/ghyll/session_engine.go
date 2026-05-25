@@ -131,6 +131,14 @@ type engineRuntime struct {
 	// unsubscribe call is idempotent so closeEngine can invoke it
 	// unconditionally.
 	auditTagUnsubscribe func()
+
+	// arrowInvalidationsUnsubscribe drops the OpEventArrowInvalidated
+	// → arrow_invalidations subscriber on closeEngine. Diamond v4 /
+	// integrator-pass I-H-1: the audit-tagged sibling closure
+	// (W-M-2) holds its closer for this exact reason; this untagged
+	// sibling repeats the pattern so a late publish after the store
+	// closes cannot call InsertArrowInvalidation on a dead handle.
+	arrowInvalidationsUnsubscribe func()
 }
 
 // Engine-runtime errors. Surfaced so callers can switch on them.
@@ -641,7 +649,15 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 	// writer). The bus fans out off-goroutine; write failures log
 	// and continue — the row loss surfaces via the bus event count
 	// vs the table row count at next session start.
-	r.bus.Subscribe(func(e runner.OperatorEvent) {
+	//
+	// Integrator-pass I-H-1 closure: the audit-tagged sibling at
+	// line 618 captures its closer via auditTagUnsubscribe so
+	// closeEngine drops the dangling callback before r.store closes.
+	// This subscriber repeats the same pattern — without the handle,
+	// a late OpEventArrowInvalidated published after closeEngine
+	// would call into a closed store. Capture the closer the same
+	// way W-M-2 did for the audit-tagged sibling.
+	r.arrowInvalidationsUnsubscribe = r.bus.Subscribe(func(e runner.OperatorEvent) {
 		if e.Kind != runner.OpEventArrowInvalidated {
 			return
 		}
@@ -707,6 +723,15 @@ func (r *engineRuntime) closeEngine() {
 	if r.auditTagUnsubscribe != nil {
 		r.auditTagUnsubscribe()
 		r.auditTagUnsubscribe = nil
+	}
+	// I-H-1 closure: mirror the W-M-2 pattern for the untagged
+	// arrow_invalidations subscriber so a late bus event after
+	// closeEngine cannot call InsertArrowInvalidation on a closed
+	// store (the call would return ErrEngineClosed; the structural
+	// fix matches W-M-2).
+	if r.arrowInvalidationsUnsubscribe != nil {
+		r.arrowInvalidationsUnsubscribe()
+		r.arrowInvalidationsUnsubscribe = nil
 	}
 	if r.journal != nil {
 		r.journal.Close()

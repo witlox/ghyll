@@ -1390,6 +1390,14 @@ func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
 	if line == "/adversary" || strings.HasPrefix(line, "/adversary ") {
 		return s.handleAdversaryCommand(strings.TrimSpace(strings.TrimPrefix(line, "/adversary")))
 	}
+	// Diamond v4 / I-C-1 closure: /invalidate-arrow produces
+	// OpEventArrowInvalidated; the observer wired in attachJournal
+	// persists the row to .ghyll/engine.db arrow_invalidations
+	// (ADR-v4-008). Refuses without an op-id since the audit row
+	// carries operator identity.
+	if line == "/invalidate-arrow" || strings.HasPrefix(line, "/invalidate-arrow ") {
+		return s.handleInvalidateArrowCommand(strings.TrimSpace(strings.TrimPrefix(line, "/invalidate-arrow")))
+	}
 
 	switch line {
 	case "/exit":

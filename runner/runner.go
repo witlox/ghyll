@@ -293,6 +293,14 @@ func (r *Registry) Replace(concept string, e Evaluator) error {
 // The identity captures which Generation of the registration was
 // observed, so a concurrent Replace does not invalidate the
 // EvaluationRun's attestation.
+//
+// IMPORTANT (integrator-pass I-M-2 closure): Lookup consults ONLY the
+// plain table. A concept registered via RegisterWithRunner / replaced
+// via registerOrReplaceWithRunner lives in the runner-typed table and
+// is INVISIBLE to this method. Callers asking "is this concept
+// registered anywhere" must use Registered(concept) (or check both
+// Lookup AND LookupWithRunner). The two-table architecture lands per
+// ADR-v4-006; Runner.Evaluate dispatches across both transparently.
 func (r *Registry) Lookup(concept string) (Evaluator, EvaluatorIdentity, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -301,6 +309,24 @@ func (r *Registry) Lookup(concept string) (Evaluator, EvaluatorIdentity, bool) {
 		return nil, EvaluatorIdentity{}, false
 	}
 	return reg.fn, reg.identity, true
+}
+
+// Registered reports whether a concept is registered in EITHER the
+// plain or the runner-typed table. Use this when you only need to
+// know "is the concept resolvable" without caring which dispatch
+// path the runner will pick. Integrator-pass I-M-2 closure: gives
+// downstream consumers a unified-membership predicate so a caller
+// who forgets the two-table split doesn't silently miss the 4
+// EvaluatorWithRunner universals (uniquedef, predicateform,
+// moderepostate, singleactiverole).
+func (r *Registry) Registered(concept string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.by[concept]; ok {
+		return true
+	}
+	_, ok := r.byRunner[concept]
+	return ok
 }
 
 // Count returns the number of registered evaluators across BOTH the

@@ -52,6 +52,38 @@ func TestScenario_Registry_SnapshotIsolation(t *testing.T) {
 	}
 }
 
+// TestScenario_Registry_RegisteredPredicate_BothTables verifies
+// I-M-2 closure: the new unified-membership predicate consults both
+// the plain and the runner-typed tables. Pre-fix, callers asking
+// "is this concept registered" via the public Lookup method would
+// silently miss the EvaluatorWithRunner universals (e.g.
+// single-active-role-instance) — the ADR-v4-006 two-table split is
+// transparent inside Runner.Evaluate but opaque to other callers.
+func TestScenario_Registry_RegisteredPredicate_BothTables(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	RegisterBuiltins(r)
+	// Plain-table concept: Lookup AND Registered both see it.
+	if _, _, ok := r.Lookup("no-todo-marker"); !ok {
+		t.Fatal("Lookup should resolve plain-table builtin")
+	}
+	if !r.Registered("no-todo-marker") {
+		t.Fatal("Registered should resolve plain-table builtin")
+	}
+	// Runner-typed concept (single-active-role-instance): Lookup
+	// MUST NOT see it (it lives in byRunner); Registered MUST.
+	if _, _, ok := r.Lookup("single-active-role-instance"); ok {
+		t.Fatal("Lookup should NOT resolve runner-typed builtin (I-M-2 contract)")
+	}
+	if !r.Registered("single-active-role-instance") {
+		t.Fatal("Registered MUST resolve runner-typed builtin (I-M-2 closure)")
+	}
+	// Unregistered concept: both return false.
+	if r.Registered("does-not-exist") {
+		t.Fatal("Registered should return false for unknown concept")
+	}
+}
+
 func TestScenario_Registry_SwapIntoAtomicity(t *testing.T) {
 	t.Parallel()
 	live := NewRegistry()

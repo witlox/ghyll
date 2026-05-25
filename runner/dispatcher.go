@@ -131,7 +131,16 @@ type PassDispatcher struct {
 // (runDispatcherAdversarialPhase) per ADR-v4-007. Returning a
 // non-converged outcome means Dispatch must early-return with
 // ArrowStatusAbortedRemediation (R23 closure).
-type AdversarialPhaseFn func(ctx context.Context, req *DispatchRequest, passID string, sensitive []Clause) (report *RemediationReport, verifyClauses []Clause, err error)
+//
+// Integrator-pass I-H-3 closure: the dispatcher's snapshot of the
+// AdversarialHooks bundle (loaded ONCE at the gate-check) flows
+// through as `hooks` so the phase fn never re-loads from the atomic
+// pointer. A concurrent `/adversary disable` between the dispatcher's
+// gate and the phase invocation cannot now cause the cycle to
+// observe a nil bundle mid-dispatch (the prior shape did a second
+// Load() inside the phase and aborted the already-open pass with
+// adversary-hooks-not-wired).
+type AdversarialPhaseFn func(ctx context.Context, req *DispatchRequest, passID string, sensitive []Clause, hooks *AdversarialHooks) (report *RemediationReport, verifyClauses []Clause, err error)
 
 // DispatchRequest is the single-arrow dispatch payload.
 type DispatchRequest struct {
@@ -293,7 +302,11 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 	verifyClauses := req.Arrow.Clauses
 	if runCycle && d.AdversarialPhase != nil {
 		ctx = IncrementRecursionDepth(ctx)
-		report, vc, advErr := d.AdversarialPhase(ctx, &req, passID, sensitive)
+		// I-H-3 closure: pass the already-loaded hooks snapshot so
+		// the phase fn never re-loads from the atomic pointer. The
+		// snapshot was validated by the gate-check above; the phase
+		// uses it directly.
+		report, vc, advErr := d.AdversarialPhase(ctx, &req, passID, sensitive, loadedHooks)
 		if advErr != nil {
 			pass.Abort(fmt.Sprintf("adversarial-phase: %v", advErr))
 			return res, advErr

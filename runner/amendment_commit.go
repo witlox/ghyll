@@ -118,14 +118,28 @@ var (
 // already exists (Grid.Append already enforces this via
 // ErrArrowAlreadyDeclared).
 //
-// Ordering: pass-abort FIRST (stop in-flight work that runs against
-// the now-invalidated contract), THEN grid append (introduce the new
-// contract), THEN queue MarkDrained (persist the drained_at marker
-// via the journal), THEN bus event (operator-facing signal).
+// Ordering (integrator-pass I-M-1 closure): grid append FIRST
+// (introduce the new contract), THEN binding swap (live registry
+// follows the grid), THEN pass-abort (stop in-flight work; close
+// events now correlate to the NEW bindings — subscribers that
+// re-read the live registry on close see the contract that
+// supersedes the aborted pass, not the one that just died), THEN
+// queue MarkDrained (persist the drained_at marker via the
+// journal), THEN bus event (operator-facing signal).
+//
+// The prior ordering (abort → append → swap) had OpEventPassClosed
+// firing while bindings still pointed at the old contract; a
+// status-CLI subscriber that re-rendered the affected arrow on
+// close would have seen pre-amendment bindings. The reordered
+// invariant: any subscriber correlating a close event to a live-
+// registry lookup observes the new contract that superseded the
+// aborted pass.
 //
 // If grid append fails part-way, the committer:
-//   - Has already aborted the affected in-flight passes (the
-//     source-arrow contract IS invalidated; passes can't continue).
+//   - Has NOT yet aborted in-flight passes (the new contract did
+//     not fully arrive; the old contract is still the authority).
+//     Aborts still run AFTER the partial append so the passes
+//     observe the partial-amended grid, not a clean rollback.
 //   - Persists the drained_at for the amendment regardless (the
 //     analyst's decision to commit IS final; the partial append is a
 //     mechanical error to surface separately).
@@ -195,21 +209,7 @@ func (c *AmendmentCommitter) Commit(ctx context.Context, req CommitRequest) (*Co
 		CommittedAt:       now(),
 	}
 
-	// 1. Abort in-flight passes on the SourceArrow FIRST. The
-	//    amendment invalidates the contract those passes are running
-	//    under; they must stop before the new grid arrives. Doing this
-	//    before Append means a partial append still aborts the
-	//    affected passes — they don't continue running against a
-	//    half-amended grid.
-	for _, p := range c.Passes.All() {
-		if p.ArrowID() == req.Amendment.SourceArrow && p.State() == PassStateOpen {
-			p.Abort(fmt.Sprintf("amendment %s drained: %s",
-				req.Amendment.ID, req.Amendment.Reason))
-			res.AbortedPasses = append(res.AbortedPasses, p.ID())
-		}
-	}
-
-	// 2. Append new arrows to the grid. Each Append bumps the
+	// 1. Append new arrows to the grid. Each Append bumps the
 	//    version counter; the final version is the grid v(N+1)
 	//    semantic. If any append fails, the partial state is
 	//    surfaced via res.AppendedArrows + the wrapped error.
@@ -224,27 +224,55 @@ func (c *AmendmentCommitter) Commit(ctx context.Context, req CommitRequest) (*Co
 	}
 	res.GridVersionAfter = c.Grid.Version()
 
-	// 2a. Atomically swap the snapshot registry into the live
-	//     runtime (ADR-v4-003 step 6a). The snapshot was built
-	//     pre-mutation; swapping AFTER append means concurrent
-	//     dispatchers see OLD or NEW bindings, never partial.
+	// 2. Atomically swap the snapshot registry into the live
+	//    runtime (ADR-v4-003 step 6a). The snapshot was built
+	//    pre-mutation; swapping AFTER append means concurrent
+	//    dispatchers see OLD or NEW bindings, never partial.
 	if swap != nil && appendErr == nil {
 		swap()
 	}
 
-	// 3. Persist drained_at. The committer marks the amendment as
+	// 3. Abort in-flight passes on the SourceArrow. The amendment
+	//    invalidates the contract those passes are running under;
+	//    they must stop now that the new grid + bindings are live.
+	//    Doing this AFTER the swap (I-M-1 closure) means
+	//    OpEventPassClosed fires while subscribers' live-registry
+	//    lookups for the affected arrow see the NEW contract — a
+	//    subscriber correlating the close event to a registry
+	//    lookup no longer races against a half-applied amendment.
+	for _, p := range c.Passes.All() {
+		if p.ArrowID() == req.Amendment.SourceArrow && p.State() == PassStateOpen {
+			p.Abort(fmt.Sprintf("amendment %s drained: %s",
+				req.Amendment.ID, req.Amendment.Reason))
+			res.AbortedPasses = append(res.AbortedPasses, p.ID())
+		}
+	}
+
+	// 4. Persist drained_at. The committer marks the amendment as
 	//    drained on the queue, which emits AmendmentEventDrain. The
 	//    engine.Journal's existing AmendmentObserver handler at
 	//    engine/journal.go:handleAmendment then writes the drained_at
 	//    column. Without this step, the amendment re-replays as
 	//    pending on next session start.
+	//
+	// I-M-3 (advisory) is documented at lines 126-142: drained_at is
+	// persisted even on partial-append failure so the analyst's
+	// commit decision is final; the integrator-pass review noted the
+	// runtime-vs-persisted-grid drift but treats it as deliberate.
 	if c.Queue != nil {
 		c.Queue.MarkDrained(req.Amendment.ID)
 	}
 
-	// 4. Publish the amendment-drained operator event so
+	// 5. Publish the amendment-drained operator event so
 	//    subscribers (JSONL writer, status CLI, future operator UI)
 	//    see the commit's outcome.
+	//
+	// I-M-3 closure: populate the typed Payload per ADR-v4-005 so
+	// the runtime-vs-persisted-grid drift on partial-append-error is
+	// MACHINE-observable, not just embedded in the human-readable
+	// Detail. Subscribers comparing outcome=partial-append-error
+	// against the live grid version can detect the desync without
+	// parsing free text.
 	if c.Bus != nil {
 		status := "complete"
 		if appendErr != nil {
@@ -257,6 +285,15 @@ func (c *AmendmentCommitter) Commit(ctx context.Context, req CommitRequest) (*Co
 				req.Amendment.ID, req.Amendment.Reason, status,
 				len(res.AppendedArrows), len(res.AbortedPasses),
 				res.GridVersionBefore, res.GridVersionAfter),
+			Payload: map[string]string{
+				"amendment_id":        req.Amendment.ID,
+				"source_arrow":        req.Amendment.SourceArrow,
+				"grid_version_before": fmt.Sprintf("%d", res.GridVersionBefore),
+				"grid_version_after":  fmt.Sprintf("%d", res.GridVersionAfter),
+				"arrows_added":        fmt.Sprintf("%d", len(res.AppendedArrows)),
+				"passes_aborted":      fmt.Sprintf("%d", len(res.AbortedPasses)),
+				"outcome":             status,
+			},
 		})
 	}
 

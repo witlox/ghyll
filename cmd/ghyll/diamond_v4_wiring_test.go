@@ -744,7 +744,7 @@ func TestScenario_AdversaryFactoryContract_NilReturnRefuses(t *testing.T) {
 		ActualTier: runner.DepthRankShallow,
 	}
 	_, _, gotErr := rt.runDispatcherAdversarialPhase(context.Background(),
-		req, "P1", req.Arrow.Clauses)
+		req, "P1", req.Arrow.Clauses, badBundle)
 	if !errors.Is(gotErr, ErrAdversaryFactoryContract) {
 		t.Fatalf("expected ErrAdversaryFactoryContract, got: %v", gotErr)
 	}
