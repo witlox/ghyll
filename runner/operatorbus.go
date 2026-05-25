@@ -90,6 +90,13 @@ const (
 	// op_id, reason, timestamp.
 	OpEventArrowInvalidated OperatorEventKind = "arrow-invalidated"
 
+	// OpEventBindingMissing — verifyBindingsCoverage detected a
+	// declared (concept, language) pair that has no registered
+	// evaluator. Diamond v4 / R17 + R18 closure (cmd/ghyll). Detail
+	// carries the missing key list; Payload carries
+	// `count`, `keys` (comma-joined).
+	OpEventBindingMissing OperatorEventKind = "binding-missing"
+
 	// Tier 2 events (ADR-016 + gate-1 remediation).
 
 	// OpEventClauseFailVerdict — operator submitted verdict=fail

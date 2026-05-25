@@ -19,7 +19,7 @@ import (
 func newTier0Runtime(t *testing.T) (*engineRuntime, string) {
 	t.Helper()
 	workdir := t.TempDir()
-	rt, err := openEngineWithOptions(workdir, nil, 3)
+	rt, err := openEngineWithOptions(workdir, nil, 3, nil)
 	if err != nil {
 		t.Fatalf("openEngineWithOptions: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestScenario_Tier0_Replay_DoesNotDoubleAppendJSONL(t *testing.T) {
 	// Second session — same workdir, same DB. Replay should
 	// re-populate the in-memory store, but the JSONL observer
 	// (subscribed post-replay) must NOT fire for replayed records.
-	rt2, err := openEngineWithOptions(workdir, nil, 3)
+	rt2, err := openEngineWithOptions(workdir, nil, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

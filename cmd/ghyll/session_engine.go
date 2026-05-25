@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/engine"
 	"github.com/witlox/ghyll/runner"
 )
@@ -102,6 +103,27 @@ type engineRuntime struct {
 	// concurrent passes — only legal under disjoint
 	// (role, context) tuples) don't collide on IDs.
 	passIDSeq atomic.Uint64
+
+	// gridFile holds the bootstrap.Grid (the untyped, on-disk
+	// shape) so the amendment-commit overlay path can mutate it
+	// in place under gridFileMu. Diamond v4 / design C3 closure
+	// (R10 + R17 + R18). May be nil for projects without a grid
+	// (e.g., the auto-engine path in tests).
+	gridFile   *bootstrap.Grid
+	gridFileMu sync.RWMutex
+
+	// committer drives an amendment from a CommitRequest through
+	// to grid v(N+1) per gates.md §3.7. Constructed in
+	// openEngineWithOptions; immutable post-construct (design M11).
+	// Diamond v4 / Gap 2 closure. Wired into /drain-amendments.
+	committer *runner.AmendmentCommitter
+
+	// adversarialHooks is the atomic-pointer bundle that
+	// PassDispatcher consults at Dispatch-time to drive the
+	// adversarial cycle (Gap 1). Empty = disabled (depth-sensitive
+	// arrows return ErrAdversaryHooksNotWired). The /adversary
+	// slash command toggles via atomic Store/Clear.
+	adversarialHooks runner.AtomicAdversarialHooks
 }
 
 // Engine-runtime errors. Surfaced so callers can switch on them.
@@ -122,14 +144,22 @@ var (
 // the grid file's `insufficient-basis-rounds-max` setting; pass 0
 // to disable escalation.
 func openEngine(workdir string, logger *slog.Logger) (*engineRuntime, error) {
-	return openEngineWithOptions(workdir, logger, 0)
+	return openEngineWithOptions(workdir, logger, 0, nil)
 }
 
 // openEngineWithOptions is openEngine with explicit configuration
 // hooks. Kept distinct so the simpler openEngine signature stays
 // compatible with existing callers that don't yet plumb the grid
 // file's settings through.
-func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int) (*engineRuntime, error) {
+//
+// Diamond v4 / Gap 3 closure (ADR-v4-007 + R1 + R3 + R7 + R21): the
+// signature accepts the bootstrap.Grid so registerGridBindings can
+// populate the runtime registry with one BindingEvaluator per
+// declaration in grid.LanguageBindings. grid==nil is permitted for
+// projects without an initialized grid (the binding-coverage check
+// then trivially passes); production callers in session.go always
+// supply a non-nil grid.
+func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int, grid *bootstrap.Grid) (*engineRuntime, error) {
 	_ = logger
 	dbPath, err := defaultEngineDBPath(workdir)
 	if err != nil {
@@ -144,6 +174,40 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 	}
 	reg := runner.NewRegistry()
 	runner.RegisterBuiltins(reg)
+
+	// Diamond v4 / Gap 3 (R1 + ADR-v4-007): plumb the on-disk
+	// language-binding declarations into the registry BEFORE
+	// any clause-evaluation path can ask for them. Failure leaves
+	// the store cleanly closed; no half-initialized runtime escapes.
+	if err := registerGridBindings(reg, grid, workdir); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("engine register-grid-bindings: %w", err)
+	}
+	// R17 + R18 pre-Replay coverage check against the bootstrap
+	// (untyped) grid: every arrow's clauses with a language-bound
+	// concept must resolve to a registered binding. Surface schema
+	// errors (R18) before we even try to walk persisted state.
+	if grid != nil {
+		needed, validations, walkErr := requiredBindingsFromUntypedGrid(grid)
+		if walkErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("engine grid scan: %w", walkErr)
+		}
+		if len(validations) > 0 {
+			_ = store.Close()
+			return nil, fmt.Errorf("engine grid bindings schema: %s", validations[0])
+		}
+		var missing []bootstrap.BindingKey
+		for _, k := range needed {
+			if _, _, ok := reg.Lookup(k.String()); !ok {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) > 0 {
+			_ = store.Close()
+			return nil, &bootstrap.MissingBindingError{Missing: missing}
+		}
+	}
 
 	// Tier-0: v2 runtime components. Bus is constructed first; the
 	// tracker takes a reference so it can publish escalation events.
@@ -163,8 +227,25 @@ func openEngineWithOptions(workdir string, logger *slog.Logger, ibRoundsMax int)
 		dbPath:          dbPath,
 		workdir:         workdir,
 		ibRoundsMax:     ibRoundsMax,
+		gridFile:        grid,
 	}
 	rt.jsonlPath = filepath.Join(filepath.Dir(dbPath), "attestations.jsonl")
+
+	// Diamond v4 / Gap 2 (C-3 closure): build the AmendmentCommitter
+	// at session open so /drain-amendments has a fully-wired
+	// committer reachable from the chat loop. BindingsReRegister
+	// closes over rt so it can read NewLanguageBindings and produce
+	// a snapshot registry that swaps in atomically on success.
+	rt.committer = &runner.AmendmentCommitter{
+		Grid:               rt.grid,
+		Passes:             rt.passes,
+		Bus:                rt.bus,
+		Queue:              rt.amendments,
+		LiveRegistry:       rt.registry,
+		Workdir:            workdir,
+		Now:                time.Now,
+		BindingsReRegister: rt.buildRegistryOverlay,
+	}
 
 	// Tier 1 (ADR-015 Part C): JSONL is source of truth. Load
 	// records from the audit file BEFORE engine.Replay so the
@@ -335,6 +416,100 @@ func (r *engineRuntime) replayEngine(ctx context.Context) (engine.ReplayCounts, 
 	return counts, nil
 }
 
+// verifyBindingsCoveragePostReplay walks the typed runner.Grid
+// (populated by Replay) AND the bootstrap (untyped) grid file, then
+// asserts every required (concept, language) pair is in the
+// registry. Returns *bootstrap.MissingBindingError on miss; nil on
+// success. Diamond v4 / R17 closure. Called from session.initEngine
+// after attachJournal; on miss the operator-facing message routes
+// through the modal driver / session output.
+func (r *engineRuntime) verifyBindingsCoveragePostReplay() error {
+	if r == nil {
+		return nil
+	}
+	r.gridFileMu.RLock()
+	gf := r.gridFile
+	r.gridFileMu.RUnlock()
+	return verifyBindingsCoverage(r.registry, r.grid, gf)
+}
+
+// buildRegistryOverlay constructs a snapshot of the live registry,
+// applies the amendment's NewLanguageBindings on top, and returns a
+// closure that atomically swaps the snapshot into the live registry
+// (R10 closure). Wired into AmendmentCommitter.BindingsReRegister.
+//
+// On success, the swap closure is invoked by the committer AFTER
+// the grid append succeeds (ADR-v4-003 step 6a). If the overlay
+// construction fails (malformed binding, unregistered concept), the
+// commit aborts BEFORE the grid version bumps.
+func (r *engineRuntime) buildRegistryOverlay(req runner.CommitRequest) (*runner.Registry, func(), error) {
+	if r == nil || r.registry == nil {
+		return nil, nil, errors.New("buildRegistryOverlay: nil receiver / registry")
+	}
+	snap := r.registry.Snapshot()
+	for k, v := range req.NewLanguageBindings {
+		if v == "" {
+			return nil, nil, fmt.Errorf("%w: %s", bootstrap.ErrBindingCommandEmpty, k)
+		}
+		parsed, err := bootstrap.BindingKeysFromStrings([]string{k})
+		if err != nil {
+			return nil, nil, fmt.Errorf("buildRegistryOverlay: parse %q: %w", k, err)
+		}
+		key := parsed[0]
+		if !runner.IsLanguageBoundConcept(key.Concept) {
+			return nil, nil, fmt.Errorf("%w: %q is not a language-bound concept (key=%s)",
+				ErrLanguageBindingInvalid, key.Concept, k)
+		}
+		eval := runner.NewBindingEvaluator(v,
+			runner.WithWorkingDir(r.workdir),
+			runner.WithTimeout(runner.DefaultBindingTimeout),
+		)
+		full := key.String()
+		if err := snap.Register(full, eval); err != nil {
+			if errors.Is(err, runner.ErrConceptAlreadyRegistered) {
+				if rerr := snap.Replace(full, eval); rerr != nil {
+					return nil, nil, fmt.Errorf("buildRegistryOverlay: replace %q: %w", full, rerr)
+				}
+				continue
+			}
+			return nil, nil, fmt.Errorf("buildRegistryOverlay: register %q: %w", full, err)
+		}
+	}
+	swap := func() { snap.SwapInto(r.registry) }
+	return snap, swap, nil
+}
+
+// Committer returns the AmendmentCommitter wired for this runtime.
+// Nil receiver / nil runtime returns nil.
+func (r *engineRuntime) Committer() *runner.AmendmentCommitter {
+	if r == nil {
+		return nil
+	}
+	return r.committer
+}
+
+// AdversarialHooks returns the runtime's atomic-pointer hook bundle.
+// /adversary slash command swaps into this via Store/Clear.
+func (r *engineRuntime) AdversarialHooks() *runner.AtomicAdversarialHooks {
+	if r == nil {
+		return nil
+	}
+	return &r.adversarialHooks
+}
+
+// GridFile returns the bootstrap (untyped) grid the engine was
+// constructed with. May be nil for projects without a grid file.
+// Reads under gridFileMu so concurrent amendment-overlay swaps see a
+// consistent value.
+func (r *engineRuntime) GridFile() *bootstrap.Grid {
+	if r == nil {
+		return nil
+	}
+	r.gridFileMu.RLock()
+	defer r.gridFileMu.RUnlock()
+	return r.gridFile
+}
+
 // RecoveryReport returns the captured Recovery output from the
 // most recent replayEngine call. Empty when Recovery was a no-op
 // or has not run.
@@ -432,6 +607,46 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		r.ibTracker.Record(e.Record.ArrowID, e.Record.ClauseID, e.Record.Verdict)
 	})
 
+	// Diamond v4 / ADR-v4-008 + R28: persist OpEventArrowInvalidated
+	// into the arrow_invalidations table. Subscribed as untagged
+	// (audit-tagged bus subscribers are reserved for the JSONL
+	// writer). The bus fans out off-goroutine; write failures log
+	// and continue — the row loss surfaces via the bus event count
+	// vs the table row count at next session start.
+	r.bus.Subscribe(func(e runner.OperatorEvent) {
+		if e.Kind != runner.OpEventArrowInvalidated {
+			return
+		}
+		opID, reason, source := "", e.Detail, "operator"
+		if e.Payload != nil {
+			if v := e.Payload["op_id"]; v != "" {
+				opID = v
+			}
+			if v := e.Payload["reason"]; v != "" {
+				reason = v
+			}
+			if v := e.Payload["source"]; v != "" {
+				source = v
+			}
+		}
+		at := e.Timestamp.UTC().Format(time.RFC3339Nano)
+		if err := r.store.InsertArrowInvalidation(
+			context.Background(),
+			e.ArrowID, opID, reason, source, at,
+		); err != nil && logger != nil {
+			logger.Warn("engine: arrow_invalidations insert failed",
+				"arrow_id", e.ArrowID, "err", err)
+		}
+	})
+
+	// Diamond v4 / R6 closure: tag the JSONL writer subscription on
+	// the bus so the dispatcher's RequireAuditSubscriber predicate
+	// observes the audit floor is met. The existing AttestationStore
+	// Observe-fanout above persists records to disk; this tagged
+	// subscription is a membership marker (no-op callback), not a
+	// duplicate writer.
+	r.bus.SubscribeTagged(func(runner.OperatorEvent) {}, "audit")
+
 	r.journalAttached = true
 	return nil
 }
@@ -511,13 +726,16 @@ func (r *engineRuntime) dispatcher() *runner.PassDispatcher {
 		return nil
 	}
 	return &runner.PassDispatcher{
-		LockTable:         r.roleLocks,
-		Passes:            r.passes,
-		Bus:               r.bus,
-		AttestationStore:  r.attestations,
-		RunnerFactory:     r.NewRunner,
-		SeverityThreshold: runner.SeverityMedium,
-		PassIDGen:         func() string { return fmt.Sprintf("p-%d", r.nextPassID()) },
+		LockTable:            r.roleLocks,
+		Passes:               r.passes,
+		Bus:                  r.bus,
+		AttestationStore:     r.attestations,
+		RunnerFactory:        r.NewRunner,
+		SeverityThreshold:    runner.SeverityMedium,
+		PassIDGen:            func() string { return fmt.Sprintf("p-%d", r.nextPassID()) },
+		Hooks:                &r.adversarialHooks,
+		MaxRecursiveDispatch: runner.DefaultMaxRecursiveDispatch,
+		AdversarialPhase:     r.runDispatcherAdversarialPhase,
 	}
 }
 

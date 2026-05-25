@@ -103,7 +103,35 @@ type PassDispatcher struct {
 	// dispatcher does not inspect attestations; clauses derive
 	// purely from their EndStatus.
 	AttestationStore *AttestationStore
+
+	// Hooks holds the active AdversarialHooks bundle (diamond v4 /
+	// Gap 1). Nil = the dispatcher refuses any depth-sensitive
+	// arrow with ErrAdversaryHooksNotWired. The atomic pointer
+	// admits race-clean swap when the operator types /adversary
+	// enable|disable (ADR-v4-002).
+	Hooks *AtomicAdversarialHooks
+
+	// MaxRecursiveDispatch caps nested Dispatch depth. Zero ->
+	// DefaultMaxRecursiveDispatch (4). Defense-in-depth per R11.
+	MaxRecursiveDispatch int
+
+	// AdversarialPhase is the optional helper that runs the
+	// adversarial + remediation cycle on depth-sensitive clauses.
+	// When non-nil and Hooks is wired, Dispatch invokes it BEFORE
+	// running verification clauses. Returns (report, verifyClauses,
+	// err): a non-converged outcome leads Dispatch to early-return
+	// with ArrowStatusAbortedRemediation per R23 closure. When nil
+	// (test path / disabled), Dispatch runs vanilla verification
+	// over every clause unchanged.
+	AdversarialPhase AdversarialPhaseFn
 }
+
+// AdversarialPhaseFn is the dispatcher-injected adversarial cycle
+// runner. cmd/ghyll provides the concrete implementation
+// (runDispatcherAdversarialPhase) per ADR-v4-007. Returning a
+// non-converged outcome means Dispatch must early-return with
+// ArrowStatusAbortedRemediation (R23 closure).
+type AdversarialPhaseFn func(ctx context.Context, req *DispatchRequest, passID string, sensitive []Clause) (report *RemediationReport, verifyClauses []Clause, err error)
 
 // DispatchRequest is the single-arrow dispatch payload.
 type DispatchRequest struct {
@@ -190,6 +218,43 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 		now = time.Now
 	}
 
+	// Diamond v4 / Gap 1 (R6 + R11): pre-flight checks BEFORE the
+	// pass counter spins. A refused dispatch must not produce a
+	// pass row, must not mutate the registry, must not appear in
+	// the operator-facing pass history.
+	//
+	// Audit-floor check: production paths attach the JSONL writer
+	// via SubscribeTagged(_, "audit"); if no such subscriber is
+	// present, the dispatch's lifecycle would not be persisted.
+	// Refuse rather than silently drop. Nil bus = skipped (test path).
+	if err := RequireAuditSubscriber(d.Bus); err != nil {
+		return nil, err
+	}
+	// Recursion-budget check (defense-in-depth per R11): refuses
+	// re-entrant dispatch beyond MaxRecursiveDispatch hops.
+	budget := d.MaxRecursiveDispatch
+	if budget <= 0 {
+		budget = DefaultMaxRecursiveDispatch
+	}
+	if err := CheckRecursionBudget(ctx, budget); err != nil {
+		return nil, err
+	}
+
+	// Adversarial cycle gating: partition the clause set so we can
+	// short-circuit the depth-robust-only path. R14 + R23 closure.
+	sensitive, _ := PartitionClauses(req.Arrow.Clauses)
+	runCycle := len(sensitive) > 0 && req.Role != "init" && req.Role != "adversary"
+	var loadedHooks *AdversarialHooks
+	if d.Hooks != nil {
+		loadedHooks = d.Hooks.Load()
+	}
+	if runCycle && d.AdversarialPhase != nil {
+		// Hooks bundle missing -> refuse BEFORE pass counter spins.
+		if loadedHooks == nil || !loadedHooks.Validate() {
+			return nil, ErrAdversaryHooksNotWired
+		}
+	}
+
 	passID := d.PassIDGen()
 	pass, err := OpenPass(PassOptions{
 		PassID:      passID,
@@ -219,9 +284,36 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 	}
 
 	res := &DispatchResult{PassID: passID}
-	clauseInputs := make([]ClauseDeriveInput, 0, len(req.Arrow.Clauses))
 
-	for i, clause := range req.Arrow.Clauses {
+	// Diamond v4 / Gap 1 (R23 + R13): run the adversarial cycle on
+	// depth-sensitive clauses BEFORE verification. Returns
+	// (report, verifyClauses, err). A non-converged outcome
+	// early-returns with ArrowStatusAbortedRemediation, bypassing
+	// DeriveArrowStatus BY DESIGN.
+	verifyClauses := req.Arrow.Clauses
+	if runCycle && d.AdversarialPhase != nil {
+		ctx = IncrementRecursionDepth(ctx)
+		report, vc, advErr := d.AdversarialPhase(ctx, &req, passID, sensitive)
+		if advErr != nil {
+			pass.Abort(fmt.Sprintf("adversarial-phase: %v", advErr))
+			return res, advErr
+		}
+		if report != nil && !remediationConverged(report.Outcome) {
+			reason := fmt.Sprintf("aborted-remediation:%s", string(report.Outcome))
+			pass.Abort(reason)
+			res.ArrowStatus = ArrowStatusAbortedRemediation
+			res.ClosedAt = pass.ClosedAt()
+			res.CloseReason = pass.CloseReason()
+			return res, nil
+		}
+		if len(vc) > 0 {
+			verifyClauses = vc
+		}
+	}
+
+	clauseInputs := make([]ClauseDeriveInput, 0, len(verifyClauses))
+
+	for i, clause := range verifyClauses {
 		if err := ctx.Err(); err != nil {
 			pass.Abort(fmt.Sprintf("context-cancelled: %v", err))
 			return nil, err
@@ -321,6 +413,15 @@ func (d *PassDispatcher) Dispatch(ctx context.Context, req DispatchRequest) (*Di
 	res.ClosedAt = pass.ClosedAt()
 	res.CloseReason = pass.CloseReason()
 	return res, nil
+}
+
+// remediationConverged reports whether the adversarial cycle's
+// terminal outcome is one of the "converged" family. Diamond v4 /
+// R23: any other outcome means the dispatcher early-returns with
+// ArrowStatusAbortedRemediation. Mirrors the loop's vocabulary in
+// runner/remediation.go.
+func remediationConverged(o RemediationOutcome) bool {
+	return o == RemediationConverged || o == RemediationConvergedWithUnevaluated
 }
 
 func (d *PassDispatcher) validate() error {

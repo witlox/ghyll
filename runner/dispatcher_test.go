@@ -22,10 +22,17 @@ func newDispatcherFixture(t *testing.T) *dispatcherFixture {
 	t.Helper()
 	reg := NewRegistry()
 	RegisterBuiltins(reg)
+	bus := NewOperatorBus()
+	// Diamond v4 / R6: RequireAuditSubscriber refuses when the bus
+	// has no audit-tagged subscriber. Production wires the JSONL
+	// writer via SubscribeTagged(_, "audit"); the dispatcher
+	// fixture mirrors that membership marker so existing
+	// pre-diamond-v4 tests still pass.
+	bus.SubscribeTagged(func(OperatorEvent) {}, "audit")
 	return &dispatcherFixture{
 		locks:    NewRoleContextLockTable(),
 		passes:   NewPassRegistry(),
-		bus:      NewOperatorBus(),
+		bus:      bus,
 		registry: reg,
 		runner:   NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankRealistic),
 	}

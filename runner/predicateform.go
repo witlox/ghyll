@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/witlox/ghyll/internal/pathglob"
 	"github.com/witlox/ghyll/internal/skipdirs"
 )
@@ -177,11 +179,13 @@ func locateCollectionEntries(_ context.Context, path, rel, locator string) ([]pr
 		}
 		return out, nil
 	case strings.HasPrefix(locator, "yaml-path:"):
-		// Best-effort: emit each line of the form `- <entry>` after
-		// the named path's header. TODO(diamond-v4): proper yaml-path
-		// + nested resolution.
+		// Dotted yaml-path locator: walks the document at the named
+		// path and emits each scalar entry. Path tokens follow the
+		// same vocabulary as unique-definition's yaml-path (`a.b`,
+		// `a[]`); the locator typically lands on a sequence whose
+		// elements are predicate strings.
 		fieldPath := strings.TrimPrefix(locator, "yaml-path:")
-		return parseYAMLListEntries(string(data), rel, fieldPath), nil
+		return parseYAMLPathPredicates(data, rel, fieldPath), nil
 	}
 	return nil, fmt.Errorf("unsupported collection-locator %q (expected markdown-section:..., regex:..., or yaml-path:...)", locator)
 }
@@ -215,35 +219,44 @@ func parseMarkdownSectionEntries(content, rel, section string) []predicateEntry 
 	return out
 }
 
-func parseYAMLListEntries(content, rel, fieldPath string) []predicateEntry {
+// parseYAMLPathPredicates uses yaml.v3 to walk the document at the
+// dotted path and emit one predicate entry per scalar at the leaf.
+// Mirrors uniquedef.go's walkYAMLPath; kept package-local to keep
+// the evaluator's responsibility surface small.
+func parseYAMLPathPredicates(data []byte, rel, fieldPath string) []predicateEntry {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	cur := &doc
+	if cur.Kind == yaml.DocumentNode && len(cur.Content) > 0 {
+		cur = cur.Content[0]
+	}
+	tokens := tokenizeYAMLPath(fieldPath)
+	nodes := walkYAMLNodes([]*yaml.Node{cur}, tokens)
 	var out []predicateEntry
-	sc := bufio.NewScanner(strings.NewReader(content))
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	lineNo := 0
-	inList := false
-	prefix := fieldPath + ":"
-	for sc.Scan() {
-		lineNo++
-		line := sc.Text()
-		trim := strings.TrimSpace(line)
-		if trim == prefix || strings.HasPrefix(trim, prefix+" ") {
-			inList = true
+	for _, n := range nodes {
+		if n == nil {
 			continue
 		}
-		if !inList {
-			continue
-		}
-		if strings.HasPrefix(line, "- ") || strings.HasPrefix(trim, "- ") {
-			entry := strings.TrimSpace(strings.TrimPrefix(trim, "-"))
-			entry = strings.Trim(entry, "\"'")
-			if entry != "" {
-				out = append(out, predicateEntry{Text: entry, Location: fmt.Sprintf("%s:%d", rel, lineNo)})
+		switch n.Kind {
+		case yaml.ScalarNode:
+			if n.Value == "" {
+				continue
 			}
-			continue
-		}
-		// A sibling key — leave the list.
-		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trim != "" {
-			inList = false
+			out = append(out, predicateEntry{
+				Text:     n.Value,
+				Location: fmt.Sprintf("%s:%d", rel, n.Line),
+			})
+		case yaml.SequenceNode:
+			for _, c := range n.Content {
+				if c.Kind == yaml.ScalarNode && c.Value != "" {
+					out = append(out, predicateEntry{
+						Text:     c.Value,
+						Location: fmt.Sprintf("%s:%d", rel, c.Line),
+					})
+				}
+			}
 		}
 	}
 	return out

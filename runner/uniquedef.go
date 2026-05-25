@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/witlox/ghyll/internal/pathglob"
 	"github.com/witlox/ghyll/internal/skipdirs"
 )
@@ -219,31 +221,37 @@ func compileFieldLocator(rule, field string) (fieldLocator, error) {
 			return hits, nil
 		}, nil
 	case strings.HasPrefix(rule, "yaml-path:"):
-		// Naive yaml-path: lines matching `<field>:` emit the value
-		// after the colon. Not a true yaml-path expression — v1
-		// best-effort. TODO(diamond-v4): wire a proper yaml-path
-		// evaluator (gopkg.in/yaml.v3 + path resolver).
+		// Dotted yaml-path locator: walks the YAML document at the
+		// declared path (e.g., `yaml-path:arrows[].id` or
+		// `yaml-path:bounded-contexts[].id`) and emits the value of
+		// `field` from each selected node. Path syntax:
+		//   - `a.b.c`     — nested map traversal
+		//   - `a[]`       — iterate over a sequence; descendants
+		//                   apply to each element
+		//   - `a.b[].id`  — common case: list of objects, pick `id`
+		// Leaf-only behavior: when the path resolves to a sequence
+		// of scalars, each scalar is emitted directly (the `field`
+		// arg is then a label only).
+		fieldPath := strings.TrimPrefix(rule, "yaml-path:")
 		return func(_ context.Context, path, rel string) ([]fieldHit, error) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return nil, nil
 			}
-			sc := bufio.NewScanner(strings.NewReader(string(data)))
-			sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-			lineNo := 0
+			var doc yaml.Node
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				return nil, nil
+			}
+			values := walkYAMLPath(&doc, fieldPath, field)
 			var hits []fieldHit
-			prefix := field + ":"
-			for sc.Scan() {
-				lineNo++
-				line := strings.TrimSpace(sc.Text())
-				if strings.HasPrefix(line, prefix) {
-					val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-					val = strings.Trim(val, "\"'")
-					if val == "" {
-						continue
-					}
-					hits = append(hits, fieldHit{Value: val, Location: fmt.Sprintf("%s:%d", rel, lineNo)})
+			for _, v := range values {
+				if v.value == "" {
+					continue
 				}
+				hits = append(hits, fieldHit{
+					Value:    v.value,
+					Location: fmt.Sprintf("%s:%d", rel, v.line),
+				})
 			}
 			return hits, nil
 		}, nil
@@ -256,4 +264,112 @@ func scanFileForFieldValues(ctx context.Context, path, rel string, locator field
 		return nil, ctx.Err()
 	}
 	return locator(ctx, path, rel)
+}
+
+// yamlPathHit pairs the extracted scalar with its source line so
+// the locator can report file:line of the hit.
+type yamlPathHit struct {
+	value string
+	line  int
+}
+
+// walkYAMLPath traverses the YAML document at the dotted path and
+// returns scalar values for the named field (when the path lands on
+// a sequence of mappings) or each scalar element (when the path
+// lands on a sequence of scalars).
+//
+// Path tokens are dot-separated; an empty `[]` suffix iterates a
+// sequence; bare names match map keys. Line numbers come from the
+// yaml-v3 node positions.
+func walkYAMLPath(root *yaml.Node, path, field string) []yamlPathHit {
+	if root == nil {
+		return nil
+	}
+	// Unwrap document node.
+	cur := root
+	if cur.Kind == yaml.DocumentNode && len(cur.Content) > 0 {
+		cur = cur.Content[0]
+	}
+	tokens := tokenizeYAMLPath(path)
+	nodes := walkYAMLNodes([]*yaml.Node{cur}, tokens)
+	var out []yamlPathHit
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		switch n.Kind {
+		case yaml.ScalarNode:
+			out = append(out, yamlPathHit{value: n.Value, line: n.Line})
+		case yaml.MappingNode:
+			if field == "" {
+				continue
+			}
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				v := n.Content[i+1]
+				if k.Kind == yaml.ScalarNode && k.Value == field && v.Kind == yaml.ScalarNode {
+					out = append(out, yamlPathHit{value: v.Value, line: v.Line})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// tokenizeYAMLPath splits a path like `a.b[].c` into ordered tokens:
+//   - bare names ("a", "b", "c")
+//   - "[]" for sequence iteration
+func tokenizeYAMLPath(p string) []string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return nil
+	}
+	var out []string
+	for _, raw := range strings.Split(p, ".") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if strings.HasSuffix(raw, "[]") {
+			name := strings.TrimSuffix(raw, "[]")
+			if name != "" {
+				out = append(out, name)
+			}
+			out = append(out, "[]")
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
+// walkYAMLNodes steps through tokens, descending mappings or
+// iterating sequences as directed.
+func walkYAMLNodes(nodes []*yaml.Node, tokens []string) []*yaml.Node {
+	for _, tok := range tokens {
+		var next []*yaml.Node
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			switch tok {
+			case "[]":
+				if n.Kind == yaml.SequenceNode {
+					next = append(next, n.Content...)
+				}
+			default:
+				if n.Kind == yaml.MappingNode {
+					for i := 0; i+1 < len(n.Content); i += 2 {
+						k := n.Content[i]
+						v := n.Content[i+1]
+						if k.Kind == yaml.ScalarNode && k.Value == tok {
+							next = append(next, v)
+						}
+					}
+				}
+			}
+		}
+		nodes = next
+	}
+	return nodes
 }

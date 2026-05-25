@@ -19,6 +19,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -95,6 +96,15 @@ func openStoreDSN(dsn string, readOnly bool) (*Store, error) {
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("engine: sort index: %w", err)
+	}
+	// Diamond v4 / ADR-v4-008: idempotent ALTER TABLE for the
+	// passes.remediation_outcome + passes.remediation_rounds_used
+	// columns. PRAGMA table_info gates the ADD so re-open is a
+	// no-op. Each ALTER runs in its own transaction so a single
+	// failure (column already present) doesn't roll back schema.
+	if err := migrateAddRemediationColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("engine: migrate remediation columns: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.ensureSchemaVersion(); err != nil {
@@ -377,4 +387,102 @@ CREATE TABLE IF NOT EXISTS passes (
 CREATE INDEX IF NOT EXISTS idx_passes_state    ON passes(state);
 CREATE INDEX IF NOT EXISTS idx_passes_arrow    ON passes(arrow_id);
 CREATE INDEX IF NOT EXISTS idx_passes_role_ctx ON passes(role, context);
+
+-- Diamond v4 / ADR-v4-008: arrow_invalidations records every
+-- /invalidate-arrow operator action AND every recovery republish
+-- where an amendment-driven invalidation didn't make it to disk
+-- before crash. One row per (arrow_id, invalidated_at) pair; the
+-- table is append-only.
+CREATE TABLE IF NOT EXISTS arrow_invalidations (
+	seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+	arrow_id        TEXT NOT NULL,
+	op_id           TEXT NOT NULL DEFAULT '',
+	reason          TEXT NOT NULL DEFAULT '',
+	source          TEXT NOT NULL DEFAULT '',
+	invalidated_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_arrow_invalidations_arrow
+	ON arrow_invalidations(arrow_id);
 `
+
+// migrateAddRemediationColumns is the idempotent ALTER TABLE that
+// adds the diamond-v4 / ADR-v4-008 columns to passes:
+//   - remediation_outcome    TEXT NOT NULL DEFAULT ”
+//   - remediation_rounds_used INTEGER NOT NULL DEFAULT 0
+//
+// Uses PRAGMA table_info to gate the ADD COLUMN — re-open against
+// a migrated DB is a no-op (no error). Each ADD COLUMN runs in its
+// own statement so a single conflict does not cascade.
+//
+// Per ADR-v4-008 "Status: Accepted": this migration MUST run from
+// OpenStore so the dispatcher's RemediationReport persistence path
+// (Tier-3 follow-up) has its target columns present at next open.
+func migrateAddRemediationColumns(db *sql.DB) error {
+	cols, err := tableColumns(db, "passes")
+	if err != nil {
+		return fmt.Errorf("inspect passes: %w", err)
+	}
+	if _, ok := cols["remediation_outcome"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE passes ADD COLUMN remediation_outcome TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("alter passes add remediation_outcome: %w", err)
+		}
+	}
+	if _, ok := cols["remediation_rounds_used"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE passes ADD COLUMN remediation_rounds_used INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("alter passes add remediation_rounds_used: %w", err)
+		}
+	}
+	return nil
+}
+
+// tableColumns returns the set of column names on the given table.
+// Empty map on a missing table (sqlite's PRAGMA table_info returns
+// no rows in that case).
+func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%q)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+// InsertArrowInvalidation appends an arrow-invalidation row.
+// Diamond v4 / ADR-v4-008 + R28. Source is one of
+// {operator, recovery, amendment}; reason carries the operator's
+// rationale (sanitized at the call site).
+func (s *Store) InsertArrowInvalidation(ctx context.Context, arrowID, opID, reason, source, at string) error {
+	if s == nil || s.db == nil {
+		return ErrEngineClosed
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO arrow_invalidations (
+			arrow_id, op_id, reason, source, invalidated_at
+		) VALUES (?, ?, ?, ?, ?)
+	`, arrowID, opID, reason, source, at)
+	return err
+}
+
+// CountArrowInvalidations returns the row count for the named arrow
+// across the audit log. Exposed for tests + the future status CLI.
+func (s *Store) CountArrowInvalidations(ctx context.Context, arrowID string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrEngineClosed
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM arrow_invalidations WHERE arrow_id = ?
+	`, arrowID).Scan(&n)
+	return n, err
+}

@@ -315,13 +315,25 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 	ibRoundsMax := 3
 	modalPendingMaxLen := bootstrap.DefaultModalPendingMaxLen
 	residueNoteMaxBytes := bootstrap.DefaultResidueNoteMaxBytes
+	var gridFile *bootstrap.Grid
 	if g, gerr := bootstrap.Read(s.workdir); gerr == nil && g != nil {
 		ibRoundsMax = g.InsufficientBasisRoundsMax
 		modalPendingMaxLen = g.ModalPendingMaxLen
 		residueNoteMaxBytes = g.ResidueNoteMaxBytes
+		gridFile = g
 	}
-	rt, err := openEngineWithOptions(s.workdir, nil, ibRoundsMax)
+	rt, err := openEngineWithOptions(s.workdir, nil, ibRoundsMax, gridFile)
 	if err != nil {
+		// Diamond v4 / Gap 3: a binding-coverage failure at session
+		// open is a hard refusal — the operator gets a stronger
+		// directed message so they know to /ghyll init or fix the
+		// grid. Other engine-open failures continue degraded.
+		var mbe *bootstrap.MissingBindingError
+		if errors.As(err, &mbe) {
+			s.output(fmt.Sprintf("✗ session refuses: %v; run `ghyll init` or fix the grid",
+				sanitizeOneLine(mbe.Error())))
+			return
+		}
 		s.output(fmt.Sprintf("⚠ engine open failed (continuing without persistence): %v", err))
 		return
 	}
@@ -338,6 +350,32 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		s.output(fmt.Sprintf("⚠ engine attachJournal failed: %v (continuing)", err))
 		rt.closeEngine()
 		return
+	}
+	// Diamond v4 / Gap 3 (R17 closure): post-Replay binding-coverage
+	// check. Walks both the typed runner.Grid and the untyped
+	// bootstrap.Grid; a miss surfaces via OpEventBindingMissing AND
+	// a console warning. Non-fatal at this seam — the binding-bound
+	// clauses simply fail at evaluate-time with ErrConceptNotRegistered;
+	// the operator sees the warning and either runs `ghyll init` or
+	// fixes the grid manually.
+	if cerr := rt.verifyBindingsCoveragePostReplay(); cerr != nil {
+		var mbe *bootstrap.MissingBindingError
+		keys := ""
+		if errors.As(cerr, &mbe) {
+			keys = mbe.Error()
+		} else {
+			keys = cerr.Error()
+		}
+		s.output(fmt.Sprintf("⚠ binding coverage incomplete: %s", sanitizeOneLine(keys)))
+		if rt.Bus() != nil {
+			rt.Bus().Publish(runner.OperatorEvent{
+				Kind:   runner.OpEventBindingMissing,
+				Detail: keys,
+				Payload: map[string]string{
+					"detail": keys,
+				},
+			})
+		}
 	}
 	s.engine = rt
 	// Tier 2 (ADR-016 Part D / Step 7+8): construct the modal
@@ -414,6 +452,31 @@ func (s *Session) initEngine(replayTimeout time.Duration) {
 		}
 		for _, ev := range rt.catchUpOverrideEvents {
 			s.output(fmt.Sprintf("  - %s %s", ev.Kind, sanitizeOneLine(ev.Detail)))
+		}
+	}
+
+	// Diamond v4 / Gap 2 (H-1 closure): surface pending amendments
+	// recovered from disk. Replay loads drained amendments; any with
+	// no drained_at remain in the queue and require an operator
+	// /drain-amendments. Banner + typed bus event so subscribers
+	// (modal driver / future status CLI) can react.
+	if pending := rt.Amendments().Pending(); len(pending) > 0 {
+		ids := make([]string, 0, len(pending))
+		for _, am := range pending {
+			ids = append(ids, am.ID)
+		}
+		s.output(fmt.Sprintf(
+			"⚠ %d pending amendment(s) — run `/drain-amendments` to apply: %s",
+			len(pending), sanitizeOneLine(strings.Join(ids, ", "))))
+		if rt.Bus() != nil {
+			rt.Bus().Publish(runner.OperatorEvent{
+				Kind:   runner.OpEventRecoveryAmendmentsPending,
+				Detail: fmt.Sprintf("count=%d", len(pending)),
+				Payload: map[string]string{
+					"count":         fmt.Sprintf("%d", len(pending)),
+					"amendment_ids": strings.Join(ids, ","),
+				},
+			})
 		}
 	}
 }
@@ -1296,6 +1359,16 @@ func (s *Session) DispatchSlashCommand(line string) SlashCommandResult {
 	}
 	if line == "/list-arrows" {
 		return s.handleListArrowsCommand()
+	}
+	// Diamond v4 / Gap 2: /drain-amendments drains the pending
+	// AmendmentQueue through the live AmendmentCommitter. No arg.
+	if line == "/drain-amendments" || strings.HasPrefix(line, "/drain-amendments ") {
+		return s.handleDrainAmendmentsCommand(strings.TrimSpace(strings.TrimPrefix(line, "/drain-amendments")))
+	}
+	// Diamond v4 / Gap 1: /adversary {enable|disable|status} toggles
+	// the AtomicAdversarialHooks bundle that PassDispatcher consults.
+	if line == "/adversary" || strings.HasPrefix(line, "/adversary ") {
+		return s.handleAdversaryCommand(strings.TrimSpace(strings.TrimPrefix(line, "/adversary")))
 	}
 
 	switch line {
