@@ -11,6 +11,75 @@ on-demand via `workflow_dispatch`), generates the version, creates the
 tag, builds cross-arch binaries, and cuts a GitHub release. Do NOT
 run `git tag` by hand.
 
+## v2026.30.x — polish sprint (post-v2026.30.243)
+
+Closes the 6 Medium+Low adversarial findings flagged in
+`specs/v4/post-prod-readiness-adversarial.md`, lifts 3 small
+attestation `@deferred` scenarios, and annotates the remaining
+12 `@deferred` Gherkin scenarios with GitHub-issue tracking
+pointers so future readers know where the design work lives.
+
+### Med+Low remediations (`d5315fa`)
+
+All six landed in a single commit with 8 new tests including a
+race-stress on the `/run-arrow` event subscriber:
+
+- **M-A**: `scanBrownfieldContexts` caps at `MaxBoundedContexts`
+  (256), matching `DeclareContext`. Returns
+  `ErrProfileTooManyContexts` on overflow.
+- **M-B**: `Grid.Write` creates `.ghyll/` at `0o700` (was `0o755`)
+  and `Chmod`s pre-existing dirs to the same — `engine.db` stat
+  no longer world-readable. YAML file itself stays `0o644`.
+- **M-C**: per-session `/op-id` REPL handler now routes through
+  the canonical `validateAndNormalizeOpID` shim; stores NFC.
+- **L-A**: `/run-arrow` subscriber no longer drops trailing
+  events; explicit `unsubscribe()` before the snapshot.
+- **L-B**: `ghyll init` success summary appends "(default
+  context auto-declared — no bounded contexts detected)" when
+  the operator's repo had no detected bounded contexts.
+- **L-C**: residue reason text is now byte-identical across
+  runs — `mapKeys` sorted before formatting.
+
+### Small attestation `@deferred` lifts (`517ca2d`)
+
+- **YAML-loader sentinel**: `bootstrap.ParseInsufficientBasisRoundsMax`
+  maps non-integer input to `ErrInsufficientBasisRoundsMaxNotInteger`;
+  ≤0 stays on `ErrInsufficientBasisRoundsMaxNonPositive`.
+- **Meta-described op-id rows**: dropped from Gherkin (5000-rune
+  string, U+202E RTL override, whitespace-only); now covered by
+  bootstrap unit tests as the single source of truth.
+- **Session-ends-mid-attestation**: wired via the existing
+  modalDriver pending queue + `SessionRegistry.Close` →
+  `Declare` path; round counter stays at 0 because the operator
+  never submitted a verdict.
+
+### Strict mode + dedup (already shipped earlier, confirmed)
+
+- `tests/acceptance/acceptance_test.go` runs with `Strict: true`.
+- Zero duplicate step regexes across 1150 registrations in 40
+  step files.
+
+### Spec annotations (`32eeebd`)
+
+Remaining 12 `@deferred` scenarios annotated with `Tracked:
+github.com/witlox/ghyll/issues/<N>` so the next design step is
+discoverable from the spec:
+
+- **#23** — artifact-level arrow dependencies (3 scenarios in
+  `amendment.feature`).
+- **#24** — residue imputed-cost calculator (4 scenarios in
+  `state-machine.feature`).
+- **#25** — invalidated-status enum + history (5 scenarios in
+  `state-machine.feature`).
+
+None of the three is a current-use blocker; see issue bodies
+for operational-impact framing.
+
+### Suite
+
+345 active scenarios passing under `Strict: true`. Race-clean.
+Coverage 78.9%.
+
 ## v2026.30.x — prod-readiness sprint (post-v2026.30.228)
 
 A cold-context integrator pass against the v2026.30.228 release
