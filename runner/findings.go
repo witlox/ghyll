@@ -60,6 +60,13 @@ type FindingRecord struct {
 	RaisedAt        string // RFC3339; zero string for unknown
 	RaisedByRole    string // analyst, architect, integrator, etc.
 	TransitionCount int    // F25: monotonic per-record churn counter
+
+	// GridVersion is the bump-counter for the engine's grid at the
+	// time the finding was raised. Stamped by the raise path from
+	// the originating clause's GridVersion (diamond v4 / H4 + M4
+	// closure). Preserved on Transition. Zero when the raise path
+	// has no engine-attached clause (test paths).
+	GridVersion uint64
 }
 
 // AsDeriveInput returns the slimmed Finding used by

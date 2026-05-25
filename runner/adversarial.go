@@ -234,9 +234,18 @@ func (a *Adversary) Attack(ctx context.Context, attack AdversaryAttack) (*Attack
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		clauseID := cls.ClauseID
-		if clauseID == "" {
-			clauseID = fmt.Sprintf("%s/%s/round%d", attack.PassID, cls.Concept, attack.Round)
+		// Diamond v4 / R5 closure: ALWAYS namespace adversarial-phase
+		// clauseIDs by wrapping the declared ID with /adv/round<N>.
+		// v1's H6 closure only namespaced the auto-synthesis branch;
+		// R5 flagged that a declared-ClauseID arrow would collide with
+		// the verification phase across rounds. The rewrite handles
+		// both cases.
+		declared := cls.ClauseID
+		var clauseID string
+		if declared != "" {
+			clauseID = fmt.Sprintf("%s/adv/round%d", declared, attack.Round)
+		} else {
+			clauseID = fmt.Sprintf("%s/adv/%s/round%d", attack.PassID, cls.Concept, attack.Round)
 		}
 		cls.ArrowID = attack.ArrowID
 		if cls.ProjectDir == "" {

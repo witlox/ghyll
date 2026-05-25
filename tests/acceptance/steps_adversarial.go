@@ -275,9 +275,19 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		}
 		for i, want := range state.AdvAttack.DepthClauses {
 			got := state.AdvReport.ClauseFalsifications[i].ClauseID
-			if got != want.ClauseID {
-				return fmt.Errorf("position %d: ClauseID %q; want %q (input order not preserved)",
-					i, got, want.ClauseID)
+			// Diamond v4 / R5 closure: adversarial-phase clauseIDs
+			// are ALWAYS namespaced with `/adv/round<N>` (declared
+			// case) or `<passID>/adv/<concept>/round<N>` (synthesized
+			// case). The input clauseID is the LHS of the namespace
+			// prefix, so we check the prefix here rather than
+			// expecting verbatim equality.
+			wantPrefix := want.ClauseID + "/adv/round"
+			if want.ClauseID == "" {
+				wantPrefix = state.AdvAttack.PassID + "/adv/" + want.Concept + "/round"
+			}
+			if !strings.HasPrefix(got, wantPrefix) {
+				return fmt.Errorf("position %d: ClauseID %q; want prefix %q (input order not preserved)",
+					i, got, wantPrefix)
 			}
 		}
 		return nil
@@ -289,9 +299,11 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			// outcome — at least one falsification result (Falsified
 			// or Unevaluated) when a clause's evaluator returned
 			// Fail. The synthetic-fail clause must show Falsified.
+			// Diamond v4 / R5: ClauseID is namespaced as
+			// "<declared>/adv/round<N>" so we match by prefix.
 			found := false
 			for _, r := range state.AdvReport.ClauseFalsifications {
-				if r.ClauseID == "C-fail" && r.Falsified {
+				if strings.HasPrefix(r.ClauseID, "C-fail/adv/round") && r.Falsified {
 					found = true
 					break
 				}
@@ -429,7 +441,8 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 				return errors.New("audit trail empty — attempt not recorded")
 			}
 			for _, r := range state.AdvReport.ClauseFalsifications {
-				if r.ClauseID == "C9" && !r.Falsified && !r.Unevaluated {
+				// R5 closure: ClauseID is namespaced.
+				if strings.HasPrefix(r.ClauseID, "C9/adv/round") && !r.Falsified && !r.Unevaluated {
 					return nil
 				}
 			}
@@ -864,7 +877,8 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		// the negative: NO ClauseFalsifications entry for C9 has
 		// Unevaluated=true.
 		for _, r := range state.AdvReport.ClauseFalsifications {
-			if r.ClauseID == "C9" {
+			// R5 closure: ClauseID is namespaced.
+			if strings.HasPrefix(r.ClauseID, "C9/adv/round") {
 				if r.Unevaluated {
 					return fmt.Errorf("C9 was downgraded — Unevaluated=true (tier 3 not honored)")
 				}
