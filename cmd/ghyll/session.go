@@ -1403,16 +1403,26 @@ func (s *Session) handleOpIDCommand(arg string) SlashCommandResult {
 			Output: "op-id cleared",
 		}
 	}
-	if err := validateOpID(arg); err != nil {
+	// Post-prod-readiness adversarial M-C: route the per-session
+	// `/op-id` path through the same shim ghyll-init uses so the
+	// recorded form is NFC-normalized. Three validators previously
+	// existed in cmd/ghyll (validateOpID), bootstrap
+	// (ValidateAndNormalizeOpID), and this REPL handler; the shim
+	// validateAndNormalizeOpID is now the single canonical entry
+	// point inside cmd/ghyll. The strict cmd/ghyll rules
+	// (leading-dot/dash, trailing-dot rejection) still apply via
+	// validateOpID inside the shim.
+	normalized, err := validateAndNormalizeOpID(arg)
+	if err != nil {
 		return SlashCommandResult{
 			Handled: true, ContinueLoop: true,
 			Output: fmt.Sprintf("✗ invalid op-id: %v", err),
 		}
 	}
-	s.opID = arg
+	s.opID = normalized
 	return SlashCommandResult{
 		Handled: true, ContinueLoop: true,
-		Output: fmt.Sprintf("op-id set: %s", arg),
+		Output: fmt.Sprintf("op-id set: %s", normalized),
 	}
 }
 
@@ -1494,17 +1504,17 @@ func isFormatRune(r rune) bool {
 // via bootstrap.ValidateAndNormalizeOpID so the stored form matches
 // what bootstrap.Session would store.
 //
-// Returns the normalized form on success. The two callers that
-// persist an op-id long-term (ghyll init, ghyll init attest) MUST
-// store the normalized form so the grid's created-by-op-id and the
-// runtime session's op-id are equality-comparable across surfaces
-// (H-A post-prod-readiness adversarial finding).
+// Returns the normalized form on success. This is the SINGLE
+// canonical entry point inside cmd/ghyll: callers that persist an
+// op-id (ghyll init, ghyll init attest) and the per-session
+// `/op-id` REPL handler all route through here so the grid's
+// created-by-op-id, the JSONL attestations, and the live session
+// state are equality-comparable across surfaces (H-A + M-C
+// post-prod-readiness adversarial findings).
 //
-// The /op-id REPL command intentionally keeps using the
-// non-normalizing validateOpID because the BDD scenarios for the
-// REPL surface still parse against the raw operator-typed form;
-// once those are migrated to expect NFC-normalized forms, this
-// helper can replace validateOpID at the /op-id call-site too.
+// validateOpID remains exported in-package for unit-test addressing
+// of the strict-rule set in isolation; do not call it directly from
+// production code paths.
 func validateAndNormalizeOpID(id string) (string, error) {
 	if err := validateOpID(id); err != nil {
 		return "", err

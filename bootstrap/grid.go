@@ -174,8 +174,22 @@ func (g *Grid) Write(dir string) error {
 	}
 
 	ghyllDir := filepath.Join(dir, ".ghyll")
-	if err := os.MkdirAll(ghyllDir, 0o755); err != nil {
+	// Post-prod-readiness adversarial M-B: create .ghyll/ at 0o700
+	// rather than the os.MkdirAll default (0o755). The grid yaml
+	// inside is project-shared (0o644 is fine), but the sibling
+	// engine.db carries attestation records keyed by op-id. A
+	// world-stat-able directory exposes engine.db's existence + size
+	// to other users on the same host. Tighten the dir even if the
+	// individual files inside remain group/world readable.
+	if err := os.MkdirAll(ghyllDir, 0o700); err != nil {
 		return fmt.Errorf("Write: mkdir %q: %w", ghyllDir, err)
+	}
+	// MkdirAll is a no-op when the dir already exists — make sure
+	// the tighter mode is enforced even if a pre-existing dir was
+	// created at 0o755 by an older binary or by a parallel writer
+	// (the engine init path).
+	if err := os.Chmod(ghyllDir, 0o700); err != nil {
+		return fmt.Errorf("Write: chmod %q: %w", ghyllDir, err)
 	}
 
 	gridName := fmt.Sprintf("%s%d%s", GridFilePrefix, g.GridVersion, GridFileSuffix)

@@ -84,6 +84,57 @@ residue-note-max-bytes: 1
 	}
 }
 
+// TestScenario_GridWrite_GhyllDirIsPrivate covers post-prod-readiness
+// adversarial M-B: the .ghyll/ directory must be created at 0o700,
+// not the os.MkdirAll default of 0o755. The grid yaml file itself
+// is project-shared (0o644 OK) but the sibling engine.db contains
+// op-id-keyed attestation records — a world-stat-able directory
+// leaks engine.db's existence + size to other users on the host.
+func TestScenario_GridWrite_GhyllDirIsPrivate(t *testing.T) {
+	dir := t.TempDir()
+	g := NewGrid("alice")
+	if err := g.Write(dir); err != nil {
+		t.Fatalf("Grid.Write: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, ".ghyll"))
+	if err != nil {
+		t.Fatalf("stat .ghyll: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf(".ghyll perm = %#o; want %#o", got, 0o700)
+	}
+}
+
+// TestScenario_GridWrite_TightensPreExisting0755Dir confirms the
+// chmod path: if a previous binary (or a parallel writer) already
+// created .ghyll at 0o755, the next Grid.Write call tightens it to
+// 0o700.
+func TestScenario_GridWrite_TightensPreExisting0755Dir(t *testing.T) {
+	dir := t.TempDir()
+	ghyllDir := filepath.Join(dir, ".ghyll")
+	if err := os.MkdirAll(ghyllDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Sanity: ensure the pre-existing dir is loose so the test
+	// genuinely exercises the chmod path.
+	if info, err := os.Stat(ghyllDir); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Fatalf("pre-existing perm = %#o; test setup expected %#o", info.Mode().Perm(), 0o755)
+	}
+	g := NewGrid("alice")
+	if err := g.Write(dir); err != nil {
+		t.Fatalf("Grid.Write: %v", err)
+	}
+	info, err := os.Stat(ghyllDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf(".ghyll perm = %#o after Write; want %#o", got, 0o700)
+	}
+}
+
 // itoaBuf — local stringer to avoid strconv import.
 func itoaBuf(n int) string {
 	if n == 0 {

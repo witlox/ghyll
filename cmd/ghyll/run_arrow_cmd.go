@@ -190,6 +190,9 @@ func (s *Session) handleRunArrowCommand(arg string) SlashCommandResult {
 			mu.Unlock()
 		}
 	})
+	// Defensive: the deferred call is a no-op after the explicit
+	// unsubscribe below (the bus closer is idempotent), but it
+	// guards against early returns added in a future refactor.
 	defer unsubscribe()
 
 	// SessionContext lets `/exit` cancel an in-flight dispatch.
@@ -200,9 +203,20 @@ func (s *Session) handleRunArrowCommand(arg string) SlashCommandResult {
 
 	res, err := s.engine.RunArrow(ctx, role, ctxName, def, tier)
 
-	// Drain captured events under the lock so an in-flight
-	// subscriber callback (the bus fans out OUTSIDE its mutex)
-	// cannot race the final render.
+	// Post-prod-readiness adversarial L-A: drop the subscription
+	// BEFORE taking the final snapshot. The previous order
+	// (snapshot → defer unsubscribe at function return) left a
+	// window where a publisher firing between the snapshot and the
+	// deferred unsubscribe would append to `events` but never reach
+	// `captured`. After this unsubscribe returns, the bus's
+	// subscriber list no longer references our callback, so no
+	// further Publish fan-out can invoke it. We then take the
+	// snapshot under the same mutex the callback would have used,
+	// so any callback already in-flight when unsubscribe was
+	// called has either finished appending (and we see its event)
+	// or is still holding the mutex (in which case mu.Lock below
+	// blocks until it returns, then we see its event).
+	unsubscribe()
 	mu.Lock()
 	captured := append([]runner.OperatorEvent(nil), events...)
 	mu.Unlock()

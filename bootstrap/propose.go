@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/witlox/ghyll/catalogue"
@@ -410,18 +411,31 @@ func validateClauseArgs(p ProposedClause, args map[string]any, cat *catalogue.Ca
 		}
 	}
 	if len(missing) > 0 {
+		// Post-prod-readiness adversarial L-C: sort both the
+		// missing-arg list and the observed-arg list so the
+		// formatted reason is byte-identical across runs. Go map
+		// iteration is randomized per-run; without these sorts the
+		// audit-facing residue field flapped between invocations
+		// on the same input.
+		sort.Strings(missing)
 		return fmt.Errorf("%w: %s requires args %v (got %v)",
 			ErrClauseArgsIncomplete, p.ConceptName, missing, mapKeys(args))
 	}
 	return nil
 }
 
-// mapKeys returns the keys of m as a slice for error reporting.
+// mapKeys returns the keys of m as a sorted slice for error
+// reporting. Post-prod-readiness adversarial L-C: sorted output so
+// the residue reason text recorded for ErrClauseArgsIncomplete is
+// byte-identical across runs (Go map iteration order is randomized
+// per-run, which previously made the audit-facing residue strings
+// flap between invocations on the same input).
 func mapKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 

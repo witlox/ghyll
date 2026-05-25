@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,6 +260,69 @@ func TestDeclareContext_NilReceiver(t *testing.T) {
 	var p *ProjectProfile
 	if err := p.DeclareContext("x", ""); err == nil {
 		t.Error("nil receiver should error")
+	}
+}
+
+// TestScenario_ScanBrownfieldContexts_EnforcesCap covers
+// post-prod-readiness adversarial M-A. A pathological repo with
+// MaxBoundedContexts+10 valid src/<n>/ directories must surface
+// ErrProfileTooManyContexts rather than synthesizing an unbounded
+// grid downstream. Mirrors the cap DeclareContext enforces on the
+// operator-driven path.
+func TestScenario_ScanBrownfieldContexts_EnforcesCap(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create MaxBoundedContexts+10 valid context-id directories with
+	// a .go file inside each so the language scan flips the repo
+	// into brownfield mode.
+	total := MaxBoundedContexts + 10
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("ctx%04d", i)
+		full := filepath.Join(srcDir, name)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "main.go"), []byte("package "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := ProfileRepo(dir)
+	if err == nil {
+		t.Fatalf("ProfileRepo accepted %d contexts; want ErrProfileTooManyContexts", total)
+	}
+	if !errors.Is(err, ErrProfileTooManyContexts) {
+		t.Errorf("err = %v; want ErrProfileTooManyContexts", err)
+	}
+}
+
+// TestScenario_ScanBrownfieldContexts_AtCapAccepted confirms the
+// boundary: exactly MaxBoundedContexts is fine; one more trips
+// the cap. Pairs with the over-cap test above.
+func TestScenario_ScanBrownfieldContexts_AtCapAccepted(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < MaxBoundedContexts; i++ {
+		name := fmt.Sprintf("ctx%04d", i)
+		full := filepath.Join(srcDir, name)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "main.go"), []byte("package "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := ProfileRepo(dir)
+	if err != nil {
+		t.Fatalf("ProfileRepo at cap: %v", err)
+	}
+	if len(p.BoundedContexts) != MaxBoundedContexts {
+		t.Errorf("BoundedContexts len = %d; want %d", len(p.BoundedContexts), MaxBoundedContexts)
 	}
 }
 

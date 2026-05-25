@@ -295,6 +295,12 @@ func scanLanguages(ctx context.Context, projectDir string) ([]string, bool, erro
 // The operator can DeclareContext explicitly to add a context the
 // auto-scan rejected.
 //
+// Post-prod-readiness adversarial M-A: enforces MaxBoundedContexts
+// at scan time so a pathological repo with thousands of src/<n>/
+// directories cannot synthesize an unbounded grid. Mirrors the cap
+// DeclareContext enforces on the operator-driven path. Returns
+// ErrProfileTooManyContexts when exceeded.
+//
 // Contexts are returned in lexicographic order by ID for determinism.
 func scanBrownfieldContexts(projectDir string) ([]BoundedContext, error) {
 	srcDir := filepath.Join(projectDir, "src")
@@ -330,6 +336,10 @@ func scanBrownfieldContexts(projectDir string) ([]BoundedContext, error) {
 			ID:          name,
 			Description: fmt.Sprintf("Proposed from src/%s/", name),
 		})
+		if len(out) > MaxBoundedContexts {
+			return nil, fmt.Errorf("%w: scanned %d candidates under %s (cap %d)",
+				ErrProfileTooManyContexts, len(out), srcDir, MaxBoundedContexts)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil

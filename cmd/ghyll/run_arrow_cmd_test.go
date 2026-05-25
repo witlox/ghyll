@@ -3,6 +3,7 @@ package main
 import (
 	gocontext "context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/witlox/ghyll/runner"
@@ -260,5 +261,156 @@ func TestScenario_RunArrow_BadParse_SurfacesUsage(t *testing.T) {
 	r := s.DispatchSlashCommand("/run-arrow --context only")
 	if !strings.Contains(r.Output, "usage:") {
 		t.Fatalf("expected usage hint; got %+v", r)
+	}
+}
+
+// TestScenario_RunArrow_LateEventNotDropped covers post-prod-readiness
+// adversarial L-A. The previous /run-arrow code captured the events
+// snapshot BEFORE unsubscribe ran (via defer), so a publisher firing
+// between the synchronous Dispatch return and function return could
+// append into the local `events` slice but never reach `captured`.
+// The remediation unsubscribes explicitly BEFORE snapshotting, so
+// after unsubscribe returns no further publish can call our callback.
+//
+// This test verifies the contract directly against the bus surface
+// used by the handler: subscribe, fire one event, unsubscribe-then-
+// snapshot, fire a follow-up event after unsubscribe. The follow-up
+// must NOT appear in the snapshot (proving the unsubscribe takes
+// effect), AND the pre-unsubscribe event MUST appear (proving the
+// new order doesn't lose existing events).
+func TestScenario_RunArrow_LateEventNotDropped(t *testing.T) {
+	bus := runner.NewOperatorBus()
+	var (
+		mu     sync.Mutex
+		events []runner.OperatorEvent
+	)
+	unsubscribe := bus.Subscribe(func(e runner.OperatorEvent) {
+		switch e.Kind {
+		case runner.OpEventPassOpened,
+			runner.OpEventPassClosed,
+			runner.OpEventInsufficientBasisRoundsExceeded:
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		}
+	})
+
+	// Pre-unsubscribe publish — must land in the snapshot.
+	bus.Publish(runner.OperatorEvent{
+		Kind:    runner.OpEventPassOpened,
+		PassID:  "P-1",
+		Role:    "analyst",
+		ArrowID: "A1",
+	})
+
+	// New order from L-A remediation: unsubscribe BEFORE the
+	// snapshot. After this returns, the bus's subscriber list no
+	// longer references our callback, so subsequent Publish calls
+	// cannot append to `events`.
+	unsubscribe()
+	mu.Lock()
+	captured := append([]runner.OperatorEvent(nil), events...)
+	mu.Unlock()
+
+	// Post-unsubscribe publish — must NOT appear in our snapshot.
+	bus.Publish(runner.OperatorEvent{
+		Kind:    runner.OpEventPassClosed,
+		PassID:  "P-1",
+		Role:    "analyst",
+		ArrowID: "A1",
+	})
+
+	if len(captured) != 1 {
+		t.Fatalf("captured len = %d; want 1 (pre-unsubscribe only)", len(captured))
+	}
+	if captured[0].Kind != runner.OpEventPassOpened {
+		t.Errorf("captured[0].Kind = %v; want OpEventPassOpened", captured[0].Kind)
+	}
+
+	// Re-snapshot AFTER the late publish to confirm the bus did
+	// not re-deliver to our (now-detached) callback.
+	mu.Lock()
+	finalLen := len(events)
+	mu.Unlock()
+	if finalLen != 1 {
+		t.Errorf("events len after late publish = %d; want 1 (callback should be detached)", finalLen)
+	}
+}
+
+// TestScenario_RunArrow_RaceWithConcurrentPublishers stresses the
+// L-A remediation under contention: a publisher goroutine fires
+// events continuously while the main goroutine unsubscribes and
+// captures. After unsubscribe returns, no further events should
+// reach the captured set even if the publisher keeps firing.
+// Run with -race to catch any leaked appends.
+func TestScenario_RunArrow_RaceWithConcurrentPublishers(t *testing.T) {
+	bus := runner.NewOperatorBus()
+	var (
+		mu     sync.Mutex
+		events []runner.OperatorEvent
+	)
+	unsubscribe := bus.Subscribe(func(e runner.OperatorEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	})
+
+	// Publisher goroutine: fires events until stop closes.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				bus.Publish(runner.OperatorEvent{
+					Kind:   runner.OpEventPassOpened,
+					PassID: "P-loop",
+				})
+			}
+		}
+	}()
+
+	// Let a few events accumulate.
+	for {
+		mu.Lock()
+		got := len(events)
+		mu.Unlock()
+		if got > 0 {
+			break
+		}
+	}
+
+	// Unsubscribe-then-snapshot (L-A pattern).
+	unsubscribe()
+	mu.Lock()
+	captured := append([]runner.OperatorEvent(nil), events...)
+	mu.Unlock()
+
+	// Wait briefly for any in-flight publishes started before
+	// unsubscribe to complete. After this the subscriber callback
+	// must be quiescent.
+	close(stop)
+	<-done
+
+	mu.Lock()
+	finalLen := len(events)
+	mu.Unlock()
+
+	// The captured slice may have FEWER elements than finalLen
+	// (a publish in flight at unsubscribe time may append after
+	// our snapshot but before publisher exits). That's expected
+	// and acceptable — the L-A contract is that NO publishes
+	// AFTER unsubscribe returns are routed into the callback;
+	// we cannot tighten that without bus-level barriers. What we
+	// DO assert is that the captured slice is non-empty (the
+	// remediation didn't accidentally make the snapshot empty).
+	if len(captured) == 0 {
+		t.Errorf("captured is empty after concurrent publishes; pattern broke event delivery")
+	}
+	if finalLen < len(captured) {
+		t.Errorf("finalLen=%d < captured=%d; impossible ordering", finalLen, len(captured))
 	}
 }

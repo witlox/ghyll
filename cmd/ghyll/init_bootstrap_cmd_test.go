@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/witlox/ghyll/bootstrap"
+	"github.com/witlox/ghyll/ui"
 )
 
 // TestScenario_CmdInitBootstrap_WritesGridForEmptyRepo runs the
@@ -150,6 +152,63 @@ func TestScenario_CmdInitBootstrap_NormalizesOpIDToNFC(t *testing.T) {
 	}
 	if g.CreatedByOpID != composed {
 		t.Errorf("CreatedByOpID = %q; want NFC-normalized %q", g.CreatedByOpID, composed)
+	}
+}
+
+// TestScenario_CmdInitBootstrap_AutoDeclaredDefaultContextHinted
+// covers post-prod-readiness adversarial L-B: when the repo has no
+// detected bounded contexts and ghyll auto-declares a single
+// "default" context, the success summary must call that out
+// inline so the operator running init in a multi-context repo
+// doesn't silently miss the "no contexts detected" signal.
+func TestScenario_CmdInitBootstrap_AutoDeclaredDefaultContextHinted(t *testing.T) {
+	dir := t.TempDir()
+	// A docs-only repo: greenfield, no bounded contexts to detect.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var captured bytes.Buffer
+	prevOut, prevErr := ui.Stdout(), ui.Stderr()
+	ui.SetOutput(&captured, prevErr)
+	t.Cleanup(func() { ui.SetOutput(prevOut, prevErr) })
+
+	if err := cmdInitBootstrap([]string{"--op-id", "alice", dir}); err != nil {
+		t.Fatalf("cmdInitBootstrap: %v", err)
+	}
+	out := captured.String()
+	if !strings.Contains(out, "default context auto-declared") {
+		t.Errorf("success summary missing auto-declared hint; got:\n%s", out)
+	}
+	if !strings.Contains(out, "no bounded contexts detected") {
+		t.Errorf("success summary missing detection-signal hint; got:\n%s", out)
+	}
+}
+
+// TestScenario_CmdInitBootstrap_DetectedContextsNoAutoHint is the
+// inverse: when bounded contexts ARE detected from src/<n>/ dirs,
+// the success summary must NOT carry the auto-declared hint.
+func TestScenario_CmdInitBootstrap_DetectedContextsNoAutoHint(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src", "checkout")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package checkout\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var captured bytes.Buffer
+	prevOut, prevErr := ui.Stdout(), ui.Stderr()
+	ui.SetOutput(&captured, prevErr)
+	t.Cleanup(func() { ui.SetOutput(prevOut, prevErr) })
+
+	if err := cmdInitBootstrap([]string{"--op-id", "alice", dir}); err != nil {
+		t.Fatalf("cmdInitBootstrap: %v", err)
+	}
+	out := captured.String()
+	if strings.Contains(out, "default context auto-declared") {
+		t.Errorf("success summary carried auto-declared hint when contexts WERE detected; got:\n%s", out)
 	}
 }
 

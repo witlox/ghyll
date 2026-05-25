@@ -490,3 +490,111 @@ func indexRune(s string, r rune) int {
 	}
 	return -1
 }
+
+// TestScenario_MapKeys_DeterministicOrder covers post-prod-readiness
+// adversarial L-C: mapKeys must return keys in a stable order so the
+// residue reason text formatted from ErrClauseArgsIncomplete is
+// byte-identical across runs. The bug was that Go's randomized map
+// iteration produced different reason strings on re-runs of the same
+// inputs, making the audit-facing residue field flap.
+func TestScenario_MapKeys_DeterministicOrder(t *testing.T) {
+	args := map[string]any{
+		"zeta":  1,
+		"alpha": 2,
+		"mu":    3,
+		"beta":  4,
+		"omega": 5,
+	}
+	var first []string
+	for i := 0; i < 50; i++ {
+		got := mapKeys(args)
+		if i == 0 {
+			first = got
+			continue
+		}
+		if len(got) != len(first) {
+			t.Fatalf("iter %d: len = %d; want %d", i, len(got), len(first))
+		}
+		for j := range first {
+			if got[j] != first[j] {
+				t.Fatalf("iter %d: mapKeys returned non-deterministic order: %v vs %v",
+					i, got, first)
+			}
+		}
+	}
+	// Confirm the order is sorted (the chosen canonicalization).
+	want := []string{"alpha", "beta", "mu", "omega", "zeta"}
+	for i, k := range want {
+		if first[i] != k {
+			t.Errorf("first[%d] = %q; want %q (sorted order)", i, first[i], k)
+		}
+	}
+}
+
+// TestScenario_ClauseArgsIncomplete_ReasonReproducible exercises the
+// end-to-end path: validateClauseArgs must produce a byte-identical
+// error string on every invocation with the same arg set so the
+// residue reason recorded by autoAcceptProposal is reproducible
+// across ghyll init runs. Pairs with L-C.
+func TestScenario_ClauseArgsIncomplete_ReasonReproducible(t *testing.T) {
+	cat := loadTestCatalogue(t)
+	// Pick a concept with at least one required-without-default arg.
+	// path-scope-coverage has scope (required, no default) and other
+	// args. We feed a superset of args (some required missing, some
+	// non-schema present) to exercise both `missing` and `mapKeys`
+	// branches of the formatted error.
+	var p ProposedClause
+	var conceptName string
+	for _, name := range cat.List() {
+		c, ok := cat.Get(name)
+		if !ok {
+			continue
+		}
+		hasRequiredNoDefault := false
+		for _, schema := range c.Arguments {
+			if schema.Required && schema.Default == nil {
+				hasRequiredNoDefault = true
+				break
+			}
+		}
+		if hasRequiredNoDefault {
+			conceptName = name
+			break
+		}
+	}
+	if conceptName == "" {
+		t.Skip("no catalogue concept with required-without-default args; nothing to exercise")
+	}
+	p = ProposedClause{
+		ID:          "C1",
+		EvalType:    "machine",
+		DepthType:   "depth-robust",
+		ConceptName: conceptName,
+	}
+	// Provide several non-required-key args to force the mapKeys
+	// branch to format multiple keys.
+	args := map[string]any{
+		"zeta":  "z",
+		"alpha": "a",
+		"mu":    "m",
+		"beta":  "b",
+	}
+	var first string
+	for i := 0; i < 10; i++ {
+		err := validateClauseArgs(p, args, cat)
+		if err == nil {
+			t.Fatalf("iter %d: validateClauseArgs returned nil; expected ErrClauseArgsIncomplete", i)
+		}
+		if !errors.Is(err, ErrClauseArgsIncomplete) {
+			t.Fatalf("iter %d: err = %v; want ErrClauseArgsIncomplete", i, err)
+		}
+		if i == 0 {
+			first = err.Error()
+			continue
+		}
+		if err.Error() != first {
+			t.Fatalf("iter %d: error string drifted across runs:\n  first: %s\n  this:  %s",
+				i, first, err.Error())
+		}
+	}
+}

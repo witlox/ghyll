@@ -259,3 +259,34 @@ func TestScenario_OperatorCmd_ParseAttestationRef_RejectsMalformed(t *testing.T)
 		}
 	}
 }
+
+// TestScenario_OperatorCmd_OpID_NormalizesToNFC covers
+// post-prod-readiness adversarial M-C: the per-session `/op-id`
+// REPL handler must route through validateAndNormalizeOpID (the
+// single canonical entry point in cmd/ghyll) so the stored opID
+// is NFC-normalized — matching what `ghyll init` and
+// `ghyll init attest` already do via the same shim. Without this,
+// an operator who typed the decomposed form via /op-id would have
+// their identity diverge from the grid's created-by-op-id.
+func TestScenario_OperatorCmd_OpID_NormalizesToNFC(t *testing.T) {
+	s := newOperatorTestSession(t)
+	// Decomposed: c, a, f, e (U+0065), combining acute (U+0301).
+	// UTF-8 bytes: 0x63 0x61 0x66 0x65 0xCC 0x81.
+	decomposed := string([]byte{0x63, 0x61, 0x66, 0x65, 0xCC, 0x81})
+	// Composed: c, a, f, é (U+00E9). UTF-8 bytes: 0x63 0x61 0x66 0xC3 0xA9.
+	composed := string([]byte{0x63, 0x61, 0x66, 0xC3, 0xA9})
+	if decomposed == composed {
+		t.Fatal("test fixture bug: decomposed and composed bytes must differ")
+	}
+	r := s.DispatchSlashCommand("/op-id " + decomposed)
+	if !r.Handled {
+		t.Fatalf("/op-id not handled: %+v", r)
+	}
+	if s.opID != composed {
+		t.Errorf("session opID = %q (bytes %x); want NFC-normalized %q (bytes %x)",
+			s.opID, []byte(s.opID), composed, []byte(composed))
+	}
+	if !strings.Contains(r.Output, composed) {
+		t.Errorf("set output missing NFC form; got %q", r.Output)
+	}
+}

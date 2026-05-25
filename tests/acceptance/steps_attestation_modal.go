@@ -973,6 +973,105 @@ func registerAttestationModalSteps(ctx *godog.ScenarioContext, state *ScenarioSt
 		}
 		return nil
 	})
+
+	// ----- Operator's session ends mid-attestation ----------------
+	//
+	// Exercises the substrate that survives op-id session boundaries:
+	// the OperatorBus + a retaining subscriber (which is the contract
+	// modalDriver implements in cmd/ghyll/modal_driver.go via its
+	// pending queue). The acceptance layer wires the same pattern
+	// directly so the scenario's contract — "the next operator
+	// session sees the pending attestation request" — is asserted
+	// against the runner package's primitives.
+
+	ctx.Step(`^Alice has read a hint and started typing a residue note$`, func() error {
+		if err := resetAMod(); err != nil {
+			return err
+		}
+		state.AModClauseID = "C5"
+		// IBTracker observes round counter; constructed fresh so the
+		// "round counter NOT incremented" assertion is meaningful.
+		state.IBTracker = runner.NewInsufficientBasisTracker(3, state.AModBus)
+		// Alice declares an active operator session.
+		if _, err := state.AModRegistry.Declare("alice@example.com"); err != nil {
+			return fmt.Errorf("declare alice: %w", err)
+		}
+		// Producer publishes the attestation-requested event. The
+		// AModBusEvts subscriber installed by resetAMod retains it;
+		// this mirrors what modalDriver's enqueueVerdict does in the
+		// REPL surface.
+		hintJSON := `{"locations":["features/contextA/payment.feature:42-67"],` +
+			`"basis":"all failure-path scenarios in this region",` +
+			`"residue":"happy-path tests not scanned"}`
+		state.AModBus.Publish(runner.OperatorEvent{
+			Kind:     runner.OpEventAttestationRequested,
+			ArrowID:  state.AModArrowID,
+			ClauseID: state.AModClauseID,
+			PassID:   state.AModPassID,
+			OpID:     "alice@example.com",
+			Detail:   hintJSON,
+		})
+		// "Started typing a residue note" — no Record call yet. The
+		// modal queue holds the event; Alice hasn't submitted.
+		return nil
+	})
+
+	ctx.Step(`^Alice's session is closed \(network drop, explicit close, timeout\) before she submits the verdict$`, func() error {
+		// SessionRegistry.Close mirrors all three closure modes; the
+		// registry doesn't distinguish them. Pending bus events stay
+		// on the retaining subscriber.
+		state.AModRegistry.Close()
+		return nil
+	})
+
+	ctx.Step(`^the attestation request is preserved on the operator event bus$`, func() error {
+		// The retaining subscriber installed by resetAMod is the
+		// substrate's preservation layer. Verify the attestation-
+		// requested event is still observable after Alice's close.
+		for _, e := range state.AModBusEvts {
+			if e.Kind == runner.OpEventAttestationRequested &&
+				e.ClauseID == state.AModClauseID {
+				return nil
+			}
+		}
+		return fmt.Errorf("no OpEventAttestationRequested for %s preserved on bus", state.AModClauseID)
+	})
+
+	ctx.Step(`^the next operator session \(Bob or Alice rejoining\) sees the pending request$`, func() error {
+		// A new operator session declares; the registry should accept
+		// (Alice's was closed). The retained event remains visible.
+		if _, err := state.AModRegistry.Declare("bob@example.com"); err != nil {
+			return fmt.Errorf("declare bob: %w", err)
+		}
+		// "Sees the pending request" — a new modalDriver / REPL drain
+		// reads from the same retained-events surface. Snapshot it.
+		seen := false
+		for _, e := range state.AModBusEvts {
+			if e.Kind == runner.OpEventAttestationRequested &&
+				e.ClauseID == state.AModClauseID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			return fmt.Errorf("bob's session cannot see the preserved attestation request")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the round counter for the clause is NOT incremented \(the attempt didn't complete; no insufficient-basis recorded\)$`, func() error {
+		// IBTracker.Record is what bumps the counter; Alice never
+		// submitted, so Record was never called. Rounds("C5") must
+		// be 0.
+		if state.IBTracker == nil {
+			return errors.New("IBTracker not initialized")
+		}
+		if got := state.IBTracker.Rounds(state.AModClauseID); got != 0 {
+			return fmt.Errorf("Rounds(%s) = %d after session close; want 0 (no submission completed)",
+				state.AModClauseID, got)
+		}
+		return nil
+	})
 }
 
 // aModCollectRecords reads every .jsonl file under root via a fresh

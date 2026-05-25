@@ -128,10 +128,12 @@ func cmdInitBootstrap(args []string) error {
 	// Downstream tooling sees a usable grid; the auto-declaration is
 	// recorded by the contexts list itself (description names the
 	// auto-source).
+	defaultContextAutoDeclared := false
 	if profile.NeedsContextInterrogation() {
 		if err := profile.DeclareContext("default", "auto-declared by ghyll init (no bounded contexts detected)"); err != nil {
 			return fmt.Errorf("ghyll init: declare default context: %w", err)
 		}
+		defaultContextAutoDeclared = true
 	}
 
 	contexts := profile.BoundedContextsSnapshot()
@@ -205,8 +207,17 @@ func cmdInitBootstrap(args []string) error {
 		return fmt.Errorf("ghyll init: write grid: %w", err)
 	}
 
-	ui.Status("ℹ", "init complete: %d arrows across %d contexts; grid at %s",
+	// Post-prod-readiness adversarial L-B: when the repo had no
+	// detectable bounded contexts and ghyll auto-declared a single
+	// "default" context, call that out in the success summary so
+	// the operator running init in a multi-context repo doesn't
+	// silently miss the "no contexts detected" signal.
+	summary := fmt.Sprintf("init complete: %d arrows across %d contexts; grid at %s",
 		len(grid.Arrows), len(contexts), gridPath)
+	if defaultContextAutoDeclared {
+		summary += " (default context auto-declared — no bounded contexts detected)"
+	}
+	ui.Status("ℹ", "%s", summary)
 	ui.Status("ℹ", "  auto-confirmed %d clauses; auto-skipped %d clauses (recorded in residue)",
 		totalAutoConfirmed, totalAutoSkipped)
 	return nil
