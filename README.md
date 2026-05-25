@@ -56,20 +56,30 @@ and the role files at
 
 ### 2. Transitions are arrows
 
-Every cross-role handoff is a first-class artifact called an
-**arrow**, carrying typed gate **clauses** that must be evaluated
-before the transition is legal. An arrow from analyst to architect
-exists; an arrow from analyst to integrator does not. Undeclared
-transitions don't silently proceed — they **suspend**, and the
-operator is asked to declare a new arrow or refuse the work.
+An arrow named `A-analyst-architect-default` is the project's
+declaration that the **analyst** hands work off to the **architect**
+in the `default` context. Before the runtime will dispatch a pass
+on that arrow, every clause attached to it (e.g. `tests-pass`,
+`lint-clean`, `no-todo-marker`) must reach a verdict — `pass`,
+`fail`, or `insufficient-basis`. If a clause is still
+`unevaluated`, the arrow stays open and the operator is asked
+what to do.
+
+An arrow from analyst to architect exists; an arrow from analyst
+to integrator does not. Undeclared transitions don't silently
+proceed — they **suspend**, and the operator is asked to declare
+a new arrow or refuse the work.
 
 Why: undeclared paths are how agents quietly skip steps. An LLM
 that "just goes ahead and implements" is bypassing analysis; a
 typed arrow makes that bypass a visible event the operator has
 to acknowledge.
 
-See [`specs/architecture/v2-design.md`](specs/architecture/v2-design.md)
-and [`specs/architecture/gates.md`](specs/architecture/gates.md).
+See the [glossary](docs/glossary.md) for grounded definitions of
+arrow, pass, clause, and verdict;
+[`specs/architecture/v2-design.md`](specs/architecture/v2-design.md)
+and [`specs/architecture/gates.md`](specs/architecture/gates.md)
+for the design reference.
 
 ### 3. Clauses are typed on two axes
 
@@ -88,6 +98,13 @@ Why: collapsing these axes is where shallow agents go wrong.
 analyst's spec?" is attested / depth-sensitive. Both are
 "verification" in casual speech, but they require completely
 different machinery. The type system makes the difference legible.
+
+For example, the `lint-clean` clause is `machine` / `depth-robust`
+— ghyll just runs the linter. The `acyclic-dependency-graph`
+clause is `attested` / `depth-sensitive` — the runtime escalates
+to GLM-5 to draft the analysis, then opens a verdict modal
+asking the operator to confirm `pass`, `fail`, or
+`insufficient-basis`.
 
 A `depth-sensitive` clause produced by an under-depth model has
 status `unevaluated` — not `pass`, not `fail`. `unevaluated` is

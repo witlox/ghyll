@@ -87,13 +87,30 @@ operator under deadline cannot.
 
 ### The decision
 
-Every cross-role handoff is a first-class artifact called an
-**arrow**. An arrow declares its source role, target role,
-context (which bounded context within the project), stratum
-(which depth tier the work runs at), and a list of typed gate
-**clauses** that must be evaluated before the transition is
-legal. Arrows are persisted in `.ghyll/grid.v1.yaml` and replay
-across sessions.
+An arrow named `A-analyst-architect-default` is the project's
+declaration that the **analyst** hands work off to the
+**architect** in the `default` context. Before the runtime
+will dispatch a [pass](glossary.md#pass) on that arrow, every
+clause attached to it (e.g. `tests-pass`, `lint-clean`,
+`no-todo-marker`) must reach a verdict — `pass`, `fail`, or
+`insufficient-basis`. If a clause is still `unevaluated`, the
+arrow stays open and the operator is asked what to do.
+
+The pass is the runtime invocation of the arrow; the
+[stratum](glossary.md#stratum) decides whether MiniMax M2.5 or
+GLM-5 runs that pass. Every cross-role handoff is a first-class
+artifact in this shape — source role, target role, context (which
+bounded context within the project), stratum, and a list of typed
+gate [clauses](glossary.md#clause) — and arrows are persisted in
+`.ghyll/grid.v1.yaml` and replay across sessions.
+
+> **Note on "context":** in ghyll's v2 docs (this page, the
+> operator guide, getting-started) "context" means a **bounded
+> context** in the DDD sense — a logical scope of the project,
+> like `checkout` or `inventory`. This is NOT the LLM context
+> window. The LLM-context-window meaning still applies in
+> [`docs/internals/context.md`](internals/context.md). This is
+> the single most-likely-to-confuse term in the whole doc set.
 
 An arrow from analyst to architect exists; an arrow from analyst
 to integrator does not. **Undeclared transitions don't silently
@@ -129,8 +146,10 @@ a visible event the operator has to acknowledge:
   evaluation types, depth types, arrows, routing, attestation.
 - [V2-ADR-008](decisions/v2/008-arrow-pass-identity.md) —
   why arrows and passes are separate entities.
-- [ADR-013](decisions/v2/013-add-tests-pass-concept.md) —
+- [ADR-013](decisions/013-pass-entity-and-registry.md) —
   the Pass entity + registry.
+- [V2-ADR-013](decisions/v2/013-add-tests-pass-concept.md) —
+  adding the `tests-pass` concept to the closed catalogue.
 - [Architecture flows](architecture-flows.md) — sequence
   diagrams for the major arrow flows.
 
@@ -156,6 +175,11 @@ Each clause carries two type tags:
 
 A `depth-sensitive` clause produced by an under-depth model has
 status `unevaluated` — not `pass`, not `fail`.
+
+In the verdict modal, `unevaluated` is the default state of every
+clause the runtime hasn't yet asked you about; in `/list-arrows`
+and `ghyll arrow show`, an arrow with any `unevaluated` clauses
+cannot transition closed.
 
 ### The alternative
 
@@ -198,6 +222,11 @@ treats `unevaluated` differently from both `pass` and `fail`.
 ## 4. Routing follows the gate, not the model
 
 ### The decision
+
+A [**pass**](glossary.md#pass) is one runtime invocation of an
+arrow — open the arrow, run its clauses, collect verdicts,
+close. Multiple passes can run against the same arrow over a
+project's life.
 
 A pass runs at the **lowest tier** that meets the maximum depth
 requirement of the clauses on the arrow. Self-assessed task

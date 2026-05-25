@@ -23,6 +23,10 @@ covers everything else.
      setup table, and vault deployment.
    - [Memory & Sync](usage/memory.md)
    - [Troubleshooting](usage/troubleshooting.md)
+   - [Glossary](glossary.md) — arrow, pass, clause, verdict,
+     stratum, op-id, residue, attestation, self-cert, and the
+     other v2 vocabulary, each with a worked example and a
+     "where you'll see this in the CLI" pointer.
 
 3. **Architecture** — how ghyll is built.
    - [System Design](architecture/design.md)
