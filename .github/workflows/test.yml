@@ -20,26 +20,28 @@ jobs:
           git config --global user.name "CI"
           git config --global init.defaultBranch main
 
-      - name: Run unit tests with coverage
+      - name: Compute test package set
+        id: pkgs
         run: |
-          go test -v -race -count=1 -coverprofile=unit.out \
-            ./config/... ./types/... ./tool/... ./stream/... ./dialect/... \
-            ./memory/... ./context/... ./vault/...
+          # Mirror Makefile's `coverage` target: all packages except
+          # the godog BDD suite (which is exercised separately below).
+          PKGS=$(go list ./... | grep -v tests/acceptance | tr '\n' ' ')
+          echo "list=${PKGS}" >> "$GITHUB_OUTPUT"
 
-      - name: Run session tests with coverage
+      - name: Run unit + session tests with coverage
         run: |
-          go test -v -race -count=1 -timeout=120s -coverprofile=session.out \
-            ./cmd/ghyll/...
+          # -coverpkg=./... so a test in package X exercising code in
+          # package Y still credits Y. Mirrors the Makefile coverage
+          # target. 240s timeout for the slowest packages (cmd/ghyll,
+          # engine, runner under -race).
+          go test -v -race -count=1 -timeout=240s \
+            -coverprofile=coverage.txt -coverpkg=./... \
+            ${{ steps.pkgs.outputs.list }}
+          go tool cover -func=coverage.txt | tail -1
 
       - name: Run acceptance tests
         run: |
           go test -v -count=1 ./tests/acceptance/...
-
-      - name: Merge coverage
-        run: |
-          go install github.com/wadey/gocovmerge@latest
-          gocovmerge unit.out session.out > coverage.txt
-          go tool cover -func=coverage.txt | tail -1
 
       - uses: actions/upload-artifact@v7
         with:
@@ -56,6 +58,9 @@ jobs:
 
       - name: Check coverage threshold
         run: |
+          # CI floor is loose (50%) so a transient gap doesn't block
+          # merges; the Makefile's `coverage-check` target enforces the
+          # tighter 78% Tier-3 floor locally and pre-PR.
           COVERAGE=$(go tool cover -func=coverage.txt | grep total | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${COVERAGE}%"
           if (( $(echo "$COVERAGE < 50" | bc -l) )); then
