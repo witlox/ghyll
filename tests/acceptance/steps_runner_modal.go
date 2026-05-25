@@ -34,7 +34,7 @@ func registerRunnerModalSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		state.R2ProjectDir = dir
 		state.R2Registry = runner.NewRegistry()
 		runner.RegisterBuiltins(state.R2Registry)
-		state.R2Runner = runner.NewRunner(state.R2Registry).
+		state.R2Runner = runner.NewRunner(state.R2Registry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankRealistic)
 		state.R2AttStore = runner.NewAttestationStore()
 		state.R2Findings = runner.NewFindingsStore()

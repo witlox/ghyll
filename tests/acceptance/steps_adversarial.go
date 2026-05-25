@@ -37,7 +37,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 		state.AdvClassifications = runner.NewClassificationsStore()
 		state.AdvRegistry = runner.NewRegistry()
 		runner.RegisterBuiltins(state.AdvRegistry)
-		state.AdvRunner = runner.NewRunner(state.AdvRegistry).
+		state.AdvRunner = runner.NewRunner(state.AdvRegistry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankRealistic)
 		state.AdvAdversary = runner.NewAdversary(
 			state.AdvFindings, state.AdvClassifications, state.AdvRunner)
@@ -494,7 +494,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			errAdv := runner.NewAdversary(
 				runner.NewFindingsStore(),
 				runner.NewClassificationsStore(),
-				runner.NewRunner(state.AdvRegistry).WithActualTier(runner.DepthRankRealistic))
+				runner.NewRunner(state.AdvRegistry, nil, runner.DepthRankNone).WithActualTier(runner.DepthRankRealistic))
 			errAdv.OpenSweep = func(_ context.Context, _ runner.AdversaryAttack) ([]runner.FindingRecord, error) {
 				return nil, errors.New("synthetic open-sweep failure")
 			}
@@ -624,7 +624,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			// Override the adversary's Runner with one running at
 			// SHALLOW; the clause requires REALISTIC — short-circuit
 			// path fires per Runner.WithActualTier.
-			state.AdvRunner = runner.NewRunner(state.AdvRegistry).
+			state.AdvRunner = runner.NewRunner(state.AdvRegistry, nil, runner.DepthRankNone).
 				WithActualTier(runner.DepthRankShallow)
 			state.AdvAdversary = runner.NewAdversary(
 				state.AdvFindings, state.AdvClassifications, state.AdvRunner)
@@ -879,7 +879,7 @@ func registerAdversarialSteps(ctx *godog.ScenarioContext, state *ScenarioState) 
 			// Verify the negative path: a Runner at SHALLOW
 			// short-circuits the same clause to Unevaluated with
 			// reason=depth-below-required.
-			shallowRunner := runner.NewRunner(state.AdvRegistry).
+			shallowRunner := runner.NewRunner(state.AdvRegistry, nil, runner.DepthRankNone).
 				WithActualTier(runner.DepthRankShallow)
 			shallowAdv := runner.NewAdversary(
 				runner.NewFindingsStore(), runner.NewClassificationsStore(),

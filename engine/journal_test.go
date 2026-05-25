@@ -226,7 +226,7 @@ func TestJournal_EvaluationRunPersists(t *testing.T) {
 	_ = reg.Register("test", func(_ context.Context, _ runner.Clause) (*runner.Result, error) {
 		return &runner.Result{Pass: true}, nil
 	})
-	r := runner.NewRunner(reg)
+	r := runner.NewRunner(reg, nil, runner.DepthRankNone)
 	j.AttachRunner(r)
 	run, err := r.Evaluate(ctx, "C1", "P1", runner.Clause{Concept: "test", ArrowID: "A1"})
 	if err != nil {

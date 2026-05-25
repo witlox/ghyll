@@ -37,7 +37,7 @@ func newFailingRunner(t *testing.T) *Runner {
 	_ = reg.Register("test-clause", func(_ context.Context, _ Clause) (*Result, error) {
 		return &Result{Pass: false}, nil
 	})
-	return NewRunner(reg)
+	return NewRunner(reg, nil, DepthRankNone)
 }
 
 func newPassingRunner(t *testing.T) *Runner {
@@ -46,7 +46,7 @@ func newPassingRunner(t *testing.T) *Runner {
 	_ = reg.Register("test-clause", func(_ context.Context, _ Clause) (*Result, error) {
 		return &Result{Pass: true}, nil
 	})
-	return NewRunner(reg)
+	return NewRunner(reg, nil, DepthRankNone)
 }
 
 func TestRemediation_ConvergesOnSecondRound(t *testing.T) {
@@ -341,7 +341,7 @@ func TestRemediation_HarnessErrorsCarryRoundPrefix(t *testing.T) {
 	_ = reg.Register("erroring", func(_ context.Context, _ Clause) (*Result, error) {
 		return nil, errors.New("evaluator failed to run")
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	out, _ := RunRemediationLoop(context.Background(), RemediationConfig{
 		RoundsMax:  2,
 		FixAttempt: fixToResolved(findings),

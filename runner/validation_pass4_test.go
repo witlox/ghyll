@@ -486,7 +486,7 @@ func TestPhase5Preflight_EvaluationRunCarriesArrowIDAndGridVersion(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{
 		Concept:     "test-pass",
 		ArrowID:     "analyst→arch/L4/checkout",

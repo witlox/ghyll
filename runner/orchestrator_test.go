@@ -27,7 +27,7 @@ func newOrchestratorFixture(t *testing.T) *orchestratorFixture {
 		classifications: NewClassificationsStore(),
 		bus:             NewOperatorBus(),
 		registry:        reg,
-		runner:          NewRunner(reg).WithActualTier(DepthRankRealistic),
+		runner:          NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankRealistic),
 		openSweep:       noopOpenSweep,
 		classify:        noopClassify,
 	}

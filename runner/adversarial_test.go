@@ -17,7 +17,7 @@ func passConceptRunner(t *testing.T, pass bool) *Runner {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return NewRunner(reg)
+	return NewRunner(reg, nil, DepthRankNone)
 }
 
 func TestAdversary_FalsifiesFailingClause(t *testing.T) {
@@ -209,7 +209,7 @@ func TestAdversary_UnevaluatedClauseRaisesFinding(t *testing.T) {
 	_ = reg.Register("unevaluated-clause", func(_ context.Context, _ Clause) (*Result, error) {
 		return &Result{Unevaluated: true, Reason: "no model"}, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	a := NewAdversary(findings, classifications, r)
 	report, err := a.Attack(context.Background(), AdversaryAttack{
 		ArrowID: "A1", PassID: "P1",

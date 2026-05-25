@@ -487,7 +487,9 @@ func (r *engineRuntime) NewRunner(tier runner.DepthRank) *runner.Runner {
 	if r == nil || r.registry == nil {
 		return nil
 	}
-	rn := runner.NewRunner(r.registry).WithActualTier(tier)
+	// Diamond v4 / ADR-v4-006: pass the live PassRegistry so the
+	// single-active-role-instance evaluator has the live-pass view.
+	rn := runner.NewRunner(r.registry, r.passes, tier)
 	r.attachRunner(rn)
 	return rn
 }

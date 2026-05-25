@@ -175,7 +175,7 @@ func BenchmarkLockContention_64Goroutines(b *testing.B) {
 func BenchmarkDispatcher_ClauseEval(b *testing.B) {
 	reg := NewRegistry()
 	RegisterBuiltins(reg)
-	runner := NewRunner(reg).WithActualTier(DepthRankRealistic)
+	runner := NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankRealistic)
 	tbl := NewRoleContextLockTable()
 	passes := NewPassRegistry()
 	d := &PassDispatcher{

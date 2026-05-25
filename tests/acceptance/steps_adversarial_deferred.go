@@ -28,7 +28,7 @@ func registerAdversarialDeferredSteps(ctx *godog.ScenarioContext, state *Scenari
 		state.ADRClassif = runner.NewClassificationsStore()
 		state.ADRRegistry = runner.NewRegistry()
 		runner.RegisterBuiltins(state.ADRRegistry)
-		state.ADRRunner = runner.NewRunner(state.ADRRegistry).
+		state.ADRRunner = runner.NewRunner(state.ADRRegistry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankRealistic)
 		state.ADRBus = runner.NewOperatorBus()
 		state.ADRBusEvents = nil

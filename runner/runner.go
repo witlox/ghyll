@@ -178,6 +178,14 @@ type Clause struct {
 // transition).
 type Evaluator func(ctx context.Context, c Clause) (*Result, error)
 
+// EvaluatorWithRunner is the variant for evaluators that need access
+// to runner-managed state (today, only the *PassRegistry consulted by
+// the single-active-role-instance evaluator). Per ADR-v4-006, the
+// Registry maintains a two-table dispatch: LookupWithRunner returns
+// this typed variant; Lookup returns the plain Evaluator. A concept
+// is registered in at most one table.
+type EvaluatorWithRunner func(ctx context.Context, r *Runner, c Clause) (*Result, error)
+
 // EvaluatorIdentity is a stable token identifying a specific evaluator
 // registration. Carried in EvaluationRun so attestation can pin the
 // exact binding that produced a result, even across hot-swaps. Per
@@ -198,6 +206,13 @@ type registered struct {
 	identity EvaluatorIdentity
 }
 
+// registeredWithRunner is the parallel record for evaluators that
+// take a *Runner alongside the Clause. ADR-v4-006.
+type registeredWithRunner struct {
+	fn       EvaluatorWithRunner
+	identity EvaluatorIdentity
+}
+
 // Registry is the dispatcher from concept name to Evaluator.
 //
 // Built-in evaluators (universal-base concepts like no-todo-marker,
@@ -210,9 +225,10 @@ type registered struct {
 // registered) from Replace (explicit hot-swap; bumps Generation).
 // validation-pass-2 F14 — silent overwrite was a no-audit gap.
 type Registry struct {
-	mu  sync.RWMutex
-	by  map[string]registered
-	gen map[string]int64 // monotonic generation counter per concept
+	mu       sync.RWMutex
+	by       map[string]registered
+	gen      map[string]int64 // monotonic generation counter per concept
+	byRunner map[string]registeredWithRunner
 }
 
 // Registry errors.
@@ -224,8 +240,9 @@ var (
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		by:  make(map[string]registered),
-		gen: make(map[string]int64),
+		by:       make(map[string]registered),
+		gen:      make(map[string]int64),
+		byRunner: make(map[string]registeredWithRunner),
 	}
 }
 
@@ -286,11 +303,105 @@ func (r *Registry) Lookup(concept string) (Evaluator, EvaluatorIdentity, bool) {
 	return reg.fn, reg.identity, true
 }
 
-// Count returns the number of registered evaluators.
+// Count returns the number of registered evaluators across BOTH the
+// plain and runner-typed tables (ADR-v4-006).
 func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.by)
+	return len(r.by) + len(r.byRunner)
+}
+
+// RegisterWithRunner associates a runner-typed evaluator with a
+// concept name (ADR-v4-006). A concept already registered in the
+// plain table refuses with ErrConceptAlreadyRegistered: the two
+// tables share the namespace.
+func (r *Registry) RegisterWithRunner(concept string, e EvaluatorWithRunner) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.by[concept]; exists {
+		return fmt.Errorf("%w: %s (registered in plain table)", ErrConceptAlreadyRegistered, concept)
+	}
+	if _, exists := r.byRunner[concept]; exists {
+		return fmt.Errorf("%w: %s", ErrConceptAlreadyRegistered, concept)
+	}
+	r.gen[concept] = 1
+	r.byRunner[concept] = registeredWithRunner{
+		fn: e,
+		identity: EvaluatorIdentity{
+			Concept:    concept,
+			Generation: 1,
+		},
+	}
+	return nil
+}
+
+// LookupWithRunner returns the runner-typed evaluator and identity for
+// the named concept. Returns ok=false if the concept is unregistered
+// in the runner-typed table (the caller may then try Lookup for the
+// plain-table fallback).
+func (r *Registry) LookupWithRunner(concept string) (EvaluatorWithRunner, EvaluatorIdentity, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	reg, ok := r.byRunner[concept]
+	if !ok {
+		return nil, EvaluatorIdentity{}, false
+	}
+	return reg.fn, reg.identity, true
+}
+
+// Snapshot returns a deep-copy registry suitable for staged
+// re-registration. Used by the amendment-driven re-register path
+// (Gap 2 mid-drain ordering, R10 closure): build a snapshot,
+// validate, then atomically swap into the live runtime via SwapInto.
+// The snapshot is independent of the source after this call returns;
+// concurrent mutations to either are isolated.
+func (r *Registry) Snapshot() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clone := &Registry{
+		by:       make(map[string]registered, len(r.by)),
+		gen:      make(map[string]int64, len(r.gen)),
+		byRunner: make(map[string]registeredWithRunner, len(r.byRunner)),
+	}
+	for k, v := range r.by {
+		clone.by[k] = v
+	}
+	for k, v := range r.gen {
+		clone.gen[k] = v
+	}
+	for k, v := range r.byRunner {
+		clone.byRunner[k] = v
+	}
+	return clone
+}
+
+// SwapInto atomically replaces target's evaluator maps with this
+// registry's contents. Held under target.mu so concurrent Lookup /
+// Register sees a consistent view (R10 closure).
+func (r *Registry) SwapInto(target *Registry) {
+	if target == nil || r == nil {
+		return
+	}
+	r.mu.RLock()
+	by := make(map[string]registered, len(r.by))
+	gen := make(map[string]int64, len(r.gen))
+	byRunner := make(map[string]registeredWithRunner, len(r.byRunner))
+	for k, v := range r.by {
+		by[k] = v
+	}
+	for k, v := range r.gen {
+		gen[k] = v
+	}
+	for k, v := range r.byRunner {
+		byRunner[k] = v
+	}
+	r.mu.RUnlock()
+
+	target.mu.Lock()
+	target.by = by
+	target.gen = gen
+	target.byRunner = byRunner
+	target.mu.Unlock()
 }
 
 // EvaluationRun is the persistent record of one evaluator invocation.
@@ -349,6 +460,12 @@ var runIDCounter atomic.Uint64
 type Runner struct {
 	Registry *Registry
 
+	// passes is the live PassRegistry consulted by the
+	// single-active-role-instance evaluator (Gap 4, ADR-v4-006).
+	// Nil = no pass-registry access; callers that don't exercise
+	// runtime-dependent evaluators pass nil at construction time.
+	passes *PassRegistry
+
 	// now is the runner's clock; abstracted so tests can pin
 	// timestamps. Defaults to time.Now when zero.
 	now func() time.Time
@@ -387,14 +504,33 @@ type Runner struct {
 // every run.
 type EvaluationRunObserver func(run *EvaluationRun)
 
-// NewRunner returns a Runner backed by the given registry. now and
-// idgen default to time.Now and a timestamp-derived id generator.
-func NewRunner(reg *Registry) *Runner {
+// NewRunner returns a Runner backed by the given registry, an
+// optional *PassRegistry (nil = the single-active-role-instance
+// evaluator has no live-pass view, used by tests that don't exercise
+// it), and a depth tier (DepthRankNone = no §7.1 short-circuit).
+//
+// The three-arg form is ADR-v4-006: replaces the previous
+// reg-only constructor + chained WithActualTier with a single
+// explicit signature. WithActualTier is retained for backward
+// compatibility (no-op when tier == DepthRankNone here).
+//
+// now and idgen default to time.Now and a timestamp-derived id
+// generator.
+func NewRunner(reg *Registry, passes *PassRegistry, tier DepthRank) *Runner {
 	return &Runner{
-		Registry: reg,
-		now:      time.Now,
-		idgen:    defaultIDGen,
+		Registry:   reg,
+		passes:     passes,
+		actualTier: tier,
+		now:        time.Now,
+		idgen:      defaultIDGen,
 	}
+}
+
+// Passes returns the PassRegistry the runner was constructed with
+// (nil if none). Used by EvaluatorWithRunner variants that need a
+// live-pass view (today, only single-active-role-instance).
+func (r *Runner) Passes() *PassRegistry {
+	return r.passes
 }
 
 // WithClock overrides the runner's clock for tests.
@@ -473,8 +609,22 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	if clauseID == "" || passID == "" {
 		return nil, errors.New("Evaluate: clauseID and passID must be non-empty")
 	}
-	evaluator, identity, ok := r.Registry.Lookup(c.Concept)
-	if !ok {
+	// ADR-v4-006: two-table dispatch. Try the runner-typed table
+	// first; on miss, fall back to the plain table.
+	var (
+		evaluator      Evaluator
+		evalWithRunner EvaluatorWithRunner
+		identity       EvaluatorIdentity
+		useRunnerTyped bool
+	)
+	if e, id, ok := r.Registry.LookupWithRunner(c.Concept); ok {
+		evalWithRunner = e
+		identity = id
+		useRunnerTyped = true
+	} else if e, id, ok := r.Registry.Lookup(c.Concept); ok {
+		evaluator = e
+		identity = id
+	} else {
 		return nil, fmt.Errorf("%w: %q", ErrEvaluatorUnknown, c.Concept)
 	}
 	// Populate the clause's IDs so the evaluator sees them.
@@ -543,7 +693,15 @@ func (r *Runner) Evaluate(ctx context.Context, clauseID, passID string, c Clause
 	}
 	runStatus := StatusRunning
 
-	result, err := safeInvoke(ctx, evaluator, c)
+	var (
+		result *Result
+		err    error
+	)
+	if useRunnerTyped {
+		result, err = safeInvokeWithRunner(ctx, evalWithRunner, r, c)
+	} else {
+		result, err = safeInvoke(ctx, evaluator, c)
+	}
 	endStatus, runErr := r.deriveEndStatus(runStatus, result, err)
 	completedAt := r.now()
 
@@ -696,6 +854,18 @@ func safeInvoke(ctx context.Context, e Evaluator, c Clause) (result *Result, err
 		}
 	}()
 	return e(ctx, c)
+}
+
+// safeInvokeWithRunner is the panic-guarded sibling of safeInvoke for
+// the runner-typed evaluator variant (ADR-v4-006).
+func safeInvokeWithRunner(ctx context.Context, e EvaluatorWithRunner, r *Runner, c Clause) (result *Result, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("%w: %v", ErrEvaluatorPanicked, rec)
+			result = nil
+		}
+	}()
+	return e(ctx, r, c)
 }
 
 // processIDPrefix is a per-process random hex string seeded once at

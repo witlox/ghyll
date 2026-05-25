@@ -400,13 +400,51 @@ func isSymlinkOpenError(err error) bool {
 // kill-server-fails-integration) get registered separately via
 // BindingEvaluator at init time from grid.LanguageBindings.
 func RegisterBuiltins(r *Registry) {
-	registerOrReplace(r, "no-todo-marker", EvaluateNoTodoMarker)
-	registerOrReplace(r, "trace-link-present", EvaluateTraceLinkPresent)
+	// Alphabetized list of the 11 universal evaluators (diamond v4
+	// Gap 4 — every language-bound:false concept resolves to an
+	// in-process Go evaluator before the first dispatch).
 	registerOrReplace(r, "arrow-artifact-present", EvaluateArrowArtifactPresent)
 	registerOrReplace(r, "cardinality-check", EvaluateCardinalityCheck)
-	registerOrReplace(r, "no-open-finding", EvaluateNoOpenFinding)
-	registerOrReplace(r, "kill-server-fails-integration", EvaluateKillServerFailsIntegration)
 	registerOrReplace(r, "every-requirement-meets-min-depth", EvaluateEveryRequirementMeetsMinDepth)
+	registerOrReplace(r, "kill-server-fails-integration", EvaluateKillServerFailsIntegration)
+	registerOrReplace(r, "mode-determinable-from-repo", EvaluateModeDeterminableFromRepo)
+	registerOrReplace(r, "no-open-finding", EvaluateNoOpenFinding)
+	registerOrReplace(r, "no-todo-marker", EvaluateNoTodoMarker)
+	registerOrReplace(r, "predicate-form", EvaluatePredicateForm)
+	registerOrReplace(r, "trace-link-present", EvaluateTraceLinkPresent)
+	registerOrReplace(r, "unique-definition", EvaluateUniqueDefinition)
+	// single-active-role-instance uses the runner-typed variant
+	// (ADR-v4-006) because it needs *PassRegistry access.
+	registerOrReplaceWithRunner(r, "single-active-role-instance", EvaluateSingleActiveRoleInstance)
+}
+
+// registerOrReplaceWithRunner is the EvaluatorWithRunner sibling of
+// registerOrReplace. Today we don't expose a Replace variant on the
+// runner-typed table (no hot-swap scenario in scope); a second
+// RegisterBuiltins call hits ErrConceptAlreadyRegistered and panics
+// loud — matching the plain-table behavior under the unexpected
+// branch.
+func registerOrReplaceWithRunner(r *Registry, concept string, e EvaluatorWithRunner) {
+	regErr := r.RegisterWithRunner(concept, e)
+	if regErr == nil {
+		return
+	}
+	if !errors.Is(regErr, ErrConceptAlreadyRegistered) {
+		panic(fmt.Sprintf("RegisterBuiltins: %v", regErr))
+	}
+	// Idempotent re-register: overwrite via direct map write under
+	// the registry's lock. Build a Replace path if hot-swap of
+	// runner-typed evaluators becomes a real scenario.
+	r.mu.Lock()
+	r.gen[concept]++
+	r.byRunner[concept] = registeredWithRunner{
+		fn: e,
+		identity: EvaluatorIdentity{
+			Concept:    concept,
+			Generation: r.gen[concept],
+		},
+	}
+	r.mu.Unlock()
 }
 
 // registerOrReplace tries Register; on ErrConceptAlreadyRegistered

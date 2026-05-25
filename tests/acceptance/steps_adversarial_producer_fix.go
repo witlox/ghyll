@@ -102,7 +102,7 @@ func registerAdversarialProducerFixSteps(ctx *godog.ScenarioContext, state *Scen
 		pf.classif = runner.NewClassificationsStore()
 		pf.registry = runner.NewRegistry()
 		runner.RegisterBuiltins(pf.registry)
-		pf.runr = runner.NewRunner(pf.registry).
+		pf.runr = runner.NewRunner(pf.registry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankRealistic)
 		pf.r0Tier = runner.DepthRankRealistic
 		pf.r1Tier = 0
@@ -428,7 +428,7 @@ func registerAdversarialProducerFixSteps(ctx *godog.ScenarioContext, state *Scen
 		classif := runner.NewClassificationsStore()
 		registry := runner.NewRegistry()
 		runner.RegisterBuiltins(registry)
-		runr := runner.NewRunner(registry).WithActualTier(runner.DepthRankRealistic)
+		runr := runner.NewRunner(registry, nil, runner.DepthRankNone).WithActualTier(runner.DepthRankRealistic)
 		registry.Register("pf-still-failing",
 			func(_ context.Context, _ runner.Clause) (*runner.Result, error) {
 				return &runner.Result{Pass: false}, nil

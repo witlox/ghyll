@@ -145,7 +145,7 @@ func TestRunner_EvaluatePass(t *testing.T) {
 	_ = reg.Register("trivial-pass", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: true, Details: map[string]any{"hits": []map[string]any{}}}, nil
 	})
-	r := NewRunner(reg).
+	r := NewRunner(reg, nil, DepthRankNone).
 		WithClock(fixedClock(t)).
 		WithIDGen(func() string { return "ev-fixed-id" })
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "trivial-pass"})
@@ -177,7 +177,7 @@ func TestRunner_EvaluateFail(t *testing.T) {
 	_ = reg.Register("trivial-fail", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: false, Details: map[string]any{"hits": []any{"some-hit"}}}, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "trivial-fail"})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -192,7 +192,7 @@ func TestRunner_EvaluateUnevaluated(t *testing.T) {
 	_ = reg.Register("returns-unevaluated", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Unevaluated: true, Reason: "no signal available"}, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "returns-unevaluated"})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -204,7 +204,7 @@ func TestRunner_EvaluateUnevaluated(t *testing.T) {
 
 func TestRunner_EvaluateUnknownConcept(t *testing.T) {
 	reg := NewRegistry()
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	_, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "no-such"})
 	if !errors.Is(err, ErrEvaluatorUnknown) {
 		t.Errorf("err = %v; want ErrEvaluatorUnknown", err)
@@ -216,7 +216,7 @@ func TestRunner_EvaluateEvaluatorError(t *testing.T) {
 	_ = reg.Register("errors", func(ctx context.Context, c Clause) (*Result, error) {
 		return nil, errors.New("binding broke")
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "errors"})
 	if err == nil {
 		t.Fatal("expected evaluator error to propagate")
@@ -231,7 +231,7 @@ func TestRunner_EvaluateNilResult(t *testing.T) {
 	_ = reg.Register("returns-nil", func(ctx context.Context, c Clause) (*Result, error) {
 		return nil, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	_, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "returns-nil"})
 	if !errors.Is(err, ErrEvaluatorReturnNil) {
 		t.Errorf("err = %v; want ErrEvaluatorReturnNil", err)
@@ -243,7 +243,7 @@ func TestRunner_EvaluatorPanicCaught(t *testing.T) {
 	_ = reg.Register("panics", func(ctx context.Context, c Clause) (*Result, error) {
 		panic("evaluator went boom")
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	_, err := r.Evaluate(context.Background(), "C1", "P1", Clause{Concept: "panics"})
 	if !errors.Is(err, ErrEvaluatorPanicked) {
 		t.Errorf("err = %v; want ErrEvaluatorPanicked", err)
@@ -255,7 +255,7 @@ func TestRunner_EvaluateRequiresIDs(t *testing.T) {
 	_ = reg.Register("x", func(ctx context.Context, c Clause) (*Result, error) {
 		return &Result{Pass: true}, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	if _, err := r.Evaluate(context.Background(), "", "P", Clause{Concept: "x"}); err == nil {
 		t.Error("empty clauseID should error")
 	}

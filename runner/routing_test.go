@@ -210,7 +210,7 @@ func TestEvaluate_DepthBelowRequiredShortCircuits(t *testing.T) {
 		called = true
 		return &Result{Pass: true}, nil
 	})
-	r := NewRunner(reg).WithActualTier(DepthRankShallow)
+	r := NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankShallow)
 	run, err := r.Evaluate(context.Background(), "C1", "P1", Clause{
 		Concept:      "test",
 		DepthType:    DepthTypeSensitive,
@@ -237,7 +237,7 @@ func TestEvaluate_DepthMetRunsEvaluator(t *testing.T) {
 		called = true
 		return &Result{Pass: true}, nil
 	})
-	r := NewRunner(reg).WithActualTier(DepthRankRealistic)
+	r := NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankRealistic)
 	_, err := r.Evaluate(context.Background(), "C1", "P1", Clause{
 		Concept:      "test",
 		DepthType:    DepthTypeSensitive,
@@ -260,7 +260,7 @@ func TestEvaluate_LegacyPathSkipsDepthCheck(t *testing.T) {
 		called = true
 		return &Result{Pass: true}, nil
 	})
-	r := NewRunner(reg)
+	r := NewRunner(reg, nil, DepthRankNone)
 	_, err := r.Evaluate(context.Background(), "C1", "P1", Clause{
 		Concept:      "test",
 		DepthType:    DepthTypeSensitive,

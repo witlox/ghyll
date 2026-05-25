@@ -161,7 +161,7 @@ func registerStateMachineSteps(ctx *godog.ScenarioContext, state *ScenarioState)
 
 	ctx.Step(`^a depth-sensitive clause routed below required tier$`, func() error {
 		// runner.Runner with actualTier = SHALLOW, clause requires REALISTIC.
-		state.SMRunner = runner.NewRunner(state.SMRunnerRegistry).
+		state.SMRunner = runner.NewRunner(state.SMRunnerRegistry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankShallow)
 		return nil
 	})

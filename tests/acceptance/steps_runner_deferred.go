@@ -29,7 +29,7 @@ func registerRunnerDeferredSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		state.RPBus = runner.NewOperatorBus()
 		state.RPRegistry = runner.NewRegistry()
 		runner.RegisterBuiltins(state.RPRegistry)
-		state.RPRunner = runner.NewRunner(state.RPRegistry).
+		state.RPRunner = runner.NewRunner(state.RPRegistry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankShallow)
 		state.RPPasses = runner.NewPassRegistry()
 		state.RPGrid = runner.NewGrid()
@@ -380,7 +380,7 @@ func registerRunnerDeferredSteps(ctx *godog.ScenarioContext, state *ScenarioStat
 		// Runner is configured at DepthRankShallow in Before; the
 		// clause asks for MinDepthTier=Realistic. Realistic > Shallow
 		// → gate fires.
-		state.RPRunner = runner.NewRunner(state.RPRegistry).
+		state.RPRunner = runner.NewRunner(state.RPRegistry, nil, runner.DepthRankNone).
 			WithActualTier(runner.DepthRankShallow)
 		return nil
 	})

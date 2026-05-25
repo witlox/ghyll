@@ -27,7 +27,7 @@ func newDispatcherFixture(t *testing.T) *dispatcherFixture {
 		passes:   NewPassRegistry(),
 		bus:      NewOperatorBus(),
 		registry: reg,
-		runner:   NewRunner(reg).WithActualTier(DepthRankRealistic),
+		runner:   NewRunner(reg, nil, DepthRankNone).WithActualTier(DepthRankRealistic),
 	}
 }
 
