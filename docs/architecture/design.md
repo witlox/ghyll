@@ -35,8 +35,8 @@ shape and points you at the right deep-dive.
 |  | gates/concepts/    18 clause concept schemas       |  |
 |  | dialect/           model-specific code             |  |
 |  |   router.go        gate-driven routing             |  |
-|  |   minimax_m25.go   MiniMax M2.5 dialect            |  |
-|  |   glm5.go          GLM-5 dialect                   |  |
+|  |   minimax.go       MiniMax M2.5 dialect            |  |
+|  |   glm.go           GLM-5 dialect                   |  |
 |  |   deepseek.go      DeepSeek dialect                |  |
 |  |   qwen.go          Qwen dialect                    |  |
 |  |   parse.go         shared OpenAI tool-call parser  |  |

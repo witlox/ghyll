@@ -20,26 +20,25 @@ The orphan branch shares no history with any code branch. It exists purely for m
 
 ## Worktree Setup
 
-To avoid switching branches in the working repository, ghyll uses a git worktree:
+To avoid switching branches in the working repository, ghyll uses a git worktree. The worktree is created in a system temp directory via `os.MkdirTemp("", "ghyll-memory-*")` (see `memory/sync.go:67`), so the project tree stays clean and the path never collides with the repo's own files:
 
 ```
-git worktree add --detach .ghyll-memory ghyll/memory
+git worktree add --detach <os-tempdir>/ghyll-memory-XXXXXX ghyll/memory
 ```
 
-The worktree lives at `<repo>/.ghyll-memory/` (gitignored). All memory file operations happen in this worktree, so the developer's working branch is never disturbed.
+All memory file operations happen in this worktree, so the developer's working branch is never disturbed. The worktree path is held on the `Syncer` and discarded at session shutdown; there is no `<repo>/.ghyll-memory/` directory.
 
 ## Writing Checkpoints
 
 When a checkpoint is created during a session:
 
-1. Write `<hash>.json` to `.ghyll-memory/repos/<repo-hash>/checkpoints/`.
-2. Append a chain entry to `.ghyll-memory/repos/<repo-hash>/chains/<device-id>.jsonl`.
+1. Write `<hash>.json` to `<worktree>/repos/<repo-hash>/checkpoints/`.
+2. Append a chain entry to `<worktree>/repos/<repo-hash>/chains/<device-id>.jsonl`.
 3. A background goroutine commits and pushes:
    ```
-   cd .ghyll-memory
-   git add .
-   git commit -m "checkpoint <hash> by <device-id>"
-   git push origin ghyll/memory
+   git -C <worktree> add .
+   git -C <worktree> commit -m "checkpoint <hash> by <device-id>"
+   git -C <worktree> push origin ghyll/memory
    ```
 
 Checkpoint writes are non-blocking. The session continues immediately after steps 1 and 2; the git commit and push happen in the background.
@@ -57,8 +56,8 @@ Because checkpoint filenames are content hashes, writing the same checkpoint twi
 
 At session start and periodically during the session, ghyll pulls remote checkpoints:
 
-1. Fetch the latest state: `git -C .ghyll-memory fetch origin ghyll/memory`
-2. Fast-forward merge: `git -C .ghyll-memory merge --ff-only origin/ghyll/memory`
+1. Fetch the latest state: `git -C <worktree> fetch origin ghyll/memory`
+2. Fast-forward merge: `git -C <worktree> merge --ff-only origin/ghyll/memory`
 3. Scan for new checkpoint files not already in the local SQLite store.
 4. For each new remote device chain:
    - Load `chains/<device-id>.jsonl`.
@@ -101,8 +100,4 @@ For repositories with extensive checkpoint history, ghyll supports shallow fetch
 git fetch --depth=1 origin ghyll/memory
 ```
 
-This fetches only the latest tree without full history, which is sufficient for importing the current checkpoint set. Full history can be retrieved when needed:
-
-```
-ghyll memory fetch --full
-```
+This fetches only the latest tree without full history, which is sufficient for importing the current checkpoint set. Full history can be retrieved manually when needed by running `git -C <worktree> fetch --unshallow origin ghyll/memory` against the syncer's worktree directory.

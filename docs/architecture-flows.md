@@ -6,10 +6,13 @@ participate and the order of operations.
 
 ---
 
-## Flow 1: Operator attestation
+## Flow 1: Operator attestation (CLI `/attest`)
 
 The path a `/attest` slash command takes from REPL keystroke to
-durable engine row + JSONL audit + tracker pulse.
+durable engine row + JSONL audit + tracker pulse. This is the
+CLI escape-hatch path the operator types when they want to attest
+a clause out-of-band; the routine path is Flow 4 (the Tier 2
+verdict modal).
 
 ```
 Operator       Session       Attestation     Journal        Engine        JSONL          Tree           IBTracker
@@ -47,17 +50,23 @@ Operator       Session       Attestation     Journal        Engine        JSONL 
 Key invariants:
 
 - **Step 4** (fsync inside the JSONL Writer observer) returns
-  BEFORE Record's caller proceeds. Per ADR-010 and the
-  operator-attestation spec, "the file is fsync'd before the
-  verdict is reported as accepted."
+  BEFORE `Record` returns to the CLI handler. Per ADR-010 and the
+  operator-attestation spec, the JSONL line is fsync'd before
+  `/attest` prints its success message back to the operator — so
+  a crash between Record and the prompt cannot leave the operator
+  with a "succeeded" message and no on-disk record. (The modal
+  surface in Flow 4 has the same invariant phrased in modal terms:
+  the verdict is reported as accepted only after the writers
+  return.)
 - **§12.2 enforcement** fires inside `validate` BEFORE any write.
   A self-cert attempt errors out with `ErrAttestationSelfCert`;
   no row hits any storage layer.
 - **The Journal observer** is the durable path. The JSONL writers
   are the audit-trail path. The engine table is the source of
   truth per ADR-010.
-- **The IBTracker** receives every verdict. Three consecutive
-  `insufficient-basis` on the same clause emit
+- **The IBTracker** receives every verdict — whether the verdict
+  came in via the CLI here or via the modal in Flow 4. Three
+  consecutive `insufficient-basis` on the same clause emit
   `OpEventInsufficientBasisRoundsExceeded` on the bus.
 
 ---

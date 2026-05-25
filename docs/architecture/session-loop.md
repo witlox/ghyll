@@ -31,8 +31,7 @@ Initialization runs the following steps in order:
 13. If `--resume`: load previous session checkpoint, inject summary as backfill, restore plan mode.
 14. Initialize the context manager (`context/`).
 15. Initialize the stream client (`stream/`).
-13. Initialize the stream client (`stream/`).
-14. Transition to READY.
+16. Transition to READY.
 
 If any step fails fatally (missing config, locked repo), the process exits with an error. Non-fatal failures (embedder unavailable, sync failure) produce a warning and the session continues with reduced capabilities.
 
