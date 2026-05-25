@@ -1,6 +1,6 @@
 [book]
 title = "Ghyll Documentation"
-description = "Purpose-built coding agent CLI for self-hosted open-weight models"
+description = "A coding agent for self-hosted open-weight models with a typed-clause, arrow-based correctness mechanism."
 authors = ["witlox"]
 language = "en"
 src = "docs"

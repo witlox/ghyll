@@ -1,6 +1,6 @@
 # Tool Execution
 
-ghyll provides twelve tools for direct OS operations and model coordination. All tools execute immediately with no permission checks --- SRT handles sandboxing.
+ghyll provides twelve tools for direct OS operations and model coordination. All tools execute immediately with no permission checks --- the operator's sandbox handles isolation. See [Why ghyll — sandbox-only execution](../why.md#5-sandbox-only-execution) for the rationale and the [Operator Guide sandbox table](../operator-guide.md#sandbox-setup) for setup recipes.
 
 ## Available Tools
 
@@ -61,7 +61,7 @@ Returns file paths matching a glob pattern, sorted by modification time (most re
 
 ### web_fetch
 
-Fetches a URL and returns the content converted to markdown. Subject to SRT's network whitelist.
+Fetches a URL and returns the content converted to markdown. Subject to whatever network policy the surrounding sandbox enforces.
 
 - **Parameters**: `url`
 - **Retry**: 3 attempts with exponential backoff on connection errors and 5xx responses

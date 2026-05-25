@@ -4,11 +4,18 @@
 
 ---
 
+# Why ghyll
+
+- [The design rationale](why.md)
+
+---
+
 # User Guide
 
 - [Getting Started](usage/getting-started.md)
 - [Configuration](usage/configuration.md)
 - [CLI Reference](usage/cli-reference.md)
+- [Operator Guide](operator-guide.md)
 - [Memory & Sync](usage/memory.md)
 - [Troubleshooting](usage/troubleshooting.md)
 
@@ -17,20 +24,14 @@
 # Architecture
 
 - [System Design](architecture/design.md)
+- [Architecture Flows](architecture-flows.md)
 - [Package Graph](architecture/package-graph.md)
 - [Routing Logic](architecture/routing.md)
+- [Session Loop](architecture/session-loop.md)
 - [Checkpoint Format](architecture/checkpoints.md)
 - [Sync Protocol](architecture/sync.md)
 - [Vault API](architecture/vault-api.md)
 - [Error Handling](architecture/errors.md)
-- [Session Loop](architecture/session-loop.md)
-- [Flow Diagrams](architecture-flows.md)
-
----
-
-# Operator
-
-- [Operator Guide](operator-guide.md)
 
 ---
 
@@ -46,7 +47,7 @@
 
 ---
 
-# Decisions
+# Architecture Decisions
 
 - [ADR-001: Architecture](decisions/001-architecture.md)
 - [ADR-002: Shared Types Leaf Package](decisions/002-types-leaf-package.md)
