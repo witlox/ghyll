@@ -93,14 +93,32 @@ const (
 // Bindings that need more (e.g., a build-tool needs CARGO_HOME)
 // declare it via WithInheritEnv at registration time. Validation-
 // pass-3 F1.
+//
+// Diamond v4 / R24 closure extension: the per-language starter
+// entries below land here so the common toolchains (Go, Rust,
+// Node, Python) work out of the box without per-binding env
+// declarations. Bindings that need anything beyond this still go
+// through WithInheritEnv. ADR-magnitude schema change (option b in
+// the artifact) is deferred to v5; for now keep map[string]string
+// + this expanded allowlist.
 var defaultEnvAllowlist = []string{
+	// Core (pre-v4)
 	"PATH", "HOME", "LANG", "TMPDIR", "USER", "SHELL", "TERM",
 	"LOGNAME", "PWD",
+	// Go toolchain (R24)
+	"GOPATH", "GOCACHE", "GOMODCACHE", "GOROOT",
+	// Rust toolchain (R24)
+	"CARGO_HOME", "RUSTUP_HOME",
+	// Node / TypeScript toolchain (R24)
+	"NODE_PATH",
+	// Python toolchain (R24)
+	"PYTHONPATH", "VIRTUAL_ENV",
 }
 
 // defaultEnvAllowlistPrefixes match anything starting with these
-// (LC_* covers all locale variables).
-var defaultEnvAllowlistPrefixes = []string{"LC_"}
+// (LC_* covers all locale variables; npm_config_* covers per-
+// project npm settings — R24).
+var defaultEnvAllowlistPrefixes = []string{"LC_", "npm_config_"}
 
 // secretRedactRE matches common secret-like strings. Used by the
 // forensic-redaction filter (F33).

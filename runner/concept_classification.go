@@ -73,3 +73,28 @@ func IsLanguageBoundConcept(concept string) bool {
 	_, ok := languageBoundConcepts[concept]
 	return ok
 }
+
+// ConceptRegistryKey returns the Registry lookup key for a clause
+// (ADR-v4-001 + ADR-v4-006). For language-bound:false concepts,
+// the bare concept name. For language-bound:true concepts, the
+// flat "<concept>.<language>" form, with `language` extracted
+// safely from c.Args (R18 closure: no bare type assertion).
+//
+// On missing or non-string `language` arg, returns the sentinel
+// "<concept>." form which guarantees Registry.Lookup misses
+// cleanly — the operator-facing coverage check (in cmd/ghyll
+// per ADR-v4-007) surfaces the gap before runtime dispatch.
+func ConceptRegistryKey(c Clause) string {
+	if !IsLanguageBoundConcept(c.Concept) {
+		return c.Concept
+	}
+	raw, ok := c.Args["language"]
+	if !ok {
+		return c.Concept + "."
+	}
+	lang, ok := raw.(string)
+	if !ok || lang == "" {
+		return c.Concept + "."
+	}
+	return c.Concept + "." + lang
+}
