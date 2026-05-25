@@ -82,13 +82,33 @@ func (r *engineRuntime) runDispatcherAdversarialPhase(
 	// Surface a round-start event so the modal driver + operator
 	// UI can render adversarial progress inline. M9 closure: the
 	// tier_label carries the cycle's depth context.
+	//
+	// F-M-1 closure (2026-05-25 diamond final adversarial): write
+	// the canonical 6 keys per ADR-v4-005 line 33
+	// (arrow_id, pass_id, round, rounds_max, open_findings,
+	// tier_label). Pre-fix, only tier_label + sensitive_clauses
+	// were on the Payload. round + rounds_max + open_findings are
+	// only known once RunRemediationLoop is in flight; this
+	// outer-driver publish marks the cycle's first round so
+	// round=1 is correct, rounds_max comes from
+	// RemediationConfigDefaults, open_findings starts at 0 (no
+	// Attack has run yet).
+	roundsMax := hooks.RemediationConfigDefaults.RoundsMax
+	if roundsMax <= 0 {
+		roundsMax = runner.DefaultRemediationRoundsMax
+	}
 	if r.bus != nil {
 		r.bus.Publish(runner.OperatorEvent{
 			Kind:    runner.OpEventAdversarialRoundStart,
 			ArrowID: req.Arrow.ID,
 			PassID:  passID,
-			Detail:  fmt.Sprintf("sensitive_clauses=%d tier=%d", len(sensitive), int(req.ActualTier)),
+			Detail:  fmt.Sprintf("sensitive_clauses=%d tier=%d round=1/%d", len(sensitive), int(req.ActualTier), roundsMax),
 			Payload: map[string]string{
+				"arrow_id":          req.Arrow.ID,
+				"pass_id":           passID,
+				"round":             "1",
+				"rounds_max":        fmt.Sprintf("%d", roundsMax),
+				"open_findings":     "0",
 				"tier_label":        fmt.Sprintf("%d", int(req.ActualTier)),
 				"sensitive_clauses": fmt.Sprintf("%d", len(sensitive)),
 			},
@@ -159,21 +179,43 @@ func (r *engineRuntime) runDispatcherAdversarialPhase(
 
 	// Surface the terminal outcome so subscribers (modal driver,
 	// operator UI) render the cycle conclusion.
+	//
+	// F-M-2 closure (2026-05-25 diamond final adversarial): write
+	// the canonical keys per ADR-v4-005 line 34-35:
+	//   converged:  arrow_id, pass_id, outcome, rounds_used
+	//   escalated:  arrow_id, pass_id, outcome, rounds_used, reason
+	// Pre-fix, the publish carried only outcome + rounds_executed
+	// (key-name mismatch: rounds_executed vs canonical rounds_used).
 	if r.bus != nil {
 		kind := runner.OpEventRemediationEscalated
 		if remediationConvergedDriver(report.Outcome) {
 			kind = runner.OpEventRemediationConverged
 		}
+		payload := map[string]string{
+			"arrow_id":    req.Arrow.ID,
+			"pass_id":     passID,
+			"outcome":     string(report.Outcome),
+			"rounds_used": fmt.Sprintf("%d", report.RoundsExecuted),
+		}
+		if kind == runner.OpEventRemediationEscalated {
+			// ADR-v4-005: escalated requires `reason` (free-text
+			// amplification of the escalation cause). Synthesize
+			// from the outcome enum + the last HarnessError if
+			// any (gives the operator the last failing harness
+			// line without parsing Detail).
+			reason := string(report.Outcome)
+			if n := len(report.HarnessErrors); n > 0 {
+				reason = string(report.Outcome) + ": " + report.HarnessErrors[n-1]
+			}
+			payload["reason"] = reason
+		}
 		r.bus.Publish(runner.OperatorEvent{
 			Kind:    kind,
 			ArrowID: req.Arrow.ID,
 			PassID:  passID,
-			Detail: fmt.Sprintf("outcome=%s rounds_executed=%d",
+			Detail: fmt.Sprintf("outcome=%s rounds_used=%d",
 				string(report.Outcome), report.RoundsExecuted),
-			Payload: map[string]string{
-				"outcome":         string(report.Outcome),
-				"rounds_executed": fmt.Sprintf("%d", report.RoundsExecuted),
-			},
+			Payload: payload,
 		})
 	}
 

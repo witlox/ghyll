@@ -176,6 +176,9 @@ The minimum daily-driver slash commands are:
 | `/run-arrow <id> [--context <ctx>]` | Dispatch a pass on the arrow. |
 | `/op-id <id>` | Declare an operator session bound to an op-id (for attestations). |
 | `/attest <ref> <verdict>` | Attest a pending clause without going through the modal. |
+| `/drain-amendments` | FIFO-drain the pending amendment queue under the active op-id (diamond v4). |
+| `/adversary {enable\|disable\|status}` | Toggle the §11 adversarial-cycle hook bundle (diamond v4). |
+| `/invalidate-arrow <id> [--reason <text>]` | Invalidate an arrow; writes an audit row to `arrow_invalidations` (diamond v4). |
 | `/deep` | Temporarily force the deep tier (GLM-5). |
 | `/fast` | Restore auto-routing. |
 | `/plan` | Enter plan mode (deeper reasoning). |

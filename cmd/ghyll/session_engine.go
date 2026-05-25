@@ -661,7 +661,15 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 		if e.Kind != runner.OpEventArrowInvalidated {
 			return
 		}
-		opID, reason, source := "", e.Detail, "operator"
+		// F-C-1 closure (2026-05-25): read the canonical 4 keys
+		// from Payload per ADR-v4-005 line 40 (arrow_id, op_id,
+		// reason, timestamp). The arrow_invalidations table's
+		// `source` column is not in the ADR's required-key list;
+		// it defaults to "operator" here and the future
+		// auto-invalidation pathway will set it explicitly when
+		// it lands.
+		opID, reason := "", e.Detail
+		at := ""
 		if e.Payload != nil {
 			if v := e.Payload["op_id"]; v != "" {
 				opID = v
@@ -669,11 +677,14 @@ func (r *engineRuntime) attachJournal(logger *slog.Logger) error {
 			if v := e.Payload["reason"]; v != "" {
 				reason = v
 			}
-			if v := e.Payload["source"]; v != "" {
-				source = v
+			if v := e.Payload["timestamp"]; v != "" {
+				at = v
 			}
 		}
-		at := e.Timestamp.UTC().Format(time.RFC3339Nano)
+		if at == "" {
+			at = e.Timestamp.UTC().Format(time.RFC3339Nano)
+		}
+		source := "operator"
 		if err := r.store.InsertArrowInvalidation(
 			context.Background(),
 			e.ArrowID, opID, reason, source, at,

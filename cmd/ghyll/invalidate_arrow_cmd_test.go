@@ -139,8 +139,16 @@ func TestScenario_InvalidateArrow_SlashCommand_PublishesAndPersists(t *testing.T
 	if ev.Payload["reason"] != "stale-spec" {
 		t.Fatalf("ev.Payload[reason] = %q, want stale-spec", ev.Payload["reason"])
 	}
-	if ev.Payload["source"] != "operator" {
-		t.Fatalf("ev.Payload[source] = %q, want operator", ev.Payload["source"])
+	// F-C-1 closure (2026-05-25): producer writes canonical 4 keys
+	// per ADR-v4-005 line 40 (arrow_id, op_id, reason, timestamp).
+	if ev.Payload["arrow_id"] != arrowID {
+		t.Fatalf("ev.Payload[arrow_id] = %q, want %q", ev.Payload["arrow_id"], arrowID)
+	}
+	if ev.Payload["op_id"] != "op-alice@example.com" {
+		t.Fatalf("ev.Payload[op_id] = %q, want op-alice@example.com", ev.Payload["op_id"])
+	}
+	if ev.Payload["timestamp"] == "" {
+		t.Fatalf("ev.Payload[timestamp] empty; ADR-v4-005 requires RFC3339Nano timestamp")
 	}
 
 	// Consumer side: arrow_invalidations row landed on disk.

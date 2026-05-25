@@ -13,10 +13,13 @@
 // drain_amendments_cmd.go:
 //   - Refuse without an op-id (the row carries operator identity).
 //   - Refuse on empty / unknown arrow-id (look up via Grid.Lookup).
-//   - Publish OpEventArrowInvalidated with the typed payload
-//     (arrow_id, op_id, reason, source); the observer in
-//     session_engine.go writes the arrow_invalidations row
-//     synchronously (Publish fans out inline).
+//   - Publish OpEventArrowInvalidated with the canonical typed
+//     payload per ADR-v4-005 line 40 (arrow_id, op_id, reason,
+//     timestamp); the observer in session_engine.go writes the
+//     arrow_invalidations row synchronously (Publish fans out
+//     inline). F-C-1 closure (2026-05-25 diamond final adversarial):
+//     pre-fix the Payload carried `source` (engine-schema column
+//     name) instead of `timestamp`, diverging from ADR-v4-005.
 //   - Surface inline confirmation referencing the persistence
 //     target so the operator sees the row landed.
 
@@ -152,20 +155,23 @@ func (s *Session) handleInvalidateArrowCommand(arg string) SlashCommandResult {
 	// arrow_invalidations row synchronously inside Publish's
 	// fan-out, so by the time Publish returns the row is on disk.
 	//
-	// Payload keys per ADR-v4-005: arrow_id, op_id, reason, source.
-	// "source" distinguishes operator-typed invalidations from any
-	// future auto-invalidation pathway.
+	// Payload keys per ADR-v4-005 line 40 (canonical 4 keys):
+	// arrow_id, op_id, reason, timestamp. The arrow_invalidations
+	// table's `source` column is set by the observer (defaults to
+	// "operator") — not propagated through the typed Payload to
+	// stay in compliance with the ADR's required-key list.
+	ts := time.Now().UTC()
 	bus.Publish(runner.OperatorEvent{
 		Kind:      runner.OpEventArrowInvalidated,
 		ArrowID:   opts.ArrowID,
 		OpID:      s.opID,
 		Detail:    reason,
-		Timestamp: time.Now(),
+		Timestamp: ts,
 		Payload: map[string]string{
-			"arrow_id": opts.ArrowID,
-			"op_id":    s.opID,
-			"reason":   reason,
-			"source":   "operator",
+			"arrow_id":  opts.ArrowID,
+			"op_id":     s.opID,
+			"reason":    reason,
+			"timestamp": ts.Format(time.RFC3339Nano),
 		},
 	})
 

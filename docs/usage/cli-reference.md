@@ -124,6 +124,9 @@ Print the version string.
 | `/passes` | List currently-open passes from the PassRegistry. `/passes <pass-id>` shows one pass's full state. |
 | `/list-arrows` | Render the grid snapshot (sorted arrow IDs + source→target / stratum / context / clause count). |
 | `/run-arrow <arrow-id> [--context <ctx>]` | Dispatch one arrow synchronously; surface pass-open/close events inline. |
+| `/drain-amendments` | FIFO-drain the pending amendment queue under the active op-id; refuses without `/op-id`. Each commit emits `OpEventAmendmentDrained` per ADR-v4-005. (diamond v4 / Gap 2) |
+| `/adversary {enable\|disable\|status}` | Toggle the §11 adversarial-cycle hook bundle the dispatcher consults on depth-sensitive arrows. `enable` refuses with `no-dialect-configured` when no active model resolves to a configured endpoint. (diamond v4 / Gap 1) |
+| `/invalidate-arrow <arrow-id> [--reason <text>]` | Invalidate one arrow; persists an audit row to `.ghyll/engine.db arrow_invalidations` (ADR-v4-008). Refuses without `/op-id`. |
 | `/<name>` | User-defined slash command loaded from `.ghyll/commands/<name>.md`. The file contents are injected as user input for the next turn. |
 
 See [Operator Guide --- Slash commands](../operator-guide.md#slash-commands) for worked examples (op-id, attest, run-arrow, verdict modal).
