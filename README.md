@@ -56,7 +56,7 @@ and the role files at
 
 ### 2. Transitions are arrows
 
-An arrow named `A-analyst-architect-default` is the project's
+An arrow named `analyst→architect/default` is the project's
 declaration that the **analyst** hands work off to the **architect**
 in the `default` context. Before the runtime will dispatch a pass
 on that arrow, every clause attached to it (e.g. `tests-pass`,

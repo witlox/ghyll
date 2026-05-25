@@ -16,7 +16,7 @@ role, the target role, the context, the stratum (depth tier), and
 the list of [clauses](#clause) the runtime must evaluate before
 the transition is legal.
 
-Worked example: `A-analyst-architect-default` declares that the
+Worked example: `analyst→architect/default` declares that the
 **analyst** hands off to the **architect** inside the **default**
 context. Until every clause attached to this arrow reaches a
 [verdict](#verdict), the arrow stays open and no follow-on work
@@ -26,7 +26,7 @@ Where you see it:
 
 - On disk: `.ghyll/grid.v1.yaml` (after `ghyll init`).
 - In the CLI: `/list-arrows` shows the full set;
-  `ghyll arrow show A-analyst-architect-default` renders one
+  `ghyll arrow show analyst→architect/default` renders one
   arrow's live state.
 
 ## Pass
@@ -36,7 +36,7 @@ clauses, collect verdicts, close. Multiple passes can run against
 the same arrow over a project's life — each pass is a fresh
 attempt to drive that arrow to `closed:ok`.
 
-Worked example: when you run `/run-arrow A-analyst-architect-default`
+Worked example: when you run `/run-arrow analyst→architect/default`
 the runtime opens a pass (call it `p-7`), evaluates clauses one
 at a time, possibly opens a verdict modal for attested clauses,
 then closes the pass with `closed:ok` or `closed:failed`.
@@ -104,7 +104,7 @@ you cannot add a `reviewer` or `tester` at runtime, and you
 cannot collapse two roles into one.
 
 Worked example: the analyst hands off to the architect across
-arrow `A-analyst-architect-default`. The architect's exit-gate
+arrow `analyst→architect/default`. The architect's exit-gate
 clauses on that arrow are what the operator (or the runtime)
 will evaluate before the next role gets to act.
 
@@ -265,7 +265,7 @@ an arrow, and stay open until they reach `closed:remediated`,
 
 Worked example: the adversary's "this spec omits the partial-
 payment failure mode" turns into a finding on
-`A-analyst-architect-default` that the analyst must address
+`analyst→architect/default` that the analyst must address
 before the arrow can close.
 
 Where you see it:
@@ -304,7 +304,7 @@ engine schema both enforce this; `ghyll engine verify-attestations`
 also detects self-cert in the on-disk JSONL.
 
 Worked example: alice played the analyst on
-`A-analyst-architect-default`. When she later tries to attest a
+`analyst→architect/default`. When she later tries to attest a
 clause on that arrow, the runtime rejects the record — someone
 with a different op-id (typically the architect or a reviewer)
 must verify instead.

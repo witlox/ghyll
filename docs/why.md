@@ -87,7 +87,7 @@ operator under deadline cannot.
 
 ### The decision
 
-An arrow named `A-analyst-architect-default` is the project's
+An arrow named `analyst→architect/default` is the project's
 declaration that the **analyst** hands work off to the
 **architect** in the `default` context. Before the runtime
 will dispatch a [pass](glossary.md#pass) on that arrow, every
