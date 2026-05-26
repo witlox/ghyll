@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/witlox/ghyll/bootstrap"
 	"github.com/witlox/ghyll/catalogue"
@@ -53,6 +54,12 @@ const initAutoSkipResidueReasonPrefix = "init-v1: auto-skipped (required args wi
 func cmdInitBootstrap(args []string) error {
 	opID := ""
 	projectDir := ""
+	// languageFlag accepts: a comma-separated list of language ids
+	// ("go", "python", "cpp", "rust") for the trait-block inline-
+	// copy, OR "auto" (default) to derive from profile.Languages,
+	// OR "none" to skip the trait block entirely.
+	languageFlag := "auto"
+	forceTraits := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--op-id":
@@ -61,6 +68,14 @@ func cmdInitBootstrap(args []string) error {
 			}
 			opID = args[i+1]
 			i++
+		case "--language":
+			if i+1 >= len(args) {
+				return errors.New("--language requires a value (go|python|cpp|rust|auto|none, comma-separated for polyglot)")
+			}
+			languageFlag = args[i+1]
+			i++
+		case "--force-traits":
+			forceTraits = true
 		case "-h", "--help":
 			ui.Usage(initUsage)
 			return nil
@@ -207,6 +222,24 @@ func cmdInitBootstrap(args []string) error {
 		return fmt.Errorf("ghyll init: write grid: %w", err)
 	}
 
+	// Compose the trait block (engineering.md + the resolved
+	// language guideline(s)) into <project>/.ghyll/instructions.md
+	// per the `--language` flag. `none` skips entirely. The block
+	// is delimited by <!-- ghyll-traits-begin --> markers so a
+	// later `--force-traits` can rewrite just that slice.
+	resolvedLanguages, langErr := resolveTraitLanguages(languageFlag, profile.Languages)
+	if langErr != nil {
+		return fmt.Errorf("ghyll init: %w", langErr)
+	}
+	traitsWritten := 0
+	if len(resolvedLanguages) > 0 {
+		path := filepath.Join(absDir, ".ghyll", "instructions.md")
+		if wErr := writeTraitBlock(path, resolvedLanguages, forceTraits); wErr != nil {
+			return fmt.Errorf("ghyll init: write trait block: %w", wErr)
+		}
+		traitsWritten = len(resolvedLanguages)
+	}
+
 	// Post-prod-readiness adversarial L-B: when the repo had no
 	// detectable bounded contexts and ghyll auto-declared a single
 	// "default" context, call that out in the success summary so
@@ -220,6 +253,12 @@ func cmdInitBootstrap(args []string) error {
 	ui.Status("ℹ", "%s", summary)
 	ui.Status("ℹ", "  auto-confirmed %d clauses; auto-skipped %d clauses (recorded in residue)",
 		totalAutoConfirmed, totalAutoSkipped)
+	if traitsWritten > 0 {
+		ui.Status("ℹ", "  appended %d trait block(s) [%s] to %s",
+			traitsWritten,
+			strings.Join(resolvedLanguages, ","),
+			filepath.Join(absDir, ".ghyll", "instructions.md"))
+	}
 	return nil
 }
 

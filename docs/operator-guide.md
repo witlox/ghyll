@@ -323,7 +323,7 @@ cross-check.
 
 These work without a running session.
 
-### `ghyll init --op-id <id> [project-dir]`
+### `ghyll init --op-id <id> [--language <lang>] [--force-traits] [project-dir]`
 
 The bootstrap pipeline driver covered in detail above. The
 positional `project-dir` defaults to `.` when omitted. Refuses
@@ -331,6 +331,22 @@ to overwrite an existing grid; rejects op-ids that contain
 control bytes, path separators, ".." substrings, Unicode format
 runes (RTL override, ZWSP, ZWJ, BOM), a leading dot or dash,
 a trailing dot, or > 256 bytes.
+
+`--language` accepts `go`, `python`, `cpp`, `rust`, `auto`
+(default — derives from the profile's detected file
+extensions), or `none` (skip the trait block). Comma-separated
+for polyglot repos: `--language go,python`. The chosen
+guideline + the language-agnostic `engineering.md` are inlined
+into `<project>/.ghyll/instructions.md` inside
+`<!-- ghyll-traits-begin --> ... <!-- ghyll-traits-end -->`
+markers. Re-running without `--force-traits` leaves an existing
+trait block alone; with `--force-traits` rewrites just that
+slice (operator prose above + below is preserved).
+
+The library of opt-in guidelines lives at
+`~/.ghyll/guidelines/{engineering,ci,go,python,cpp,rust}.md`,
+seeded on first `ghyll run`. Edit them; the next `ghyll init`
+on a project picks up the edits.
 
 ### `ghyll init attest --op-id <id> [--dir <path>]`
 

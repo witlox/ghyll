@@ -194,6 +194,20 @@ func cmdRun(args []string) error {
 		return err
 	}
 
+	// 1b. Seed the biased user-home tree (instructions, commands,
+	// guidelines library). Seed-on-empty: never clobbers existing
+	// files. The library is opt-in — ghyll init --language inlines
+	// the chosen guideline into <project>/.ghyll/instructions.md.
+	homeDir := filepath.Join(os.Getenv("HOME"), ".ghyll")
+	if seeded, seedErr := seedUserHome(homeDir); seedErr != nil {
+		// Non-fatal: a seed failure shouldn't block a session that
+		// otherwise has a valid config. Surface a warning so the
+		// operator can fix permissions if they care.
+		ui.Status("⚠", "seed user-home library: %v", seedErr)
+	} else if seeded > 0 {
+		ui.Status("ℹ", "seeded %d user-home files under %s", seeded, homeDir)
+	}
+
 	// 2. Acquire lockfile (invariant 31)
 	lock, err := AcquireLock(absDir)
 	if err != nil {

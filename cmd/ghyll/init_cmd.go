@@ -25,8 +25,13 @@ import (
 // JSONL via the standard Record path, so they're indistinguishable
 // from modal-flow records once on disk.
 
-const initUsage = "usage: ghyll init [--op-id <id>] [project-dir]\n" +
-	"       ghyll init attest --op-id <id> [--dir <path>]"
+const initUsage = "usage: ghyll init [--op-id <id>] [--language <lang|auto|none>] [--force-traits] [project-dir]\n" +
+	"       ghyll init attest --op-id <id> [--dir <path>]\n" +
+	"\n" +
+	"  --language       go|python|cpp|rust|auto|none (default: auto from profile)\n" +
+	"                   comma-separated for polyglot, e.g. --language go,python\n" +
+	"  --force-traits   rewrite the existing trait block in <project>/.ghyll/instructions.md\n" +
+	"                   (default: leave alone if it already exists)"
 
 // cmdInitMain dispatches the `ghyll init` family. Two production
 // entry points coexist:
