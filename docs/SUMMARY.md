@@ -84,3 +84,16 @@
 - [V2-ADR-011: Init Auto-Propose](decisions/v2/011-init-auto-propose.md)
 - [V2-ADR-012: Amendment Serialization](decisions/v2/012-amendment-serialization.md)
 - [V2-ADR-013: Add tests-pass Concept](decisions/v2/013-add-tests-pass-concept.md)
+
+---
+
+# V4 Architecture Decisions
+
+- [V4-ADR-001: Registry Key Shape](decisions/v4/001-registry-key-shape.md)
+- [V4-ADR-002: Adversarial Phase Conditional Enablement](decisions/v4/002-adversarial-phase-conditional-enablement.md)
+- [V4-ADR-003: Amendment-Driven Re-Register Ordering](decisions/v4/003-amendment-driven-re-register-ordering.md)
+- [V4-ADR-004: Concept Classification Auto-Derived](decisions/v4/004-concept-classification-auto-derived.md)
+- [V4-ADR-005: Operator-Event Typed Payload](decisions/v4/005-operator-event-typed-payload.md)
+- [V4-ADR-006: EvaluatorWithRunner Two-Table Lookup](decisions/v4/006-evaluator-with-runner-two-table-lookup.md)
+- [V4-ADR-007: Binding Registration in cmd/ghyll](decisions/v4/007-binding-registration-in-cmd-ghyll.md)
+- [V4-ADR-008: Engine Schema Migrations](decisions/v4/008-engine-schema-migrations.md)

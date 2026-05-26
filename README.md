@@ -288,7 +288,7 @@ canonical entry points are:
   diagrams for the major flows (init, dispatch, verdict modal,
   amendment, recovery).
 - [Architecture decisions](docs/decisions/) — 17 main ADRs +
-  13 v2-pivot ADRs for the design rationale.
+  13 v2-pivot ADRs + 8 v4 ADRs for the design rationale.
 - [Specs](specs/architecture/) — the design reference (current
   code, not aspirational).
 

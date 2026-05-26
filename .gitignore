@@ -3,6 +3,7 @@ bin/
 *.onnx
 .DS_Store
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 vendor/
 /ghyll
 coverage.out
