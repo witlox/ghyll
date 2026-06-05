@@ -1,8 +1,9 @@
 # v4 ADRs (diamond load-bearing wiring)
 
-The eight v4 ADRs document the structural decisions taken to close
+The nine v4 ADRs document the structural decisions taken to close
 the four load-bearing wiring gaps surfaced by
-`specs/v4/code-eval-2026-05-25.md`. The implementation contract is
+`specs/v4/code-eval-2026-05-25.md`, plus the Kimi 2.5/2.6 dialect
+landing (ADR-v4-009). The implementation contract is
 `specs/v4/diamond-load-bearing-revised-v2.md`.
 
 **Integrator-pass status (2026-05-25):** All eight ADRs now ship a
@@ -28,3 +29,4 @@ same diamond-close pass. ADR-v4-008 is now `accepted` (no longer
 | [ADR-v4-006](006-evaluator-with-runner-two-table-lookup.md) | `EvaluatorWithRunner` variant + two-table Registry lookup |
 | [ADR-v4-007](007-binding-registration-in-cmd-ghyll.md) | Language-binding registration lives in `cmd/ghyll` (integration layer) |
 | [ADR-v4-008](008-engine-schema-migrations.md) | Engine schema migrations via explicit ALTER TABLE |
+| [ADR-v4-009](009-reasoning-content-excluded-from-checkpoint-hash.md) | ReasoningContent excluded from canonical checkpoint hash (Kimi dialect landing) |

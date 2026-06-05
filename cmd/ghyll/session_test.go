@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/witlox/ghyll/config"
@@ -538,6 +540,44 @@ func TestScenario_Session_NormalizeDialect(t *testing.T) {
 	}
 }
 
+// TestKimi_NormalizeDialect_HandlesProviderQualifiedSlug locks the
+// Kimi-family wire forms (short + provider-qualified, case-folded)
+// and pins the over-match guard: `kimino-coder` is a plausible
+// future neighbour family and MUST return errUnknownDialect rather
+// than silently routing into the Kimi switch arm.
+func TestKimi_NormalizeDialect_HandlesProviderQualifiedSlug(t *testing.T) {
+	good := []string{
+		"kimi",
+		"kimi-2.5",
+		"kimi-2.6",
+		"kimi-k2",
+		"kimi-k2.5",
+		"kimi-k2.6",
+		"moonshotai/kimi-k2.5",
+		"moonshotai/kimi-k2.6",
+		"MOONSHOTAI/kimi-k2.5", // case-folded
+		"moonshotai/Kimi-K2.6", // case-folded
+	}
+	for _, in := range good {
+		got, err := normalizeDialect(in)
+		if err != nil {
+			t.Errorf("normalizeDialect(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != "kimi" {
+			t.Errorf("normalizeDialect(%q) = %q, want kimi", in, got)
+		}
+	}
+	// NEGATIVE: a `kimi`-prefixed but distinct family name MUST
+	// return errUnknownDialect. Guards against the Kimi arm
+	// over-matching via a naive HasPrefix("kimi", …).
+	for _, bad := range []string{"kimino-coder", "kimi-tgi-mode"} {
+		if _, err := normalizeDialect(bad); err == nil {
+			t.Errorf("normalizeDialect(%q) should error (kimi over-match guard)", bad)
+		}
+	}
+}
+
 // TestScenario_Session_ResolveDialectLegacyGLM5 verifies end-to-end that a
 // Session whose active model carries the legacy dialect string "glm5"
 // resolves to the GLM dialect functions, not the default minimax branch.
@@ -560,5 +600,255 @@ func TestScenario_Session_ResolveDialectLegacyGLM5(t *testing.T) {
 	want := dialect.GLMSystemPrompt("/tmp/test")
 	if got != want {
 		t.Errorf("legacy dialect \"glm5\" did not resolve to GLM system prompt")
+	}
+}
+
+// TestKimi_NormalizeDialect_AndConfigLoadAgree — KIMI-CFG-1 /
+// KIMI-CFG-6 / CONFIG-1 fix. The two layers (config.Load + session
+// normalizeDialect) must accept the same Kimi alias forms — the
+// prior implementation diverged on `kimi-k2.5` / `kimi-k2.6` (passed
+// the normalizer, failed Load). Both layers now consume
+// config.CanonicalDialectFamily as the single source of truth; this
+// test pins the reciprocity property.
+func TestKimi_NormalizeDialect_AndConfigLoadAgree(t *testing.T) {
+	// Forms documented as accepted across the two layers.
+	good := []string{
+		"kimi",
+		"kimi-2.5",
+		"kimi-2.6",
+		"kimi-k2",
+		"kimi-k2.5",
+		"kimi-k2.6",
+		"moonshotai/kimi-k2.5",
+		"moonshotai/kimi-k2.6",
+		"moonshotai/Kimi-K2.6", // case-folded
+	}
+	for _, in := range good {
+		fam, err := normalizeDialect(in)
+		if err != nil {
+			t.Errorf("normalizeDialect(%q) errored: %v", in, err)
+			continue
+		}
+		if fam != "kimi" {
+			t.Errorf("normalizeDialect(%q) = %q, want kimi", in, fam)
+		}
+		// And config layer must accept the same.
+		if _, ok := config.CanonicalDialectFamily(in); !ok {
+			t.Errorf("config.CanonicalDialectFamily(%q) returned !ok — reciprocity broken", in)
+		}
+	}
+	// Symmetric on the negative side: forms session rejects, config
+	// MUST reject too.
+	bad := []string{"kimino-coder", "kimi-tgi-mode", "kimi-thinking"}
+	for _, in := range bad {
+		if _, err := normalizeDialect(in); err == nil {
+			t.Errorf("normalizeDialect(%q) should error (over-match guard)", in)
+		}
+		if _, ok := config.CanonicalDialectFamily(in); ok {
+			t.Errorf("config.CanonicalDialectFamily(%q) accepted but normalizeDialect rejects — reciprocity broken", in)
+		}
+	}
+}
+
+// testKimiConfig is a Kimi-rooted test config: single [models.kimi]
+// pointing at the supplied endpoint, dialect = "kimi".
+func testKimiConfig(endpoint string) *config.Config {
+	return &config.Config{
+		Models: map[string]config.ModelConfig{
+			"kimi": {
+				Endpoint:   endpoint + "/v1",
+				Dialect:    "kimi",
+				MaxContext: 200000,
+			},
+		},
+		Routing: config.RoutingConfig{
+			DefaultModel:          "kimi",
+			DeepModel:             "kimi",
+			ContextDepthThreshold: 32000,
+			ToolDepthThreshold:    5,
+			EnableAutoRouting:     true,
+		},
+		Memory: config.MemoryConfig{
+			CheckpointIntervalTurns: 0,
+			DriftCheckIntervalTurns: 0,
+			DriftThreshold:          0.7,
+		},
+		Tools: config.ToolsConfig{
+			BashTimeoutSeconds: 30,
+			FileTimeoutSeconds: 5,
+		},
+	}
+}
+
+// chatToolCallWithReasoning emits a chat-completion delta that carries
+// both a `reasoning_content` chunk and a `tool_calls` entry on the same
+// SSE frame — matching Kimi 2.5/2.6's wire form.
+func chatToolCallWithReasoning(id, name, args, reasoning string) string {
+	return fmt.Sprintf(
+		`{"choices":[{"delta":{"reasoning_content":%q,"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]},"finish_reason":null}]}`,
+		reasoning, id, name, args)
+}
+
+// TestScenario_Session_KimiTurn_RejectsNonConformantToolCallID exercises
+// the live streaming path with a non-conformant (UUID-shaped) tool_call
+// id and asserts:
+//
+//  1. The session refuses to dispatch (no tool execution → only 1 call
+//     captured, not 2 as the tool_calls path would produce).
+//  2. The operator-facing diagnostic surfaces through the session
+//     output callback AND names the offending shape
+//     (functions.<name>:<index>).
+//
+// This is the K-ADV-1 / KIMI-CFG-3 / WIRE-2 fix: previously
+// `dialect.KimiParseToolCalls` was wired into s.parseToolCalls but
+// never invoked at runtime, so a UUID-shaped id silently dispatched.
+// The session loop now re-marshals resp.ToolCalls and runs them
+// through the dialect parser as a defence-in-depth step before
+// executing.
+func TestScenario_Session_KimiTurn_RejectsNonConformantToolCallID(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		// Emit a UUID-shaped tool_call id — non-conformant per Kimi
+		// contract. The dispatch should be refused; no second call
+		// should reach the server.
+		_, _ = fmt.Fprint(w, sseChunk(chatToolCall("550e8400-e29b-41d4-a716-446655440000", "bash", `{"command":"ls"}`)))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := testKimiConfig(server.URL)
+	var outputs []string
+	sess, err := NewSession(SessionConfig{
+		Cfg:       cfg,
+		Workdir:   "/tmp/kimi-test",
+		SessionID: "kimi-session",
+		Output:    func(msg string) { outputs = append(outputs, msg) },
+	})
+	if err != nil {
+		t.Fatalf("session init: %v", err)
+	}
+
+	reply, err := sess.Turn("list files")
+	if err != nil {
+		t.Fatalf("turn returned error: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 model call (refused dispatch), got %d", callCount)
+	}
+	// Diagnostic must be present in either the returned reply or the
+	// session output callback.
+	combined := reply + "\n" + strings.Join(outputs, "\n")
+	if !strings.Contains(combined, "functions.<name>:<index>") {
+		t.Errorf("operator-facing diagnostic must name the required id shape; reply=%q outputs=%v", reply, outputs)
+	}
+	if !strings.Contains(combined, "550e8400") {
+		t.Errorf("operator-facing diagnostic must include the offending id; reply=%q outputs=%v", reply, outputs)
+	}
+}
+
+// TestScenario_Session_KimiTurn_SendsLiteralWireModel — KIMI-CFG-4 fix.
+// When an operator sets `model = "moonshotai/Kimi-K2.6"` in their
+// [models.<name>] block, the captured request body's `model` field
+// MUST be the literal mixed-case string verbatim — proving the docs
+// claim ("appears verbatim on the OpenAI request") is now honest.
+// Without the fix, the body field was the dialect family ("kimi"),
+// which would route to the wrong backend on a CSCS-style gateway.
+func TestScenario_Session_KimiTurn_SendsLiteralWireModel(t *testing.T) {
+	var capturedBodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chatDelta("ok")))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := testKimiConfig(server.URL)
+	// Operator-paste the canonical mixed-case literal model id.
+	mc := cfg.Models["kimi"]
+	mc.Model = "moonshotai/Kimi-K2.6"
+	cfg.Models["kimi"] = mc
+
+	sess, err := NewSession(SessionConfig{
+		Cfg:       cfg,
+		Workdir:   "/tmp/kimi-test",
+		SessionID: "kimi-session-wire",
+	})
+	if err != nil {
+		t.Fatalf("session init: %v", err)
+	}
+
+	_, _ = sess.Turn("ping")
+	if len(capturedBodies) < 1 {
+		t.Fatalf("no bodies captured")
+	}
+	body := string(capturedBodies[0])
+	if !strings.Contains(body, `"model":"moonshotai/Kimi-K2.6"`) {
+		t.Errorf("wire body must carry the literal operator-set model id; body=%s", body)
+	}
+}
+
+// TestScenario_Session_KimiTurn_PreservesReasoningContent — round-trip
+// test for the K-ADV-2 / WIRE-1 fix. A Kimi mock SSE emits both
+// reasoning_content and content; the next outbound request body must
+// carry the same reasoning_content on the assistant turn (proving the
+// stream client read the inbound field AND session.go propagated it
+// onto the appended Message AND dialect/helpers.go round-tripped it
+// out to the wire).
+func TestScenario_Session_KimiTurn_PreservesReasoningContent(t *testing.T) {
+	var capturedBodies [][]byte
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		if callCount == 1 {
+			// First call: model emits a reasoning trace + tool call.
+			// (Use a CONFORMANT id so the dispatch proceeds.)
+			_, _ = fmt.Fprint(w, sseChunk(chatToolCallWithReasoning(
+				"functions.bash:0", "bash", `{"command":"ls"}`, "I should call bash with ls")))
+			_, _ = fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+		} else {
+			// Second call: simple stop. We only need this so the
+			// session loop completes; the assertion is on the body.
+			_, _ = fmt.Fprint(w, sseChunk(chatDelta("done")))
+			_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := testKimiConfig(server.URL)
+	sess, err := NewSession(SessionConfig{
+		Cfg:       cfg,
+		Workdir:   "/tmp/kimi-test",
+		SessionID: "kimi-session-rc",
+	})
+	if err != nil {
+		t.Fatalf("session init: %v", err)
+	}
+
+	// We expect the bash tool to run and the loop to recurse for
+	// a second model call. The second body MUST carry the assistant
+	// message with reasoning_content populated.
+	_, _ = sess.Turn("list files")
+	if callCount < 2 {
+		t.Fatalf("expected at least 2 model calls; got %d (bodies=%d)", callCount, len(capturedBodies))
+	}
+	if len(capturedBodies) < 2 {
+		t.Fatalf("expected >= 2 captured bodies, got %d", len(capturedBodies))
+	}
+	body := capturedBodies[1]
+	if !strings.Contains(string(body), `"reasoning_content":"I should call bash with ls"`) {
+		t.Errorf("second model call body must carry reasoning_content on the assistant turn; body=%s", body)
 	}
 }

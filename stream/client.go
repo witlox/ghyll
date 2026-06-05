@@ -50,13 +50,21 @@ func AsStreamError(err error, target **StreamError) bool {
 }
 
 // Response is the assembled result of a streaming API call.
+//
+// ReasoningContent accumulates dialect-side `reasoning_content`
+// chunks (Kimi 2.5/2.6) so the session loop can populate the
+// matching field on the appended assistant `types.Message`. Without
+// this, ADR-v4-009's reasoning round-trip would be one-way only:
+// outbound assistant turns would have to re-fetch the trace on
+// every cycle.
 type Response struct {
-	Content      string
-	ToolCalls    []types.ToolCall
-	Usage        Usage
-	FinishReason string
-	Partial      bool
-	RawToolCalls json.RawMessage
+	Content          string
+	ReasoningContent string
+	ToolCalls        []types.ToolCall
+	Usage            Usage
+	FinishReason     string
+	Partial          bool
+	RawToolCalls     json.RawMessage
 }
 
 // Usage tracks token counts from the API response.
@@ -325,11 +333,19 @@ func classifyHTTPError(resp *http.Response) error {
 }
 
 // sseEvent represents a parsed SSE delta.
+//
+// ReasoningContent is the dialect-agnostic field name for model-side
+// reasoning traces emitted on streaming deltas. Kimi 2.5/2.6 ships
+// `delta.reasoning_content` on every assistant chunk; other dialects
+// either ignore the field or surface it under the same name. The
+// inbound half of ADR-v4-009 reads it here; the outbound half lives
+// in dialect/helpers.go's buildOpenAIMessages.
 type sseEvent struct {
 	Choices []struct {
 		Delta struct {
-			Content   string             `json:"content"`
-			ToolCalls []sseToolCallDelta `json:"tool_calls"`
+			Content          string             `json:"content"`
+			ReasoningContent string             `json:"reasoning_content"`
+			ToolCalls        []sseToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -372,6 +388,7 @@ var ErrStreamSizeCap = errors.New("stream: response exceeds size cap")
 func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 	result := &Response{}
 	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
 	toolCallMap := map[int]*types.ToolCall{}
 	gotDone := false
 
@@ -419,13 +436,45 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 			}
 		}
 
+		// ADR-v4-009 inbound half: accumulate dialect-side
+		// reasoning_content. Cap with the same size budget as
+		// content — a malicious endpoint emitting an infinite
+		// reasoning stream would otherwise OOM via the
+		// reasoningBuilder. We do NOT call onDelta for reasoning
+		// because the terminal renderer renders model OUTPUT
+		// (content), not the model's chain-of-thought.
+		if choice.Delta.ReasoningContent != "" {
+			if reasoningBuilder.Len()+len(choice.Delta.ReasoningContent) > maxStreamContentBytes {
+				return nil, &StreamError{
+					Retryable: false,
+					Message:   "stream reasoning_content exceeds cap",
+					Err:       ErrStreamSizeCap,
+				}
+			}
+			reasoningBuilder.WriteString(choice.Delta.ReasoningContent)
+		}
+
 		// Accumulate tool calls
 		for _, tc := range choice.Delta.ToolCalls {
 			existing, ok := toolCallMap[tc.Index]
 			if !ok {
+				// Some backends (vLLM 0.6 and earlier, plus
+				// quantized derivatives) omit `type` on the FIRST
+				// chunk of a streamed tool_call. Default to
+				// "function" so the accumulated ToolCall is
+				// non-empty for downstream `tc.Type == "function"`
+				// consumers. Explicit non-empty types pass through
+				// unchanged. The merge path below (else branch)
+				// honours later non-empty Type values so a backend
+				// emitting `type: ""` on chunk 1 followed by
+				// `type: "function"` on chunk 2 also converges.
+				tcType := tc.Type
+				if tcType == "" {
+					tcType = "function"
+				}
 				existing = &types.ToolCall{
 					ID:   tc.ID,
-					Type: tc.Type,
+					Type: tcType,
 					Function: types.ToolFunction{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
@@ -435,6 +484,16 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 			} else {
 				if tc.ID != "" {
 					existing.ID = tc.ID
+				}
+				// K-ADV-7 / WIRE-3: a backend that emits an empty
+				// `type` on chunk 1 (defaulted above to "function")
+				// and then an explicit `type` on a later chunk
+				// previously had its later `type` silently dropped.
+				// Symmetric with the ID / Name merge policy. The
+				// default value of "function" is preserved when the
+				// later chunk also carries an empty Type.
+				if tc.Type != "" {
+					existing.Type = tc.Type
 				}
 				if tc.Function.Name != "" {
 					existing.Function.Name = tc.Function.Name
@@ -477,6 +536,7 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 	}
 
 	result.Content = contentBuilder.String()
+	result.ReasoningContent = reasoningBuilder.String()
 
 	// Collect tool calls in order
 	for i := 0; i < len(toolCallMap); i++ {

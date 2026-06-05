@@ -135,7 +135,7 @@ Architectural reference (current code, not aspirational):
 - [Role contracts](specs/architecture/roles/) — analyst, architect, implementer, integrator
 - [Component designs](specs/architecture/components/) — per-component breakdowns
 - [v2 ADRs](docs/decisions/v2/) — 13 structural decisions distilled from the operator-decisions rounds
-- [v4 ADRs](docs/decisions/v4/) — 8 decisions from the diamond v4 pass (registry key shape, adversarial-phase enablement, re-register ordering, concept classification, typed event payload, two-table evaluator dispatch, binding-registration seam, engine schema migrations)
+- [v4 ADRs](docs/decisions/v4/) — 9 decisions from the diamond v4 pass (registry key shape, adversarial-phase enablement, re-register ordering, concept classification, typed event payload, two-table evaluator dispatch, binding-registration seam, engine schema migrations, reasoning-content hash exclusion)
 
 ## Running
 

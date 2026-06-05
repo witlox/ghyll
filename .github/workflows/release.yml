@@ -39,8 +39,8 @@ jobs:
         run: |
           YEAR=$(date +%Y)
           # MAJOR = sum of all ADRs. Bumped manually when new
-          # ADRs land (17 main + 13 v2 + 8 v4 = 38 as of diamond v4).
-          MAJOR=38
+          # ADRs land (17 main + 13 v2 + 9 v4 = 39 as of Kimi dialect).
+          MAJOR=39
           COMMIT_COUNT=$(git rev-list --count HEAD)
           VERSION="${YEAR}.${MAJOR}.${COMMIT_COUNT}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"

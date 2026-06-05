@@ -51,6 +51,20 @@ type ModelConfig struct {
 	Dialect    string `toml:"dialect"`
 	MaxContext int    `toml:"max_context"`
 
+	// Model is the literal model id sent on the OpenAI
+	// `chat/completions` request body's `model` field. When empty,
+	// the request body's `model` falls back to `Dialect` (legacy
+	// behaviour preserved for the 4 other dialects).
+	//
+	// KIMI-CFG-4: gateways like CSCS route on the wire model field,
+	// not on the dialect family. To send the canonical
+	// `moonshotai/Kimi-K2.6` literal verbatim — which the docs say
+	// is what appears on the wire — operators set
+	// `model = "moonshotai/Kimi-K2.6"` here. The Dialect field
+	// remains the routing key for ghyll's internal dialect
+	// dispatch (`kimi`).
+	Model string `toml:"model,omitempty"`
+
 	// APIKey is an optional Bearer token forwarded to the endpoint
 	// as `Authorization: Bearer <APIKey>`. Empty == no Authorization
 	// header injected (preserves zero-config behaviour for endpoints
@@ -408,19 +422,15 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Every model must have an endpoint and valid dialect.
-	// Per validation-pass-8 D1: include the new deepseek + qwen
-	// families (and documented variants). Quant-suffixed names like
-	// `qwen-coder-q4` are operator-config (model name + endpoint),
-	// NOT dialect identifiers — they should set `dialect = "qwen"`
-	// per docs/usage/configuration.md.
-	knownDialects := map[string]bool{
-		"minimax": true, "minimax_m25": true, "minimax_m27": true,
-		"glm": true, "glm5": true, "glm51": true,
-		"deepseek": true, "deepseek-v3": true, "deepseek-coder": true, "deepseek-coder-v3": true,
-		"qwen": true, "qwen-coder": true, "qwen2.5-coder": true, "qwen3-coder": true,
-		"": true, // empty defaults to minimax
-	}
+	// KIMI-CFG-1 / KIMI-CFG-2 / KIMI-CFG-6 / CONFIG-1: dialect
+	// alias whitelist is now the single source of truth in
+	// config/dialect_families.go (dialectAliases + KnownDialectFamilies).
+	// Lookup is case-folded via CanonicalDialectFamily so the literal
+	// mixed-case `moonshotai/Kimi-K2.6` shown in operator-facing docs
+	// validates successfully. The known-families list rendered in
+	// error messages is sourced from KnownDialectFamiliesList() so
+	// config.Load and cmd/ghyll/session.go's normalizeDialect emit
+	// the same string.
 	for name, m := range cfg.Models {
 		if m.Endpoint == "" {
 			return &ConfigError{
@@ -438,10 +448,11 @@ func validate(cfg *Config) error {
 				Err:     ErrConfigValidation,
 			}
 		}
-		if !knownDialects[m.Dialect] {
+		if _, ok := CanonicalDialectFamily(m.Dialect); !ok {
 			return &ConfigError{
-				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known families: minimax, glm, deepseek, qwen)", name, m.Dialect),
-				Err:     ErrConfigValidation,
+				Message: fmt.Sprintf("model '%s' has unknown dialect '%s' (known families: %s)",
+					name, m.Dialect, KnownDialectFamiliesList()),
+				Err: ErrConfigValidation,
 			}
 		}
 

@@ -111,7 +111,7 @@ The big subsystems each have their own page:
 - [Why ghyll](../why.md) — design rationale for the five core
   decisions.
 - [Architecture decisions](../decisions/) — 17 main ADRs,
-  13 v2-pivot ADRs, and 8 v4 ADRs.
+  13 v2-pivot ADRs, and 9 v4 ADRs.
 - [`specs/architecture/`](https://github.com/witlox/ghyll/tree/main/specs/architecture) —
   canonical design reference (current code, not aspirational).
 

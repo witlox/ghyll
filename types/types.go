@@ -9,6 +9,13 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+	// ReasoningContent carries the model's reasoning trace
+	// for dialects that surface it (Kimi 2.5/2.6). Assistant turns
+	// ONLY — user/tool/system turns never carry this field.
+	// Per ADR-v4-009 this field is EXCLUDED from canonical hashing
+	// for the same reason ADR-003 excluded Embedding: cross-platform
+	// / cross-tokenizer serialization variance.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // ToolCall is a structured tool invocation parsed from model output.

@@ -97,3 +97,4 @@
 - [V4-ADR-006: EvaluatorWithRunner Two-Table Lookup](decisions/v4/006-evaluator-with-runner-two-table-lookup.md)
 - [V4-ADR-007: Binding Registration in cmd/ghyll](decisions/v4/007-binding-registration-in-cmd-ghyll.md)
 - [V4-ADR-008: Engine Schema Migrations](decisions/v4/008-engine-schema-migrations.md)
+- [V4-ADR-009: Reasoning Content Excluded from Hash](decisions/v4/009-reasoning-content-excluded-from-checkpoint-hash.md)

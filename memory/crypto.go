@@ -47,6 +47,16 @@ func CanonicalHash(cp *Checkpoint) string {
 
 	// Embedding excluded from hash — it's for search, not integrity.
 	// Float serialization varies across platforms, which would break verification.
+	//
+	// ADR-v4-009: Message.ReasoningContent (if any future Checkpoint
+	// variant ever persists Message arrays) MUST follow the same
+	// exclusion precedent. Reasoning text from streaming-only fields
+	// can carry tokenizer-injected sentinel bytes that vary between
+	// model deployments — including it in the hash would break
+	// cross-device verification. Today no Message-bearing field
+	// exists on Checkpoint so no field needs to be deleted from m;
+	// this comment + the TestMemory_CanonicalHash_StableAcrossReasoningSerialization
+	// test lock the invariant prospectively.
 	if len(cp.InjectionSig) > 0 {
 		m["injections"] = cp.InjectionSig
 	}

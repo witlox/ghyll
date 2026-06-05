@@ -45,7 +45,23 @@ api_key  = "sk-..."
 [models.glm]
 endpoint = "https://api.example.com/v1/glm5"
 api_key  = "sk-..."
+
+# Kimi 2.5 / 2.6 via the CSCS gateway. The `dialect` field is the
+# routing key (lowercase, one of: minimax, glm, deepseek, qwen, kimi).
+# The `model` field is the literal id sent on the OpenAI request
+# body's `model` field — operators paste the canonical mixed-case id
+# so the CSCS gateway routes to the right backend.
+[models.kimi]
+endpoint = "https://ai-gateway.svc.cscs.ch/v1"
+dialect  = "kimi"
+model    = "moonshotai/Kimi-K2.6"
+api_key  = "sk-..."
 ```
+
+If `model` is omitted, the dialect string falls back as the wire
+`model` field (preserves legacy behaviour for the 4 other dialects).
+When `model` is set, it appears verbatim on the request — that is the
+"appears on the OpenAI request" contract.
 
 Leave the rest of the template alone unless you have a specific
 reason to override defaults; the depth ladder, routing thresholds,

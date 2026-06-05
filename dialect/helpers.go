@@ -142,6 +142,19 @@ func buildOpenAIMessages(msgs []types.Message, systemPrompt string) []map[string
 			"role":    msg.Role,
 			"content": msg.Content,
 		}
+		// K-ADV-8: an assistant turn that ONLY carries tool_calls
+		// (no content) needs `content: null` rather than
+		// `content: ""`. The OpenAI Chat Completions spec says
+		// assistant content MUST be a string OR null; vLLM strict
+		// mode and stricter Kimi backends reject empty-string
+		// content in multi-turn history when tool_calls is also
+		// present. The fix is symmetric across all 5 dialects —
+		// the spec was always like this; the prior shape was
+		// merely tolerated by lenient gateways. Lenient backends
+		// continue to accept null without complaint.
+		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) > 0 {
+			m["content"] = nil
+		}
 		if len(msg.ToolCalls) > 0 {
 			m["tool_calls"] = msg.ToolCalls
 		}
@@ -150,6 +163,13 @@ func buildOpenAIMessages(msgs []types.Message, systemPrompt string) []map[string
 		}
 		if msg.Name != "" {
 			m["name"] = msg.Name
+		}
+		// ADR-v4-009: ReasoningContent round-trips for assistant turns
+		// ONLY (user / tool / system turns never carry a reasoning
+		// trace). Kimi 2.5/2.6 surfaces this field on the wire; the
+		// other dialects ignore it as a benign extra key.
+		if msg.Role == "assistant" && msg.ReasoningContent != "" {
+			m["reasoning_content"] = msg.ReasoningContent
 		}
 		result = append(result, m)
 	}

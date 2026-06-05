@@ -159,6 +159,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// redactor checks. Each scenario resets env vars in the
 	// After hook to prevent sentinel-leak across scenarios.
 	registerAuthSteps(ctx, state)
+
+	// Kimi 2.5/2.6 dialect (specs/features/kimi.feature).
+	// Mock SSE endpoint records request bodies; asserts on the
+	// assistant turn's reasoning_content round-trip and the
+	// functions.<name>:<idx> tool-call ID contract.
+	registerKimiSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

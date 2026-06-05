@@ -25,3 +25,5 @@ The four roles are fixed (analyst → architect → implementer → integrator) 
 ## Endpoint authentication
 
 Each `[models.<name>]` block accepts an optional `api_key = "..."` Bearer token. Two env-var overrides supersede the TOML value (highest first): `GHYLL_API_KEY_<MODEL>` (model-scoped, with non-alphanumeric runes replaced by `_`) and `GHYLL_API_KEY` (global). Empty resolution emits no Authorization header. See [`docs/operator-guide.md`](../../docs/operator-guide.md#endpoint-authentication--api_key-precedence) for the full precedence table and redaction guarantees.
+
+Kimi 2.5 / 2.6 is supported via `dialect = "kimi"`. The literal model id sent on the OpenAI request body's `model` field comes from the optional `model = "..."` key — paste the canonical mixed-case id (e.g. `model = "moonshotai/Kimi-K2.6"`) so the CSCS gateway at `https://ai-gateway.svc.cscs.ch/v1` (the tested backend) routes to the right model. Omitting `model` falls back to the dialect string.

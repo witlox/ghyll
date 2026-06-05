@@ -287,3 +287,113 @@ func TestScenario_Stream_MalformedSSE(t *testing.T) {
 		t.Errorf("content = %q, expected both 'before' and 'after'", resp.Content)
 	}
 }
+
+// TestStream_SSEToolCallDelta_DefaultsMissingType — defensive
+// default for vLLM 0.6 (and earlier) which omits the `type` field
+// on second-and-later chunks of a streamed tool_call. Without the
+// default the accumulated ToolCall.Type stays empty and downstream
+// consumers comparing `tc.Type == "function"` silently skip the
+// call. Defaults to "function" on first occurrence; explicit
+// non-empty types pass through unchanged.
+func TestStream_SSEToolCallDelta_DefaultsMissingType(t *testing.T) {
+	// First chunk creates the entry with NO type field (vLLM 0.6
+	// behaviour reproduced verbatim).
+	firstChunk := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"functions.bash:0","function":{"name":"bash","arguments":""}}]},"finish_reason":null}]}`
+	// Second chunk appends arguments fragment.
+	secondChunk := `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(firstChunk))
+		_, _ = fmt.Fprint(w, sseChunk(secondChunk))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Type != "function" {
+		t.Errorf("tool_call Type = %q, want %q (missing-type default)", resp.ToolCalls[0].Type, "function")
+	}
+	if resp.ToolCalls[0].ID != "functions.bash:0" {
+		t.Errorf("tool_call ID = %q", resp.ToolCalls[0].ID)
+	}
+}
+
+// TestStream_SSEToolCallDelta_LateTypeMergeUpdatesEmptyType — K-ADV-7
+// / WIRE-3 fix. A backend that emits `type: ""` on chunk 1 (defaulted
+// to "function" by the first-chunk path) and then `type: "function"`
+// on chunk 2 used to silently DROP the chunk-2 Type because the
+// merge path only updated ID/Name/Arguments. Symmetric merge: a
+// later non-empty Type overrides; a later empty Type keeps the
+// existing value.
+func TestStream_SSEToolCallDelta_LateTypeMergeUpdatesEmptyType(t *testing.T) {
+	// Chunk 1: id + name, no type (defaults to "function").
+	firstChunk := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"functions.bash:0","function":{"name":"bash","arguments":""}}]},"finish_reason":null}]}`
+	// Chunk 2: explicit `type: "function"`, arguments tail.
+	secondChunk := `{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(firstChunk))
+		_, _ = fmt.Fprint(w, sseChunk(secondChunk))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Type != "function" {
+		t.Errorf("tool_call Type after late merge = %q, want %q", resp.ToolCalls[0].Type, "function")
+	}
+}
+
+// TestStream_SSEReasoningContent_AccumulatesIntoResponse — K-ADV-2 /
+// WIRE-1 fix. The SSE parser must read `delta.reasoning_content` and
+// accumulate it into Response.ReasoningContent. Without this fix the
+// field was silently dropped — round-trip via dialect/helpers.go was
+// one-way only because nothing populated the inbound half.
+func TestStream_SSEReasoningContent_AccumulatesIntoResponse(t *testing.T) {
+	// Two chunks of reasoning + one of content, mirroring how Kimi
+	// 2.5/2.6 emits chain-of-thought on the wire.
+	chunk1 := `{"choices":[{"delta":{"reasoning_content":"I should call "},"finish_reason":null}]}`
+	chunk2 := `{"choices":[{"delta":{"reasoning_content":"bash with ls"},"finish_reason":null}]}`
+	chunk3 := `{"choices":[{"delta":{"content":"calling bash"},"finish_reason":null}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chunk1))
+		_, _ = fmt.Fprint(w, sseChunk(chunk2))
+		_, _ = fmt.Fprint(w, sseChunk(chunk3))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ReasoningContent != "I should call bash with ls" {
+		t.Errorf("ReasoningContent = %q, want %q (SSE parser must read delta.reasoning_content)",
+			resp.ReasoningContent, "I should call bash with ls")
+	}
+	if resp.Content != "calling bash" {
+		t.Errorf("Content = %q, want %q", resp.Content, "calling bash")
+	}
+}

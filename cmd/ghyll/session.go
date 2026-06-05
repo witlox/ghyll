@@ -218,8 +218,10 @@ func NewSession(sc SessionConfig) (*Session, error) {
 	s.streamClient = stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
-		ModelName:     modelCfg.Dialect,
-		ExtraHeaders:  buildAuthHeader(sc.Cfg, s.activeModel),
+		// KIMI-CFG-4: prefer the operator-set wire `model` literal
+		// when present; fall back to Dialect for legacy configs.
+		ModelName:    wireModelName(modelCfg),
+		ExtraHeaders: buildAuthHeader(sc.Cfg, s.activeModel),
 	})
 
 	// Create context manager with callbacks
@@ -731,6 +733,20 @@ func buildModelStamp(name string, cfg *config.Config) string {
 	return name
 }
 
+// wireModelName returns the literal model id sent on the
+// chat/completions request body's `model` field. KIMI-CFG-4 fix:
+// gateways like CSCS route on the wire `model` field; an operator
+// who needs `moonshotai/Kimi-K2.6` literal verbatim sets
+// `model = "moonshotai/Kimi-K2.6"` in their [models.<name>] block.
+// Empty Model falls back to Dialect (legacy behaviour preserved for
+// configs that don't set the new field).
+func wireModelName(mc config.ModelConfig) string {
+	if strings.TrimSpace(mc.Model) != "" {
+		return mc.Model
+	}
+	return mc.Dialect
+}
+
 func (s *Session) resolveDialect() error {
 	d := s.cfg.Models[s.activeModel].Dialect
 	family, err := normalizeDialect(d)
@@ -770,6 +786,14 @@ func (s *Session) resolveDialect() error {
 		s.compactionPrompt = dialect.MinimaxCompactionPrompt
 		s.tokenCount = dialect.MinimaxTokenCount
 		s.handoffSummary = dialect.MinimaxHandoffSummary
+	case "kimi":
+		s.systemPrompt = dialect.KimiSystemPrompt
+		s.planModePrompt = dialect.KimiPlanModePrompt
+		s.buildMessages = dialect.KimiBuildMessages
+		s.parseToolCalls = dialect.KimiParseToolCalls
+		s.compactionPrompt = dialect.KimiCompactionPrompt
+		s.tokenCount = dialect.KimiTokenCount
+		s.handoffSummary = dialect.KimiHandoffSummary
 	default:
 		return fmt.Errorf("dialect family %q unsupported (post-normalization)", family)
 	}
@@ -782,26 +806,32 @@ var errUnknownDialect = errors.New("unknown dialect family")
 
 // normalizeDialect maps wire-form dialect strings to canonical family
 // names. Per validation-pass-8 D3/D4: empty or unknown returns an
-// error (no silent fall-through to minimax). Prefix-based detection
-// future-proofs new variants like "deepseek-v3.1" / "qwen3.5-coder".
+// error (no silent fall-through to minimax).
+//
+// KIMI-CFG-1 / KIMI-CFG-6 / CONFIG-1: this now delegates to the
+// single source of truth in config (config.CanonicalDialectFamily +
+// config.KnownDialectFamiliesList). The two whitelists cannot drift
+// because there is now only one whitelist. Adding a new alias is a
+// one-line append in config/dialect_families.go.
+//
+// K-ADV-4: bare `kimi-k2.5` / `kimi-k2.6` (short forms operators
+// would naturally paste) are accepted at both layers — previously
+// they passed normalizeDialect but failed config.Load.
+//
+// The previous prefix-based detection (HasPrefix("glm"), …) has
+// been replaced by exact-alias lookup. A new variant must be
+// registered explicitly rather than match by accident — this
+// avoids the kimino-coder over-match class of bug.
 func normalizeDialect(d string) (string, error) {
 	if strings.TrimSpace(d) == "" {
 		return "", fmt.Errorf("%w: dialect field is empty", errUnknownDialect)
 	}
-	lower := strings.ToLower(strings.TrimSpace(d))
-	switch {
-	case strings.HasPrefix(lower, "glm"):
-		return "glm", nil
-	case strings.HasPrefix(lower, "minimax"):
-		return "minimax", nil
-	case strings.HasPrefix(lower, "deepseek"):
-		return "deepseek", nil
-	case strings.HasPrefix(lower, "qwen"):
-		return "qwen", nil
-	default:
-		return "", fmt.Errorf("%w: %q (known families: glm, minimax, deepseek, qwen)",
-			errUnknownDialect, d)
+	fam, ok := config.CanonicalDialectFamily(d)
+	if !ok {
+		return "", fmt.Errorf("%w: %q (known families: %s)",
+			errUnknownDialect, d, config.KnownDialectFamiliesList())
 	}
+	return fam, nil
 }
 
 // SessionContext returns the session-scoped cancellation context.
@@ -941,11 +971,17 @@ func (s *Session) sendAndProcess() (string, error) {
 		}
 	}
 
-	// Add assistant response to context
+	// Add assistant response to context.
+	// ADR-v4-009 inbound half: propagate dialect-side reasoning
+	// trace (Kimi 2.5/2.6 emits delta.reasoning_content) onto the
+	// appended message so the next outbound assistant turn carries
+	// it back to the model. Other dialects accumulate "" → omitempty
+	// keeps the wire surface unchanged.
 	s.ctxManager.AddMessage(types.Message{
-		Role:      "assistant",
-		Content:   resp.Content,
-		ToolCalls: resp.ToolCalls,
+		Role:             "assistant",
+		Content:          resp.Content,
+		ReasoningContent: resp.ReasoningContent,
+		ToolCalls:        resp.ToolCalls,
 	})
 
 	// Finish the streaming line
@@ -956,6 +992,36 @@ func (s *Session) sendAndProcess() (string, error) {
 	if resp.Partial {
 		s.renderer.RenderWarning("stream interrupted")
 		return resp.Content, nil
+	}
+
+	// K-ADV-1 / KIMI-CFG-3 / WIRE-2: enforce the dialect's tool-call
+	// id contract on the live streaming path. parseSSEStream
+	// accumulates ToolCalls dialect-agnostically; here we re-marshal
+	// the accumulated entries and run them through the dialect's
+	// parseToolCalls validator. For Kimi this enforces the
+	// `functions.<name>:<index>` id shape — a non-conformant id
+	// (the documented sentinel of a wrong-version backend) surfaces
+	// ErrParseToolCall with an operator-facing diagnostic naming the
+	// offending shape, rather than silently dispatching against an
+	// unparseable id.
+	if len(resp.ToolCalls) > 0 && s.parseToolCalls != nil {
+		rawTCs, mErr := json.Marshal(resp.ToolCalls)
+		if mErr == nil {
+			if _, perr := s.parseToolCalls(rawTCs); perr != nil {
+				if errors.Is(perr, dialect.ErrParseToolCall) {
+					diag := fmt.Sprintf("⚠ dialect-level tool_call parse refused dispatch: %v", perr)
+					s.renderer.RenderWarning(diag)
+					s.output(diag)
+					return diag, nil
+				}
+				// Non-sentinel parse error — surface but still refuse
+				// dispatch (defence-in-depth).
+				diag := fmt.Sprintf("⚠ tool_call parse error: %v", perr)
+				s.renderer.RenderWarning(diag)
+				s.output(diag)
+				return diag, nil
+			}
+		}
 	}
 
 	// Execute tool calls
@@ -1153,8 +1219,9 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	s.streamClient = stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
-		ModelName:     modelCfg.Dialect,
-		ExtraHeaders:  buildAuthHeader(s.cfg, s.activeModel),
+		// KIMI-CFG-4: prefer the operator-set wire `model` literal.
+		ModelName:    wireModelName(modelCfg),
+		ExtraHeaders: buildAuthHeader(s.cfg, s.activeModel),
 	})
 
 	// Create new context manager with handoff messages
@@ -1208,13 +1275,14 @@ func (s *Session) compactionCall(req ghyllcontext.CompactionRequest) (string, er
 	// AUTH-W-010: ModelName must also flow into the request body
 	// so CSCS-style gateways that route on `model` reach the
 	// correct backend (previously fell through to "default").
-	dialectName := s.cfg.Models[modelName].Dialect
+	// KIMI-CFG-4: prefer the literal wire `model` if configured.
+	wireName := wireModelName(s.cfg.Models[modelName])
 	// ADR-005: compaction runs on the SAME endpoint as the active
 	// dialect, so the same api_key applies.
 	client := stream.NewClient(req.ModelEndpoint, &stream.ClientOptions{
 		MaxRetries:    1,
 		BaseBackoffMs: 500,
-		ModelName:     dialectName,
+		ModelName:     wireName,
 		ExtraHeaders:  buildAuthHeader(s.cfg, modelName),
 	})
 	resp, err := client.Send(msgs)

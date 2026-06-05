@@ -29,8 +29,18 @@ Available dialect families:
 - `glm` (GLM-5, GLM-5.1, ...)
 - `deepseek` (DeepSeek-V3, DeepSeek-Coder, ...)
 - `qwen` (Qwen2.5-Coder, Qwen3-Coder, ...)
+- `kimi` (Kimi 2.5, Kimi 2.6 — `moonshotai/Kimi-K2.5`, `moonshotai/Kimi-K2.6`)
 
-See [ADR-007](../decisions/007-tier-based-routing.md).
+See [ADR-007](../decisions/007-tier-based-routing.md) and
+[ADR-v4-009](../decisions/v4/009-reasoning-content-excluded-from-checkpoint-hash.md)
+for the Kimi `reasoning_content` exclusion rule.
+
+**Tested backends.** The CSCS-hosted gateway at
+`https://ai-gateway.svc.cscs.ch/v1` is the tested Kimi-K2.6 endpoint.
+The K2-Thinking alias is intentionally deferred (ghyll sends no
+`tool_choice`); operators pasting `dialect = "kimi-thinking"` get a
+loud validation error rather than a silent fall-through to the
+default minimax dialect.
 
 ### Endpoint authentication (api_key)
 
@@ -97,6 +107,23 @@ max_context = 65000
 The dialect identifier is the same; the model name and endpoint disambiguate. The effective depth (and thus the appropriate routing tier) differs across quantizations — a Q4 of a 70B model is NOT the same as the full-precision model. Operators are responsible for setting `max_context` to match the backend's reported context window and for mapping each quantized variant to the right routing tier.
 
 If a quantization vendor ships a non-standard tool-call format (rare but documented for some early GGUF tool-format experiments), a new dialect file is needed instead. Stick with the family dialect unless the wire format actually differs.
+
+### Kimi 2.5 / 2.6 (CSCS gateway)
+
+The Kimi family carries an extra `reasoning_content` field on every assistant turn. ghyll round-trips the field on the wire (assistant-only) so the next turn sees the prior reasoning trace; the field is excluded from the canonical checkpoint hash per [ADR-v4-009](../decisions/v4/009-reasoning-content-excluded-from-checkpoint-hash.md).
+
+```toml
+[models.kimi-k26-cscs]
+endpoint = "https://ai-gateway.svc.cscs.ch/v1"
+dialect = "kimi"
+model = "moonshotai/Kimi-K2.6"   # literal id on the OpenAI `model` field
+max_context = 200000
+# api_key = "sk-..."  # CSCS Bearer; override via GHYLL_API_KEY_KIMI_K26_CSCS
+```
+
+The Kimi backend enforces a strict tool-call id shape: `functions.<name>:<index>`. A non-conformant id (e.g. a vanilla UUID) surfaces `ErrParseToolCall` and the session loop emits an operator-facing diagnostic that names the offending shape — the dispatch is REFUSED rather than silently executed. This is the documented sentinel of a wrong-version or misconfigured Kimi backend.
+
+**Wire `model` field.** The optional `model` field is the literal string sent on the OpenAI `chat/completions` request body's `model` field. CSCS-style gateways route on this field, so paste the canonical mixed-case id (`moonshotai/Kimi-K2.6`) verbatim. Omitting `model` falls back to the dialect string (legacy behaviour for the 4 other dialects). Validation is case-insensitive on the `dialect` key, so `dialect = "moonshotai/Kimi-K2.6"` also loads (it is mapped to the `kimi` family) — but for clarity the recommended idiom is `dialect = "kimi"` + `model = "moonshotai/Kimi-K2.6"`.
 
 ## Routing
 

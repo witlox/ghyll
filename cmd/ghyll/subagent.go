@@ -70,6 +70,10 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		systemPromptFn = dialect.MinimaxSystemPrompt
 		buildMsgFn = dialect.MinimaxBuildMessages
 		tokenCountFn = dialect.MinimaxTokenCount
+	case "kimi":
+		systemPromptFn = dialect.KimiSystemPrompt
+		buildMsgFn = dialect.KimiBuildMessages
+		tokenCountFn = dialect.KimiTokenCount
 	default:
 		return types.ToolResult{Error: fmt.Sprintf("sub-agent dialect family %q unsupported", family)}
 	}
@@ -98,8 +102,9 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 	client := stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
-		ModelName:     modelCfg.Dialect,
-		ExtraHeaders:  buildAuthHeader(cfg, modelName),
+		// KIMI-CFG-4: prefer the operator-set wire `model` literal.
+		ModelName:    wireModelName(modelCfg),
+		ExtraHeaders: buildAuthHeader(cfg, modelName),
 	})
 
 	// Create sub-agent context manager (isolated)

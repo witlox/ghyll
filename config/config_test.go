@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -405,5 +407,137 @@ default_model = "deepseek"
 	}
 	if _, err := Load(path); err != nil {
 		t.Errorf("deepseek+qwen config should validate; got %v", err)
+	}
+}
+
+// TestConfig_AcceptsKimiFamily — the Kimi family is accepted by
+// the validator (both short and provider-qualified forms).
+func TestConfig_AcceptsKimiFamily(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[models.kimi-k26]
+endpoint = "https://ai-gateway.svc.cscs.ch/v1"
+dialect = "kimi"
+max_context = 200000
+
+[models.kimi-mq]
+endpoint = "https://moonshot.example/v1"
+dialect = "moonshotai/kimi-k2.6"
+max_context = 200000
+
+[routing]
+default_model = "kimi-k26"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Kimi config should validate; got %v", err)
+	}
+}
+
+// TestConfig_AcceptsMixedCaseKimiDialect — KIMI-CFG-2 / K-ADV-3 fix.
+// Operators pasting the literal mixed-case model id docs show (e.g.
+// `moonshotai/Kimi-K2.6`) used to fail validation because the
+// knownDialects map was case-sensitive. CanonicalDialectFamily now
+// lowercases before lookup, so the documented literal Loads OK.
+func TestConfig_AcceptsMixedCaseKimiDialect(t *testing.T) {
+	cases := []string{
+		"moonshotai/Kimi-K2.6", // canonical literal id
+		"MOONSHOTAI/kimi-k2.5", // shout-case operator typo
+		"Kimi",                 // capitalised short form
+		"KIMI-K2.6",            // all-caps short form
+	}
+	for _, d := range cases {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
+		content := fmt.Sprintf(`
+[models.kimi-mq]
+endpoint = "https://moonshot.example/v1"
+dialect = %q
+max_context = 200000
+
+[routing]
+default_model = "kimi-mq"
+`, d)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err != nil {
+			t.Errorf("dialect %q should load (case-insensitive Kimi alias); got %v", d, err)
+		}
+	}
+}
+
+// TestConfig_AcceptsBareKimiK2ShortForms — KIMI-CFG-1 / K-ADV-4 fix.
+// The aliases `kimi-k2.5` and `kimi-k2.6` are listed in session.go's
+// docstring as accepted, but used to fail config.Load because the
+// knownDialects map only contained the provider-qualified forms.
+func TestConfig_AcceptsBareKimiK2ShortForms(t *testing.T) {
+	cases := []string{"kimi-k2.5", "kimi-k2.6"}
+	for _, d := range cases {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
+		content := fmt.Sprintf(`
+[models.kimi-mq]
+endpoint = "https://moonshot.example/v1"
+dialect = %q
+max_context = 200000
+
+[routing]
+default_model = "kimi-mq"
+`, d)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err != nil {
+			t.Errorf("dialect %q should load (bare Kimi short form); got %v", d, err)
+		}
+	}
+}
+
+// TestConfig_KnownDialectFamiliesList_StableOrdering — KIMI-CFG-6 /
+// CONFIG-1 fix. config and session emit the same error-message
+// "known families" list because both layers consume the SAME slice.
+// This test pins the canonical order so a future re-order doesn't
+// drift the two error UX surfaces apart.
+func TestConfig_KnownDialectFamiliesList_StableOrdering(t *testing.T) {
+	got := KnownDialectFamiliesList()
+	want := "minimax, glm, deepseek, qwen, kimi"
+	if got != want {
+		t.Errorf("KnownDialectFamiliesList() = %q, want %q (drift between config and session error UX)", got, want)
+	}
+}
+
+// TestConfig_Validate_RejectsUnknownKimiVariant — loud refusal on
+// an unsupported Kimi alias. The K2-Thinking model is deferred; an
+// operator who pasted dialect = "kimi-tgi-mode" or "kimi-thinking"
+// hoping for that surface MUST see a validation error naming the
+// 5 known families.
+func TestConfig_Validate_RejectsUnknownKimiVariant(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[models.kimi-thinking]
+endpoint = "http://localhost:8001/v1"
+dialect = "kimi-tgi-mode"
+max_context = 200000
+
+[routing]
+default_model = "kimi-thinking"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for unknown kimi variant")
+	}
+	if !IsValidation(err) {
+		t.Errorf("expected validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "kimi") {
+		t.Errorf("error must name the kimi family in known list: %v", err)
 	}
 }

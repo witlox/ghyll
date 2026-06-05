@@ -13,6 +13,20 @@ dialect = "glm"
 max_context = 200000
 # api_key = ""  # optional Bearer token; override via GHYLL_API_KEY_GLM5 or GHYLL_API_KEY
 
+# Kimi 2.5 / 2.6 family. The `dialect` field is the lowercase
+# routing key (one of: minimax, glm, deepseek, qwen, kimi).
+# The optional `model` field is the literal id sent on the OpenAI
+# request body's `model` field — set this to the canonical
+# mixed-case id so a CSCS-style gateway routes to the right backend.
+# When `model` is omitted the dialect string falls back as the wire
+# `model` field (legacy behaviour preserved for the other dialects).
+# [models.kimi-k26-cscs]
+# endpoint = "https://ai-gateway.svc.cscs.ch/v1"
+# dialect = "kimi"
+# model = "moonshotai/Kimi-K2.6"
+# max_context = 200000
+# api_key = "sk-..."  # CSCS Bearer token; override via GHYLL_API_KEY_KIMI_K26_CSCS
+
 [routing]
 default_model = "m25"
 deep_model = "glm5"

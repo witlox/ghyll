@@ -347,4 +347,4 @@ wrong.
 - [Architecture flows](architecture-flows.md) — the sequence
   diagrams for the gate-and-arrow runtime.
 - [Architecture decisions](decisions/) — all 17 main ADRs,
-  13 v2 ADRs, and 8 v4 ADRs.
+  13 v2 ADRs, and 9 v4 ADRs.
