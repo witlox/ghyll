@@ -108,6 +108,7 @@ scripts/              scenario verification tooling
 - The git orphan branch `ghyll/memory` is never merged into code branches
 - CI: build -> validate -> test pipeline, 78% coverage threshold
 - Releases: weekly cron or `workflow_dispatch` in `release.yml`; version is `v<year>.<sum-of-ADRs>.<commit-count>`; the ADR-sum is a manual constant bumped in the workflow when a new ADR lands
+- Secrets (`api_key`, `vault.token`) are TOML-loaded and env-overridable (`GHYLL_API_KEY_<MODEL>` > `GHYLL_API_KEY` > TOML); ghyll never logs them — `ghyll config show` prints `<unset>`/`<env>`/`<toml>` provenance only
 
 ## Key Design Decisions
 

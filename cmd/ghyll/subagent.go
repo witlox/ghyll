@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -85,11 +86,20 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		}
 	}
 
-	// Create sub-agent stream client
+	// AUTH-W-003: explicit semantics — sub-agents resolve api_key
+	// against their OWN configured model (cfg.SubAgent.DefaultModel
+	// or routing.DefaultModel), which is INDEPENDENT of the parent
+	// session's active model. If the parent is in /deep mode using
+	// a deep-tier api_key but the sub-agent's configured model has
+	// no key, the sub-agent will dispatch unauthenticated and
+	// surface a redacted "authentication failed" — operators with
+	// a gated sub-agent endpoint must set its api_key explicitly
+	// (or via GHYLL_API_KEY_<MODEL>).
 	client := stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
 		ModelName:     modelCfg.Dialect,
+		ExtraHeaders:  buildAuthHeader(cfg, modelName),
 	})
 
 	// Create sub-agent context manager (isolated)
@@ -144,6 +154,18 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 				return types.ToolResult{
 					Output: fmt.Sprintf("[sub-agent context overflow after %d turns]\n\n%s", turn, lastContent),
 				}
+			}
+			// ADV-AUTH-007: when the error is a *stream.StreamError,
+			// surface ONLY (status, sanitized Message) rather than
+			// err.Error() — the latter formats the full chain which
+			// may include upstream-controlled bytes from non-401/403
+			// bodies. Both classifyHTTPError (Message redaction) AND
+			// this surface point apply defence-in-depth.
+			var se *stream.StreamError
+			if errors.As(err, &se) {
+				return types.ToolResult{Error: fmt.Sprintf(
+					"sub-agent model unreachable (HTTP %d): %s",
+					se.StatusCode, se.Message)}
 			}
 			return types.ToolResult{Error: fmt.Sprintf("sub-agent model unreachable: %v", err)}
 		}

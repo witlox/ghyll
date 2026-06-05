@@ -361,12 +361,24 @@ func cmdConfigShow() error {
 	}
 	ui.Info("Models: %d configured", len(cfg.Models))
 	for name, m := range cfg.Models {
-		ui.Info("  %s: %s (max %d tokens)", name, m.Endpoint, m.MaxContext)
+		// redactKeySource returns one of three fixed literals
+		// (<unset>|<env>|<toml>); never prints the value or its
+		// length. Operators see provenance for debugging precedence
+		// without exposing the secret to terminal scrollback or
+		// support-ticket pastes.
+		ui.Info("  %s: %s (max %d tokens, api_key: %s)",
+			name, m.Endpoint, m.MaxContext, redactKeySource(cfg, name))
 	}
 	ui.Info("Routing: default=%s, depth_threshold=%d, tool_threshold=%d",
 		cfg.Routing.DefaultModel, cfg.Routing.ContextDepthThreshold, cfg.Routing.ToolDepthThreshold)
 	if cfg.Vault != nil {
-		ui.Info("Vault: %s", cfg.Vault.URL)
+		// AUTH-9: mirror the api_key provenance scheme — operators
+		// need to see whether a token is set without seeing it.
+		tokenProv := "<unset>"
+		if strings.TrimSpace(cfg.Vault.Token) != "" {
+			tokenProv = "<toml>"
+		}
+		ui.Info("Vault: %s (token: %s)", cfg.Vault.URL, tokenProv)
 	} else {
 		ui.Info("Vault: not configured")
 	}

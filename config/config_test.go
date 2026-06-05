@@ -218,7 +218,9 @@ max_context = 1000000
 url = "https://vault.internal:9090"
 token = "team-secret"
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	// AUTH-5 / AUTH-W-006 / ADV-AUTH-002: vault.token requires
+	// 0o600 mode (consistent with model api_keys).
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

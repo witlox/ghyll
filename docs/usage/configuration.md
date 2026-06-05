@@ -32,6 +32,52 @@ Available dialect families:
 
 See [ADR-007](../decisions/007-tier-based-routing.md).
 
+### Endpoint authentication (api_key)
+
+The optional `api_key` field forwards a Bearer token on every
+chat-completion request:
+
+```toml
+[models.cscs-glm5]
+endpoint = "https://ai-gateway.svc.cscs.ch/v1"
+dialect = "glm"
+max_context = 200000
+api_key = "sk-..."   # optional; empty == no Authorization header
+```
+
+Resolution precedence (highest first):
+
+1. `GHYLL_API_KEY_<MODEL>` — model-scoped env var. `<MODEL>` is
+   the TOML model key upper-cased with any non-`[A-Z0-9_]` rune
+   replaced by `_`. So `[models.cscs-glm5]` becomes
+   `GHYLL_API_KEY_CSCS_GLM5`.
+2. `GHYLL_API_KEY` — global fallback. Use this for single-tenant
+   hosts; the scoped form for multi-endpoint setups (CSCS gateway +
+   a local dev endpoint).
+3. `cfg.Models[name].api_key` from TOML.
+
+An empty resolution (no TOML field, no env var) emits no
+`Authorization` header at all — preserving the zero-config
+behaviour for endpoints that do not require auth.
+
+**Redaction guarantees.**
+
+- `ghyll config show` prints `api_key: <unset>` / `<env>` / `<toml>`
+  for each model — provenance only, never the value or its length.
+- 401 / 403 upstream responses are surfaced as a fixed
+  `authentication failed` message; the raw response body is
+  discarded before any logging in case the gateway echoed the
+  Bearer header.
+- The attestation JSONL audit trail (`.ghyll/attestations.jsonl`)
+  and the engine sqlite store (`.ghyll/engine.db`) have no
+  api_key-bearing column; regression tests grep both for sentinel
+  tokens.
+- Git commit trailers carry the model NAME (or `stamp_label`); the
+  endpoint URL and api_key are never embedded.
+
+A handoff to a different model resolves the key fresh against the
+TARGET model — distinct keys per endpoint stay separated.
+
 ### Quantized variants
 
 A quantized model in the SAME family uses the SAME dialect. Quantization (Q4/Q5/Q8, GGUF/AWQ/GPTQ) changes the endpoint backing the model, not the wire protocol — SGLang, vLLM, and llama.cpp all expose the OpenAI tool-call format that the dialect already speaks. Configure each quantized variant as its own `[models.<name>]` block with the endpoint pointing at the quantized backend:

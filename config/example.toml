@@ -5,11 +5,13 @@
 endpoint = "https://inference.internal:8001/v1"
 dialect = "minimax"
 max_context = 1000000
+# api_key = ""  # optional Bearer token; override via GHYLL_API_KEY_M25 or GHYLL_API_KEY
 
 [models.glm5]
 endpoint = "https://inference.internal:8002/v1"
 dialect = "glm"
 max_context = 200000
+# api_key = ""  # optional Bearer token; override via GHYLL_API_KEY_GLM5 or GHYLL_API_KEY
 
 [routing]
 default_model = "m25"

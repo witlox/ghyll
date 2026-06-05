@@ -21,3 +21,7 @@ Correctness over velocity. Every shortcut becomes debt.
 | Invalidate an arrow | `/invalidate-arrow <id> [--reason <text>]` |
 
 The four roles are fixed (analyst → architect → implementer → integrator) per ADR-008. See `docs/glossary.md` for term definitions.
+
+## Endpoint authentication
+
+Each `[models.<name>]` block accepts an optional `api_key = "..."` Bearer token. Two env-var overrides supersede the TOML value (highest first): `GHYLL_API_KEY_<MODEL>` (model-scoped, with non-alphanumeric runes replaced by `_`) and `GHYLL_API_KEY` (global). Empty resolution emits no Authorization header. See [`docs/operator-guide.md`](../../docs/operator-guide.md#endpoint-authentication--api_key-precedence) for the full precedence table and redaction guarantees.

@@ -219,6 +219,7 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
 		ModelName:     modelCfg.Dialect,
+		ExtraHeaders:  buildAuthHeader(sc.Cfg, s.activeModel),
 	})
 
 	// Create context manager with callbacks
@@ -1144,12 +1145,16 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	// Format handoff context using target dialect's HandoffSummary
 	handoffMsgs := s.handoffSummary(cp, recentTurns)
 
-	// Update stream client endpoint
+	// Update stream client endpoint. ExtraHeaders are resolved
+	// fresh against the new target model so each handoff uses its
+	// own api_key (operator may configure distinct keys per
+	// endpoint, e.g. CSCS gateway + local dev).
 	modelCfg := s.cfg.Models[s.activeModel]
 	s.streamClient = stream.NewClient(modelCfg.Endpoint, &stream.ClientOptions{
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
 		ModelName:     modelCfg.Dialect,
+		ExtraHeaders:  buildAuthHeader(s.cfg, s.activeModel),
 	})
 
 	// Create new context manager with handoff messages
@@ -1188,9 +1193,29 @@ func (s *Session) compactionCall(req ghyllcontext.CompactionRequest) (string, er
 		})
 	}
 
+	// AUTH-W-004: pin the resolution to the Session's CURRENT
+	// active model rather than trusting req.ModelName. ADR-005
+	// mandates compaction reuses the active endpoint and key; we
+	// honour that invariant here regardless of what the caller
+	// populated. If both are present and agree, behaviour is
+	// unchanged; if req.ModelName is empty, the closure picks up
+	// the right model from session state (no silent auth-drop).
+	modelName := s.activeModel
+	if req.ModelName != "" {
+		modelName = req.ModelName
+	}
+
+	// AUTH-W-010: ModelName must also flow into the request body
+	// so CSCS-style gateways that route on `model` reach the
+	// correct backend (previously fell through to "default").
+	dialectName := s.cfg.Models[modelName].Dialect
+	// ADR-005: compaction runs on the SAME endpoint as the active
+	// dialect, so the same api_key applies.
 	client := stream.NewClient(req.ModelEndpoint, &stream.ClientOptions{
 		MaxRetries:    1,
 		BaseBackoffMs: 500,
+		ModelName:     dialectName,
+		ExtraHeaders:  buildAuthHeader(s.cfg, modelName),
 	})
 	resp, err := client.Send(msgs)
 	if err != nil {

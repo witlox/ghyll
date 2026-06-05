@@ -38,7 +38,11 @@ func registerConfigSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	writeConfig := func(content string) error {
-		return os.WriteFile(configPath, []byte(content), 0644)
+		// AUTH-5 / AUTH-W-006 / ADV-AUTH-002: 0o600 is the required
+		// mode whenever the file may contain a secret. Acceptance
+		// suites use this helper uniformly so we don't trip the
+		// file-mode check on secret-bearing scenarios.
+		return os.WriteFile(configPath, []byte(content), 0o600)
 	}
 
 	loadConfig := func() {
@@ -142,7 +146,7 @@ url = "%s"
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(configPath, append(data, []byte(fmt.Sprintf("token = \"%s\"\n", token))...), 0644)
+		return os.WriteFile(configPath, append(data, []byte(fmt.Sprintf("token = \"%s\"\n", token))...), 0o600)
 	})
 
 	ctx.Step(`^no vault\.token configured$`, func() error {

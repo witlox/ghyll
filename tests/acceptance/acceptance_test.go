@@ -153,6 +153,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// auto-insert + pure-machine arrow skips adversarial
 	// (runner.feature post-Tier-2 lifts).
 	registerRunnerModalSteps(ctx, state)
+
+	// Endpoint Bearer-token auth (specs/features/auth.feature).
+	// Wires the recording HTTP-server pattern + ResolveAPIKey +
+	// redactor checks. Each scenario resets env vars in the
+	// After hook to prevent sentinel-leak across scenarios.
+	registerAuthSteps(ctx, state)
 }
 
 // ScenarioState is defined in state.go (shared across step files).

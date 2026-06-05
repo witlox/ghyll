@@ -51,6 +51,30 @@ Leave the rest of the template alone unless you have a specific
 reason to override defaults; the depth ladder, routing thresholds,
 and sandbox settings ship with sane values.
 
+### Endpoint authentication — api_key precedence
+
+When the endpoint requires a Bearer token, ghyll resolves the value
+at request time from three sources, highest to lowest:
+
+| Layer | Source | Example |
+|------|--------|---------|
+| 1 | `GHYLL_API_KEY_<MODEL>` env var | `GHYLL_API_KEY_CSCS_GLM5=sk-...` |
+| 2 | `GHYLL_API_KEY` env var (global fallback) | `GHYLL_API_KEY=sk-...` |
+| 3 | `api_key = "..."` under `[models.<name>]` in TOML | `api_key = "sk-..."` |
+
+`<MODEL>` in the scoped env var name is the TOML model key
+upper-cased with any non-`[A-Z0-9_]` rune replaced by `_` — so
+`[models.cscs-glm5]` becomes `GHYLL_API_KEY_CSCS_GLM5`. The TOML
+file is written at mode `0o600` on first seed, but a checked-in
+config can safely ship with a placeholder and override via env on
+production hosts.
+
+`ghyll config show` prints the resolved provenance as
+`api_key: <unset>` / `<env>` / `<toml>` — the value itself is
+never printed, logged, or surfaced through error messages
+(401/403 upstream responses are replaced with a fixed
+`authentication failed` string before any logging occurs).
+
 What happens under the hood:
 
 - **Step 1**: `ghyll run` calls the config bootstrap. When

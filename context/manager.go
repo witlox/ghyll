@@ -32,6 +32,15 @@ type CompactionRequest struct {
 	TurnsToSummarize []types.Message
 	CompactionPrompt string
 	ModelEndpoint    string
+
+	// ModelName is the TOML model key (e.g. "cscs-glm5") the
+	// compaction is running on. ADR-005 says compaction reuses the
+	// active endpoint, so the same api_key applies — the callback
+	// uses this key to call config.ResolveAPIKey and attach the
+	// matching Authorization header. Zero value (empty string) is
+	// safe: ResolveAPIKey returns "" and no Authorization header
+	// is emitted (matches pre-change behaviour).
+	ModelName string
 }
 
 // ManagerDeps are callbacks provided by cmd/ghyll to wire packages
@@ -149,6 +158,7 @@ func (m *Manager) compact(activeModel string, endpoint string, compactionPrompt 
 		TurnsToSummarize: toSummarize,
 		CompactionPrompt: compactionPrompt,
 		ModelEndpoint:    endpoint,
+		ModelName:        activeModel,
 	})
 	if err != nil {
 		return err

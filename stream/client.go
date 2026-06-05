@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -221,6 +222,47 @@ func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Respons
 	return parseSSEStream(resp.Body, onDelta)
 }
 
+// bearerEchoPattern matches any substring that LOOKS like a Bearer
+// token or Authorization header value echoed in an upstream error
+// body. AUTH-4 / AUTH-W-001 / ADV-AUTH-001: a non-401/403 upstream
+// (400 Bad Request, 402, 407, 422, 500/502/503) MAY also echo the
+// inbound Authorization header in its error JSON. We strip those
+// substrings before surfacing the message so the redaction guard is
+// not limited to the 401/403 status codes.
+var bearerEchoPattern = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*\S+|bearer\s+\S+|sk-[A-Za-z0-9_\-]{8,})`)
+
+// sanitizeUpstreamMessage strips substrings that resemble a Bearer
+// token (Authorization: ..., Bearer ..., sk-...). Used before any
+// upstream-controlled body or header is surfaced via StreamError.
+func sanitizeUpstreamMessage(s string) string {
+	return bearerEchoPattern.ReplaceAllString(s, "<redacted>")
+}
+
+// maxRequestIDLen caps the operator-facing X-Request-ID length.
+// AUTH-4 / ADV-AUTH-006: upstream-controlled — a malicious or
+// debug-happy gateway can stuff arbitrary bytes (or the inbound
+// token) into this header. Cap + whitelist printable-ish characters.
+const maxRequestIDLen = 64
+
+// safeRequestIDPattern is the only character class accepted in an
+// echoed X-Request-ID value. Anything else gets the rid dropped.
+var safeRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._\-:]+$`)
+
+// sanitizeRequestID applies the length cap + whitelist. Returns ""
+// when the input is empty or fails the whitelist.
+func sanitizeRequestID(rid string) string {
+	if rid == "" {
+		return ""
+	}
+	if len(rid) > maxRequestIDLen {
+		rid = rid[:maxRequestIDLen]
+	}
+	if !safeRequestIDPattern.MatchString(rid) {
+		return ""
+	}
+	return rid
+}
+
 func classifyHTTPError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 
@@ -240,6 +282,24 @@ func classifyHTTPError(resp *http.Response) error {
 		sErr.Err = ErrRateLimited
 	}
 
+	// Auth-redaction guard: a 401/403 response body MAY echo the
+	// Bearer token (some gateways quote the offending header in
+	// their error JSON). Replace the body-derived message with a
+	// fixed string BEFORE the json.Unmarshal pass below so the
+	// surfaced StreamError.Message can never carry the secret to
+	// logs, error chains, or the operator UI. The X-Request-ID
+	// header (if present) is preserved as a diagnostic — request
+	// IDs are operator-set, not token-bearing — but is length-
+	// capped + character-whitelisted (AUTH-4 / ADV-AUTH-006).
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		sErr.Message = "authentication failed"
+		if rid := sanitizeRequestID(resp.Header.Get("X-Request-ID")); rid != "" {
+			sErr.Message = "authentication failed (request-id=" + rid + ")"
+		}
+		sErr.Retryable = false
+		return sErr
+	}
+
 	// Check for context_length_exceeded in error body
 	var errBody struct {
 		Error struct {
@@ -248,7 +308,13 @@ func classifyHTTPError(resp *http.Response) error {
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &errBody) == nil {
-		sErr.Message = errBody.Error.Message
+		// AUTH-W-001 / ADV-AUTH-001: scrub Bearer-token-shaped
+		// substrings from non-401/403 bodies before surfacing.
+		// Some gateways (Cloudflare, internal reverse-proxies) put
+		// a malformed Authorization header into 400/422/500/502
+		// bodies for "debugging" — we MUST NOT echo it to the
+		// operator UI, log, or sub-agent context.
+		sErr.Message = sanitizeUpstreamMessage(errBody.Error.Message)
 		if strings.Contains(errBody.Error.Message, "context_length_exceeded") {
 			sErr.ContextTooLong = true
 			sErr.Retryable = false
