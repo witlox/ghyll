@@ -235,6 +235,45 @@ func TestScenario_Sync_SetupWorktree_PrunesStaleRegistration(t *testing.T) {
 	}
 }
 
+// TestScenario_Sync_SetupWorktree_StaleOnDiskWorktree — second
+// regression on the same code path. The previous fix (prune)
+// covered the case where the stale temp dir was GONE; this one
+// covers the case where the stale temp dir STILL EXISTS. CSCS
+// login nodes don't clear /tmp across sessions, so the previous
+// session's worktree directory sits there as a live (but
+// orphaned-by-lockfile) registration. prune is a no-op; only
+// `git worktree add --force` can steal the branch back.
+//
+// ADR-006 guarantees safety: the .ghyll.lock check (with the new
+// PID validation in cmd/ghyll/lockfile.go) means no other ghyll
+// is running, so the on-disk worktree is by definition stale.
+func TestScenario_Sync_SetupWorktree_StaleOnDiskWorktree(t *testing.T) {
+	remote := initBareRepo(t)
+	workDir := initWorkRepo(t, remote)
+
+	// First syncer creates and registers a worktree.
+	first, err := NewSyncer(workDir, "ghyll/memory", "test-device-1")
+	if err != nil {
+		t.Fatalf("first syncer: %v", err)
+	}
+	if err := first.InitBranch(); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	// Don't delete first.WorktreePath() — leave it on disk to
+	// simulate the live-stale case. prune will be a no-op here.
+
+	second, err := NewSyncer(workDir, "ghyll/memory", "test-device-2")
+	if err != nil {
+		t.Fatalf("second syncer: %v", err)
+	}
+	if err := second.InitBranch(); err != nil {
+		t.Errorf("second InitBranch must succeed even when stale worktree dir is still on disk, got: %v", err)
+	}
+	if _, err := os.Stat(second.WorktreePath()); err != nil {
+		t.Errorf("new worktree should exist after setup, got stat err=%v", err)
+	}
+}
+
 // TestScenario_Sync_OrphanIsolation maps to:
 // Scenario: Orphan branch isolation
 func TestScenario_Sync_OrphanIsolation(t *testing.T) {

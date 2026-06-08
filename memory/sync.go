@@ -210,18 +210,27 @@ func (s *Syncer) setupWorktree() error {
 		return nil
 	}
 
-	// `git worktree prune` first. NewSyncer picks a fresh
-	// /tmp/ghyll-memory-XXXXX every session, but git's worktree DB
-	// remembers every prior registration — and `git worktree add`
-	// refuses with "'ghyll/memory' is already used by worktree at
-	// '<stale-path>'" when an old entry's directory is gone but the
-	// DB row survives. prune is idempotent and only drops entries
-	// whose paths no longer exist on disk, so a live concurrent
-	// session (ADR-006: one per repo, but defense-in-depth) is
-	// untouched.
+	// Two-pronged cleanup of stale worktree registrations.
+	//
+	// 1. `git worktree prune` drops DB entries whose directory has
+	//    been deleted (e.g. /tmp wiped on reboot).
+	// 2. `git worktree add --force` overrides git's "branch already
+	//    used by worktree at <stale-path>" safeguard for the case
+	//    prune CAN'T handle — the previous session's worktree
+	//    directory is still present on disk (CSCS login nodes don't
+	//    clear /tmp), so prune is a no-op and the next add would
+	//    otherwise fail.
+	//
+	// Why --force is safe: ADR-006 holds .ghyll.lock for the active
+	// session, and the lockfile PID check (cmd/ghyll/lockfile.go)
+	// distinguishes a live ghyll process from any other PID. If we
+	// got here, the lock is ours and no other ghyll is running, so
+	// any registered worktree pointing at our branch is stale by
+	// definition — overriding the safeguard cannot steal the branch
+	// from a live concurrent session.
 	_, _ = s.git("worktree", "prune")
 
-	if _, err := s.git("worktree", "add", s.worktreeDir, s.branchName); err != nil {
+	if _, err := s.git("worktree", "add", "--force", s.worktreeDir, s.branchName); err != nil {
 		return &SyncError{Op: "init", Err: fmt.Errorf("add worktree: %w", err)}
 	}
 

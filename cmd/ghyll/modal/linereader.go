@@ -234,11 +234,28 @@ func (r *LineReader) Next(ctx context.Context) (string, error) {
 
 // Close stops the reader goroutine. Idempotent. Subsequent Next
 // calls return the buffered lines first then io.EOF.
+//
+// Interactive-mode caveat: we do NOT call r.rl.Close() because
+// readline's Instance.Close → Terminal.Close → wg.Wait blocks
+// forever on a CancelableStdin whose ioloop is wedged in an
+// uninterruptible syscall.Read against os.Stdin. The "cancelable"
+// channel select only governs subsequent reads, not the in-flight
+// one. (chzyer/readline std.go:90-105.) The symptom is /exit
+// hanging and the .ghyll.lock leaking because sess.Close's
+// downstream defers never get to run.
+//
+// Workaround: restore termios via Terminal.ExitRawMode so the
+// parent shell is usable, signal `done` so the lines-buffer
+// goroutine bails, and let the rest of the goroutines die with
+// the process at os.Exit. They're tied to OS resources the
+// kernel reclaims anyway; leaving them in flight is fine for the
+// one-shot REPL lifecycle. If chzyer/readline ever ships a
+// non-blocking close path we can switch back.
 func (r *LineReader) Close() {
 	r.closeOnce.Do(func() {
 		close(r.done)
 		if r.rl != nil {
-			_ = r.rl.Close()
+			_ = r.rl.Terminal.ExitRawMode()
 		}
 	})
 }
