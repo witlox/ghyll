@@ -274,6 +274,51 @@ func TestScenario_Sync_SetupWorktree_StaleOnDiskWorktree(t *testing.T) {
 	}
 }
 
+// TestScenario_Sync_CommitWorksWithoutGlobalIdentity — regression
+// for the per-minute "memory.SyncLoop: push failed: Author identity
+// unknown" log spam on CSCS where the host has no global git
+// user.email / user.name. The fix inlines identity via
+// `git -c user.email=... -c user.name=... commit` so the operator
+// never has to configure git just to use ghyll.
+//
+// Simulates the failure by emptying the test's local user.email /
+// user.name in the worktree's git config before CommitAndPush; a
+// pre-fix run would fail with "Author identity unknown".
+func TestScenario_Sync_CommitWorksWithoutGlobalIdentity(t *testing.T) {
+	remote := initBareRepo(t)
+	workDir := initWorkRepo(t, remote)
+
+	syncer, err := NewSyncer(workDir, "ghyll/memory", "test-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.InitBranch(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wipe identity from the worktree so the commit must succeed
+	// via the inlined -c flags alone. unset-all is the cross-version
+	// safe way to remove all matching keys.
+	run(t, syncer.WorktreePath(), "git", "config", "--unset-all", "user.email")
+	run(t, syncer.WorktreePath(), "git", "config", "--unset-all", "user.name")
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	cp := &Checkpoint{
+		Version: 1, ParentHash: "0000000000000000000000000000000000000000000000000000000000000000",
+		DeviceID: "test-device", AuthorID: "alice", Timestamp: 1,
+		RepoRemote: remote, SessionID: "s1", Turn: 1,
+		ActiveModel: "m25", Summary: "test identity-less commit",
+	}
+	SignCheckpoint(cp, priv)
+	if err := syncer.WriteCheckpoint(cp, repoHash(remote)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncer.CommitAndPush(context.Background()); err != nil {
+		t.Fatalf("CommitAndPush must succeed without global git identity, got: %v", err)
+	}
+}
+
 // TestScenario_Sync_OrphanIsolation maps to:
 // Scenario: Orphan branch isolation
 func TestScenario_Sync_OrphanIsolation(t *testing.T) {

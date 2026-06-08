@@ -359,7 +359,21 @@ func (s *Syncer) CommitAndPush(ctx context.Context) error {
 		return nil // nothing to commit
 	}
 
-	if _, err := s.gitInWorktree("commit", "-m", fmt.Sprintf("checkpoint by %s", s.deviceID)); err != nil {
+	// Inline git identity via `-c name=value` so the commit doesn't
+	// require user.email / user.name to be set in the host's
+	// global / repo git config. CSCS login nodes ship without any
+	// default identity ("unknown@<hostname>") which causes git
+	// commit to fail with "Author identity unknown" — visible in
+	// the SyncLoop log as a per-minute warning spam. ghyll is the
+	// author of these commits, not the operator; identity should
+	// reflect the device that produced them so the chain attribution
+	// matches our hash-chain semantics.
+	if _, err := s.gitInWorktree(
+		"-c", "user.email=ghyll+"+s.deviceID+"@local",
+		"-c", "user.name=ghyll-"+s.deviceID,
+		"commit",
+		"-m", fmt.Sprintf("checkpoint by %s", s.deviceID),
+	); err != nil {
 		return &SyncError{Op: "push", Err: fmt.Errorf("git commit: %w", err)}
 	}
 
