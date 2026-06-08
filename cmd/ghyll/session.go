@@ -1044,6 +1044,13 @@ func (s *Session) sendAndProcess() (string, error) {
 			if content == "" && toolResult.Error != "" {
 				content = toolResult.Error
 			}
+			// Per-result byte cap. Without this a single `find`
+			// on a deep tree adds 50+ KB to context per turn and
+			// blows past gateway body limits within a handful of
+			// inspection turns. The renderer already truncates
+			// for display; this caps the SAME content as it
+			// enters the model's message history.
+			content = capToolResult(content, s.cfg.Tools.MaxResultBytes)
 			s.ctxManager.AddMessage(types.Message{
 				Role:       "tool",
 				Content:    content,

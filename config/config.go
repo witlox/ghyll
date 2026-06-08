@@ -142,6 +142,17 @@ type ToolsConfig struct {
 	// slow CheckPending doesn't starve the subsequent commit.
 	GitCheckTimeoutSeconds  int `toml:"git_check_timeout_seconds"`
 	GitCommitTimeoutSeconds int `toml:"git_commit_timeout_seconds"`
+
+	// MaxResultBytes caps the size of a single tool result before
+	// it enters the conversation history. The renderer already
+	// truncates for display, but the model context used to receive
+	// the full output — a single `find` on a large tree could add
+	// 50+ KB per turn. After a handful of inspection turns the
+	// request body explodes past gateway body-size caps (CSCS Envoy
+	// AI Gateway 413s ~80 KB). Default 8192 (8 KiB) keeps
+	// individual results useful while bounding cumulative growth.
+	// 0 → use default; -1 → disabled (full result enters context).
+	MaxResultBytes int `toml:"max_result_bytes"`
 }
 
 type SubAgentConfig struct {
