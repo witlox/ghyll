@@ -16,7 +16,9 @@ import (
 // Validation-pass-8 D6: workdir is sanitized via cleanWorkdir to
 // strip embedded newlines / ANSI escapes / control chars.
 func DeepSeekSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle code reasoning, multi-file debugging, and architectural tasks. You have access to tools for reading files, writing files, executing bash commands, and searching code. Be precise and verify before committing to a direction.`, cleanWorkdir(workdir))
+	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle code reasoning, multi-file debugging, and architectural tasks. You have access to tools for reading files, writing files, executing bash commands, and searching code. Be precise and verify before committing to a direction.
+
+You also have memory_search — a tool that queries ghyll's persistent project memory of prior sessions (decisions made, bugs fixed, ongoing work). Call it when the operator's question references past activity or when context from a previous session would change your answer. Args: {"query": "free text or hex hash prefix", "limit": 5}. Don't call it on every turn — only when prior context is genuinely relevant.`, cleanWorkdir(workdir))
 }
 
 // DeepSeekBuildMessages formats messages for DeepSeek OpenAI-compatible API.

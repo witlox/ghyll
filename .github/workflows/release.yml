@@ -105,6 +105,25 @@ jobs:
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
             go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_linux_arm64/ghyll-vault ./cmd/ghyll-vault
 
+      - name: Bundle ONNX Runtime
+        # Ships libonnxruntime.so alongside the ghyll binary so
+        # operators on locked-down hosts (CSCS, HPC, etc.) can use
+        # drift detection without sudo-installing the runtime. ghyll
+        # auto-detects <binary-dir>/lib/libonnxruntime.so* via
+        # memory.bundledONNXLibrary.
+        env:
+          ORT_VERSION: "1.20.1"
+        run: |
+          for arch_pair in "amd64:x64" "arm64:aarch64"; do
+            goarch="${arch_pair%%:*}"
+            ortarch="${arch_pair##*:}"
+            url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ortarch}-${ORT_VERSION}.tgz"
+            mkdir -p dist/ghyll_linux_${goarch}/lib
+            curl -fsSL "$url" | tar xz --strip-components=2 -C dist/ghyll_linux_${goarch}/lib --wildcards '*/lib/libonnxruntime*'
+            echo "Bundled lib for linux/${goarch}:"
+            ls -la dist/ghyll_linux_${goarch}/lib/
+          done
+
       - name: Package
         run: |
           VERSION="${{ needs.check-updates.outputs.version }}"
@@ -140,6 +159,15 @@ jobs:
             go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_darwin_arm64/ghyll ./cmd/ghyll
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
             go build -ldflags="-s -w -X main.version=${VERSION}" -o dist/ghyll_darwin_arm64/ghyll-vault ./cmd/ghyll-vault
+
+      - name: Bundle ONNX Runtime
+        env:
+          ORT_VERSION: "1.20.1"
+        run: |
+          url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
+          mkdir -p dist/ghyll_darwin_arm64/lib
+          curl -fsSL "$url" | tar xz --strip-components=2 -C dist/ghyll_darwin_arm64/lib '*/lib/libonnxruntime*'
+          ls -la dist/ghyll_darwin_arm64/lib/
 
       - name: Package
         run: |

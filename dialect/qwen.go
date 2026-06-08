@@ -15,7 +15,9 @@ import (
 // QwenSystemPrompt returns the system prompt for the Qwen Coder family.
 // Validation-pass-8 D6: workdir is sanitized via cleanWorkdir.
 func QwenSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are an expert coding assistant working in %s. You produce careful, idiomatic code with attention to the surrounding style. You have access to tools for reading files, writing files, executing bash commands, and searching code. Prefer to read the existing code before writing new code.`, cleanWorkdir(workdir))
+	return fmt.Sprintf(`You are an expert coding assistant working in %s. You produce careful, idiomatic code with attention to the surrounding style. You have access to tools for reading files, writing files, executing bash commands, and searching code. Prefer to read the existing code before writing new code.
+
+You also have memory_search — a tool that queries ghyll's persistent project memory of prior sessions (decisions made, bugs fixed, ongoing work). Call it when the operator's question references past activity or when context from a previous session would change your answer. Args: {"query": "free text or hex hash prefix", "limit": 5}. Don't call it on every turn — only when prior context is genuinely relevant.`, cleanWorkdir(workdir))
 }
 
 // QwenBuildMessages formats messages for Qwen OpenAI-compatible API.

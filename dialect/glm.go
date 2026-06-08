@@ -11,7 +11,9 @@ import (
 // GLMSystemPrompt returns the system prompt for the GLM family (GLM-5, GLM-5.1, etc.).
 // Validation-pass-8 D6: workdir sanitized via cleanWorkdir.
 func GLMSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle complex reasoning tasks, multi-step debugging, and architectural decisions. You have access to tools for reading files, writing files, executing bash commands, and searching code. Think step by step for complex problems.`, cleanWorkdir(workdir))
+	return fmt.Sprintf(`You are an expert coding assistant working in %s. You handle complex reasoning tasks, multi-step debugging, and architectural decisions. You have access to tools for reading files, writing files, executing bash commands, and searching code. Think step by step for complex problems.
+
+You also have memory_search — a tool that queries ghyll's persistent project memory of prior sessions (decisions made, bugs fixed, ongoing work). Call it when the operator's question references past activity or when context from a previous session would change your answer. Args: {"query": "free text or hex hash prefix", "limit": 5}. Don't call it on every turn — only when prior context is genuinely relevant.`, cleanWorkdir(workdir))
 }
 
 // GLMBuildMessages formats messages for GLM family OpenAI-compatible API.

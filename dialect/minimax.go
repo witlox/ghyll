@@ -11,7 +11,9 @@ import (
 // MinimaxSystemPrompt returns the system prompt for the MiniMax family (M2.5, M2.7, etc.).
 // Validation-pass-8 D6: workdir sanitized via cleanWorkdir.
 func MinimaxSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`You are a coding assistant working in %s. You have access to tools for reading files, writing files, executing bash commands, and searching code. Use tools to accomplish tasks. Be concise and direct.`, cleanWorkdir(workdir))
+	return fmt.Sprintf(`You are a coding assistant working in %s. You have access to tools for reading files, writing files, executing bash commands, and searching code. Use tools to accomplish tasks. Be concise and direct.
+
+You also have memory_search — a tool that queries ghyll's persistent project memory of prior sessions (decisions made, bugs fixed, ongoing work). Call it when the operator's question references past activity or when context from a previous session would change your answer. Args: {"query": "free text or hex hash prefix", "limit": 5}. Don't call it on every turn — only when prior context is genuinely relevant.`, cleanWorkdir(workdir))
 }
 
 // MinimaxBuildMessages formats messages for MiniMax family OpenAI-compatible API.

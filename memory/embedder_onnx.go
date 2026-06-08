@@ -4,10 +4,59 @@ package memory
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
+
+// bundledONNXLibrary returns the path to a libonnxruntime shared
+// library shipped alongside the ghyll binary, or "" if none is
+// present. CSCS and similar HPC hosts often lack sudo, so operators
+// can't install onnxruntime-system-wide; bundling the lib inside
+// the release tarball at <binary-dir>/lib/ lets ghyll find it
+// without LD_LIBRARY_PATH gymnastics.
+//
+// Lookup order (first hit wins):
+//   - <binary-dir>/lib/<platform-specific name>
+//   - <binary-dir>/../lib/<platform-specific name>  (when ghyll is
+//     under <prefix>/bin/ghyll and lib lives at <prefix>/lib/)
+//
+// Returns "" silently when nothing matches — the upstream init
+// falls back to the system loader's default search path, which is
+// the pre-bundling behavior.
+func bundledONNXLibrary() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+
+	// Per-OS canonical filename. The library team ships these
+	// names on each platform; symlinks let us avoid hardcoding a
+	// specific version.
+	var names []string
+	switch runtime.GOOS {
+	case "linux":
+		names = []string{"libonnxruntime.so", "libonnxruntime.so.1"}
+	case "darwin":
+		names = []string{"libonnxruntime.dylib", "libonnxruntime.1.dylib"}
+	default:
+		return ""
+	}
+
+	for _, root := range []string{dir, filepath.Join(dir, "..")} {
+		for _, name := range names {
+			candidate := filepath.Join(root, "lib", name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
 
 // tryInitONNX attempts to initialize the ONNX Runtime session.
 // Only compiled when CGO is enabled.
@@ -34,6 +83,14 @@ var ortInitErr error
 
 func initONNXSession(modelPath string, dimensions int) (*onnxSession, func(), error) {
 	ortInitOnce.Do(func() {
+		// Prefer a bundled libonnxruntime when one ships with
+		// the release tarball — operators on locked-down hosts
+		// (CSCS, similar HPC) can't `sudo apt install`. When no
+		// bundle exists, leave SetSharedLibraryPath untouched and
+		// the system search path takes over (existing behavior).
+		if path := bundledONNXLibrary(); path != "" {
+			ort.SetSharedLibraryPath(path)
+		}
 		ortInitErr = ort.InitializeEnvironment()
 	})
 	if ortInitErr != nil {

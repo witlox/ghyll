@@ -1089,6 +1089,7 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 		NewString string `json:"new_string"`
 		URL       string `json:"url"`
 		Query     string `json:"query"`
+		Limit     int    `json:"limit"` // memory_search result cap
 		Task      string `json:"task"`
 		Reason    string `json:"reason"`
 	}
@@ -1138,6 +1139,15 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 			backend = "https://html.duckduckgo.com"
 		}
 		return tool.WebSearch(ctx, args.Query, backend, 10, webTimeout)
+	case "memory_search":
+		// Operator-visible memory: lets the model recall prior
+		// sessions' decisions / fixes / open work. Backed by the
+		// same sqlite checkpoint store the CLI `ghyll memory log`
+		// walks. Accepts a free-text query (substring match against
+		// summaries, half-overlap rule) OR a hex hash prefix
+		// (>=6 chars). Default limit 5 keeps the tool result inside
+		// the model's per-call budget.
+		return s.memorySearchTool(args.Query, args.Limit)
 	case "agent":
 		return RunSubAgent(s, args.Task)
 	case "enter_plan_mode":
