@@ -78,8 +78,22 @@ func TestScenario_Sandbox_FirejailViaEnv(t *testing.T) {
 	}
 }
 
+// stubDetect returns the given kind from detectSandboxFunc until
+// the cleanup fires. Lets policy tests assert behavior without
+// depending on the test host's actual sandbox state (e.g. CI
+// inside Docker, bwrap'd dev shells, etc.).
+func stubDetect(t *testing.T, kind SandboxKind, detail string) {
+	t.Helper()
+	prev := detectSandboxFunc
+	detectSandboxFunc = func() SandboxReport {
+		return SandboxReport{Kind: kind, Detail: detail}
+	}
+	t.Cleanup(func() { detectSandboxFunc = prev })
+}
+
 func TestScenario_Sandbox_EnforcePolicy_WarnsWhenAbsent(t *testing.T) {
 	clearSandboxEnv(t)
+	stubDetect(t, SandboxNone, "")
 	var captured bytes.Buffer
 	err := EnforceSandboxPolicy(func(s string) { captured.WriteString(s + "\n") })
 	if err != nil {
@@ -93,6 +107,7 @@ func TestScenario_Sandbox_EnforcePolicy_WarnsWhenAbsent(t *testing.T) {
 
 func TestScenario_Sandbox_EnforcePolicy_RequireFailsWithoutSandbox(t *testing.T) {
 	clearSandboxEnv(t)
+	stubDetect(t, SandboxNone, "")
 	t.Setenv("GHYLL_REQUIRE_SANDBOX", "1")
 	var captured bytes.Buffer
 	err := EnforceSandboxPolicy(func(s string) { captured.WriteString(s + "\n") })
@@ -152,6 +167,7 @@ func TestScenario_Sandbox_TruthyEnvParsing(t *testing.T) {
 
 func TestScenario_Sandbox_EnforcePolicy_NilOutputCallback(t *testing.T) {
 	clearSandboxEnv(t)
+	stubDetect(t, SandboxNone, "")
 	// Nil callback must not panic; policy still returns the right
 	// error.
 	t.Setenv("GHYLL_REQUIRE_SANDBOX", "1")

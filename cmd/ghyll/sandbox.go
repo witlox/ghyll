@@ -91,18 +91,46 @@ func DetectSandbox() SandboxReport {
 	return SandboxReport{Kind: SandboxNone}
 }
 
-// detectLinuxSandbox reads /proc/1/cgroup and /proc/self/status
-// for sandbox markers. Returns SandboxNone if none match.
+// detectLinuxSandbox checks a layered set of markers for common
+// Linux sandboxes. Order is most-specific → least-specific so a
+// container with multiple matching signals reports under its
+// canonical kind (Docker beats "generic PID namespace").
 //
-// Detection markers:
-//   - cgroup containing "docker"  → SandboxDocker
-//   - cgroup containing "podman"  → SandboxPodman
-//   - cgroup containing "lxc"     → SandboxLXC
-//   - status with PID namespace (NStgid != global tgid) → bubblewrap-class
-//   - $FIREJAIL_FILE set          → SandboxFirejail
+// Markers:
+//   - $FIREJAIL_FILE                              → Firejail
+//   - file /.dockerenv                            → Docker
+//   - file /run/.containerenv                     → Podman
+//   - file /proc/1/comm contents == "bwrap*"      → Bubblewrap
+//   - /proc/1/cgroup contains docker/podman/
+//     lxc/containerd/kubepods                     → respective
+//   - /proc/self/status NSpid has multiple PIDs   → Bubblewrap-class
+//   - /proc/self/ns/pid differs from /proc/1/ns/pid → namespaced
+//
+// The Kubernetes path comes from cgroup (`kubepods`) or the
+// KUBERNETES_SERVICE_HOST env (handled upstream in DetectSandbox).
 func detectLinuxSandbox() SandboxReport {
 	if firejail := os.Getenv("FIREJAIL_FILE"); firejail != "" {
 		return SandboxReport{Kind: SandboxFirejail, Detail: "FIREJAIL_FILE=" + firejail}
+	}
+	// Container marker files. Most reliable cross-runtime signals
+	// — present even when env vars aren't and the cgroup layout is
+	// rootless / unusual.
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return SandboxReport{Kind: SandboxDocker, Detail: "/.dockerenv present"}
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return SandboxReport{Kind: SandboxPodman, Detail: "/run/.containerenv present"}
+	}
+	// bwrap-specific: bwrap re-execs itself as PID 1 inside its
+	// own PID namespace, so /proc/1/comm reads as "bwrap" (or one
+	// of its userns-helper variants). Reliable even when the
+	// NSpid trick below fails because --proc /proc remounted a
+	// fresh procfs that hides the host namespace.
+	if data, err := os.ReadFile("/proc/1/comm"); err == nil {
+		comm := strings.TrimSpace(string(data))
+		if strings.HasPrefix(comm, "bwrap") {
+			return SandboxReport{Kind: SandboxBubblewrap, Detail: "/proc/1/comm=" + comm}
+		}
 	}
 	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
 		text := strings.ToLower(string(data))
@@ -111,6 +139,8 @@ func detectLinuxSandbox() SandboxReport {
 			return SandboxReport{Kind: SandboxDocker, Detail: "/proc/1/cgroup contains docker"}
 		case strings.Contains(text, "podman"):
 			return SandboxReport{Kind: SandboxPodman, Detail: "/proc/1/cgroup contains podman"}
+		case strings.Contains(text, "kubepods"):
+			return SandboxReport{Kind: SandboxKubernetes, Detail: "/proc/1/cgroup contains kubepods"}
 		case strings.Contains(text, "lxc"):
 			return SandboxReport{Kind: SandboxLXC, Detail: "/proc/1/cgroup contains lxc"}
 		case strings.Contains(text, "containerd"):
@@ -134,6 +164,16 @@ func detectLinuxSandbox() SandboxReport {
 			}
 		}
 	}
+	// Last-ditch namespace check: when /proc/self/ns/pid and
+	// /proc/1/ns/pid resolve to different inodes we're in a child
+	// PID namespace. bwrap with --proc /proc remounts procfs but
+	// leaves the ns symlinks intact, so this catches the case the
+	// NSpid trick misses.
+	if self, err := os.Readlink("/proc/self/ns/pid"); err == nil {
+		if root, err := os.Readlink("/proc/1/ns/pid"); err == nil && self != root {
+			return SandboxReport{Kind: SandboxBubblewrap, Detail: "/proc/self/ns/pid differs from /proc/1/ns/pid"}
+		}
+	}
 	return SandboxReport{Kind: SandboxNone}
 }
 
@@ -151,6 +191,13 @@ func detectDarwinSandbox() SandboxReport {
 // GHYLL_REQUIRE_SANDBOX is truthy and no sandbox is detected.
 var ErrNoSandboxDetected = errors.New("ghyll: no sandbox detected and GHYLL_REQUIRE_SANDBOX is set")
 
+// detectSandboxFunc is the indirection EnforceSandboxPolicy goes
+// through to discover the current sandbox state. In production
+// it points at DetectSandbox; tests overwrite it to assert policy
+// behavior without depending on the test host's actual sandbox
+// state (e.g. CI runners inside Docker, sandboxed dev shells, etc.).
+var detectSandboxFunc = DetectSandbox
+
 // EnforceSandboxPolicy implements the runtime's sandbox policy.
 // Called once at session start. Returns ErrNoSandboxDetected
 // when no sandbox marker is present AND the GHYLL_REQUIRE_SANDBOX
@@ -162,7 +209,7 @@ var ErrNoSandboxDetected = errors.New("ghyll: no sandbox detected and GHYLL_REQU
 // the message flows through ui.Info under normal operation and
 // the BDD harness can capture it in tests.
 func EnforceSandboxPolicy(out func(string)) error {
-	report := DetectSandbox()
+	report := detectSandboxFunc()
 	requireSandbox := truthyEnv(os.Getenv("GHYLL_REQUIRE_SANDBOX"))
 	switch report.Kind {
 	case SandboxNone:
