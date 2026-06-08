@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -14,6 +15,37 @@ import (
 	ghyllcontext "github.com/witlox/ghyll/context"
 	"github.com/witlox/ghyll/ui"
 )
+
+// builtinSlashCommands is the static set ghyll's REPL handles
+// directly (see DispatchSlashCommand + the /quit alias here). The
+// slash-completer adds workflow-defined commands on top at call
+// time so user-created .ghyll/commands/*.md show up in Tab.
+var builtinSlashCommands = []string{
+	"exit", "quit",
+	"deep", "fast", "plan",
+	"status", "verify", "spec-check",
+	"op-id",
+	"attest", "list-arrows", "run-arrow",
+	"drain-amendments",
+	"adversary",
+	"invalidate-arrow",
+}
+
+// sessionCompleter is the per-session tab-completion source. Built-
+// ins are static; workflow commands are read from sess.wf at call
+// time so /reload-style flows pick up new ones without restart.
+func sessionCompleter(sess *Session) func() []string {
+	return func() []string {
+		commands := make([]string, 0, len(builtinSlashCommands)+8)
+		commands = append(commands, builtinSlashCommands...)
+		if sess.wf != nil {
+			for name := range sess.wf.Commands {
+				commands = append(commands, name)
+			}
+		}
+		return commands
+	}
+}
 
 // REPL runs the interactive read-eval-print loop.
 //
@@ -34,7 +66,17 @@ func REPL(sess *Session, input io.Reader) {
 	if sess.lines != nil {
 		reader = sess.lines
 	} else {
-		reader = modal.NewLineReader(input)
+		// Try the interactive (readline) reader first. Falls back
+		// to a bufio scanner internally when input isn't a TTY or
+		// readline can't initialize, so test wiring + piped stdin
+		// keep their current behavior. History persists under
+		// ~/.ghyll/history; completer surfaces builtins +
+		// workflow-defined slash commands.
+		historyPath := filepath.Join(os.Getenv("HOME"), ".ghyll", "history")
+		reader = modal.NewInteractiveLineReader(input, modal.InteractiveOpts{
+			HistoryPath:      historyPath,
+			CompleteCommands: sessionCompleter(sess),
+		})
 		sess.lines = reader
 		if tm, ok := sess.modalPrompt.(*modal.TermModal); ok && tm.Lines == nil {
 			tm.Lines = reader
@@ -79,7 +121,15 @@ func REPL(sess *Session, input io.Reader) {
 		// /exit can cancel a blocked modal read cleanly.
 		sess.DrainModalPending(sess.SessionContext())
 
-		ui.Print(sess.Prompt())
+		// Interactive mode: hand the prompt to readline so it can
+		// redraw on terminal resize / history navigation.
+		// Headless mode: print the prompt directly (preserves
+		// existing test wiring and pipe behavior).
+		if reader.IsInteractive() {
+			reader.SetPrompt(sess.Prompt())
+		} else {
+			ui.Print(sess.Prompt())
+		}
 
 		raw, err := reader.Next(sess.SessionContext())
 		if err != nil {

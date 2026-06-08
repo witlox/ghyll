@@ -10,6 +10,7 @@ go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/chzyer/readline v1.5.1
 	github.com/cucumber/godog v0.15.1
 	github.com/yalue/onnxruntime_go v1.27.0
 	golang.org/x/text v0.37.0
