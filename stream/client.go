@@ -340,11 +340,21 @@ func classifyHTTPError(resp *http.Response) error {
 // either ignore the field or surface it under the same name. The
 // inbound half of ADR-v4-009 reads it here; the outbound half lives
 // in dialect/helpers.go's buildOpenAIMessages.
+//
+// Reasoning is the alternative field name some OpenAI-compatible
+// gateways and inference backends emit instead of `reasoning_content`
+// — confirmed on the CSCS Envoy AI Gateway fronting vLLM (2026-06-08
+// probe). When both fields are present on a single delta (unlikely
+// but legal JSON), `reasoning_content` wins because it's the spec-
+// correct name; when only `reasoning` is set we merge it into the
+// same accumulator. Operator-visible behavior is identical either
+// way.
 type sseEvent struct {
 	Choices []struct {
 		Delta struct {
 			Content          string             `json:"content"`
 			ReasoningContent string             `json:"reasoning_content"`
+			Reasoning        string             `json:"reasoning"`
 			ToolCalls        []sseToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
@@ -437,21 +447,31 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 		}
 
 		// ADR-v4-009 inbound half: accumulate dialect-side
-		// reasoning_content. Cap with the same size budget as
-		// content — a malicious endpoint emitting an infinite
-		// reasoning stream would otherwise OOM via the
-		// reasoningBuilder. We do NOT call onDelta for reasoning
-		// because the terminal renderer renders model OUTPUT
-		// (content), not the model's chain-of-thought.
-		if choice.Delta.ReasoningContent != "" {
-			if reasoningBuilder.Len()+len(choice.Delta.ReasoningContent) > maxStreamContentBytes {
+		// reasoning. Cap with the same size budget as content — a
+		// malicious endpoint emitting an infinite reasoning stream
+		// would otherwise OOM via the reasoningBuilder. We do NOT
+		// call onDelta for reasoning because the terminal renderer
+		// renders model OUTPUT (content), not the model's chain-
+		// of-thought.
+		//
+		// Accept BOTH `reasoning_content` (the spec-correct name
+		// Kimi M-flavor emits) AND `reasoning` (the alternative
+		// some OpenAI-compatible gateways emit — confirmed on CSCS
+		// Envoy AI Gateway 2026-06-08). Spec-correct wins on the
+		// rare case both are populated in one delta.
+		reasoningDelta := choice.Delta.ReasoningContent
+		if reasoningDelta == "" {
+			reasoningDelta = choice.Delta.Reasoning
+		}
+		if reasoningDelta != "" {
+			if reasoningBuilder.Len()+len(reasoningDelta) > maxStreamContentBytes {
 				return nil, &StreamError{
 					Retryable: false,
 					Message:   "stream reasoning_content exceeds cap",
 					Err:       ErrStreamSizeCap,
 				}
 			}
-			reasoningBuilder.WriteString(choice.Delta.ReasoningContent)
+			reasoningBuilder.WriteString(reasoningDelta)
 		}
 
 		// Accumulate tool calls

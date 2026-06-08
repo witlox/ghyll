@@ -397,3 +397,63 @@ func TestStream_SSEReasoningContent_AccumulatesIntoResponse(t *testing.T) {
 		t.Errorf("Content = %q, want %q", resp.Content, "calling bash")
 	}
 }
+
+// TestStream_SSEReasoning_AlternativeFieldName — CSCS Envoy AI
+// Gateway / vLLM emit `delta.reasoning` instead of the spec-correct
+// `delta.reasoning_content`. The parser must accept either name and
+// route into the same accumulator so ghyll's dialect round-trip
+// keeps working regardless of which backend variant fronts Kimi.
+// (Probe 2026-06-08 confirmed CSCS gateway uses the short name.)
+func TestStream_SSEReasoning_AlternativeFieldName(t *testing.T) {
+	chunk1 := `{"choices":[{"delta":{"reasoning":"thinking "},"finish_reason":null}]}`
+	chunk2 := `{"choices":[{"delta":{"reasoning":"about this"},"finish_reason":null}]}`
+	chunk3 := `{"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chunk1))
+		_, _ = fmt.Fprint(w, sseChunk(chunk2))
+		_, _ = fmt.Fprint(w, sseChunk(chunk3))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ReasoningContent != "thinking about this" {
+		t.Errorf("ReasoningContent = %q, want %q (parser must accept `reasoning` short name)",
+			resp.ReasoningContent, "thinking about this")
+	}
+	if resp.Content != "answer" {
+		t.Errorf("Content = %q, want %q", resp.Content, "answer")
+	}
+}
+
+// TestStream_SSEReasoning_SpecCorrectWins — when a chunk happens to
+// carry BOTH `reasoning_content` AND `reasoning`, the spec-correct
+// field wins. Future-proofs against a backend that emits the short
+// name for backward compat alongside the spec name.
+func TestStream_SSEReasoning_SpecCorrectWins(t *testing.T) {
+	chunk := `{"choices":[{"delta":{"reasoning_content":"spec","reasoning":"alt"},"finish_reason":null}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chunk))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ReasoningContent != "spec" {
+		t.Errorf("ReasoningContent = %q, want %q (spec-correct name must win)", resp.ReasoningContent, "spec")
+	}
+}
