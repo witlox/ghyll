@@ -51,6 +51,21 @@ type ModelConfig struct {
 	Dialect    string `toml:"dialect"`
 	MaxContext int    `toml:"max_context"`
 
+	// MaxRequestBytes is an OPTIONAL operator hint about the
+	// gateway's request-body byte cap. When > 0, the stream client
+	// checks the marshalled body size BEFORE sending; bodies above
+	// the cap synthesize a ContextTooLong error so ghyll's existing
+	// reactive-compaction path triggers a summarization + retry
+	// instead of letting the gateway 413.
+	//
+	// Use this for tight gateways (CSCS Envoy AI Gateway is
+	// ~75-80 KB; AWS API Gateway is 10 MiB; vanilla OpenAI is
+	// permissive). max_context (tokens) is a model-side budget;
+	// max_request_bytes is a gateway-side budget. They're
+	// orthogonal — set both. 0 disables the check (full body sent
+	// to the gateway, classic 413 surfaces on failure).
+	MaxRequestBytes int `toml:"max_request_bytes"`
+
 	// Model is the literal model id sent on the OpenAI
 	// `chat/completions` request body's `model` field. When empty,
 	// the request body's `model` falls back to `Dialect` (legacy

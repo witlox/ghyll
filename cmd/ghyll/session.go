@@ -222,6 +222,8 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		// when present; fall back to Dialect for legacy configs.
 		ModelName:    wireModelName(modelCfg),
 		ExtraHeaders: buildAuthHeader(sc.Cfg, s.activeModel),
+		// Gateway body-cap hint; 0 disables the preemptive check.
+		MaxRequestBytes: modelCfg.MaxRequestBytes,
 	})
 
 	// Create context manager with callbacks
@@ -1251,8 +1253,9 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 		MaxRetries:    3,
 		BaseBackoffMs: 1000,
 		// KIMI-CFG-4: prefer the operator-set wire `model` literal.
-		ModelName:    wireModelName(modelCfg),
-		ExtraHeaders: buildAuthHeader(s.cfg, s.activeModel),
+		ModelName:       wireModelName(modelCfg),
+		ExtraHeaders:    buildAuthHeader(s.cfg, s.activeModel),
+		MaxRequestBytes: modelCfg.MaxRequestBytes,
 	})
 
 	// Create new context manager with handoff messages

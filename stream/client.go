@@ -86,6 +86,14 @@ type ClientOptions struct {
 	// <key>; production session wiring leaves it nil (the endpoint
 	// config supplies credentials elsewhere).
 	ExtraHeaders http.Header
+
+	// MaxRequestBytes is an operator hint about the gateway's body
+	// cap. When > 0, doRequest checks the marshalled body size
+	// BEFORE sending; bodies above the cap return a ContextTooLong
+	// StreamError so ghyll's reactive-compaction path triggers a
+	// summarization + retry instead of letting the gateway 413.
+	// 0 (default) disables the preemptive check.
+	MaxRequestBytes int
 }
 
 // Client is the SSE streaming client for OpenAI-compatible endpoints.
@@ -117,6 +125,9 @@ func NewClient(endpoint string, opts *ClientOptions) *Client {
 		}
 		if opts.ExtraHeaders != nil {
 			c.opts.ExtraHeaders = opts.ExtraHeaders.Clone()
+		}
+		if opts.MaxRequestBytes > 0 {
+			c.opts.MaxRequestBytes = opts.MaxRequestBytes
 		}
 	}
 	return c
@@ -208,6 +219,27 @@ func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Respons
 		"body_bytes", len(bodyBytes),
 		"message_count", len(messages),
 	)
+
+	// Preemptive body-size check (MaxRequestBytes hint). When the
+	// marshalled body exceeds the operator-declared gateway cap,
+	// synthesize a ContextTooLong error so the session's reactive-
+	// compaction path runs INSTEAD of sending a doomed request
+	// that will 413. This catches the gateway-cap case that
+	// max_context (token-based) doesn't know about — a session
+	// with light prose and many short tool results can hit the
+	// gateway byte cap long before the model's token budget.
+	if c.opts.MaxRequestBytes > 0 && len(bodyBytes) > c.opts.MaxRequestBytes {
+		slog.Debug("stream: preemptive ContextTooLong (body exceeds max_request_bytes)",
+			"body_bytes", len(bodyBytes),
+			"max_request_bytes", c.opts.MaxRequestBytes,
+		)
+		return nil, &StreamError{
+			StatusCode:     0,
+			Message:        fmt.Sprintf("preemptive compaction: body %d bytes exceeds max_request_bytes %d", len(bodyBytes), c.opts.MaxRequestBytes),
+			ContextTooLong: true,
+			Retryable:      false,
+		}
+	}
 
 	url := strings.TrimRight(c.endpoint, "/") + "/chat/completions"
 	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))

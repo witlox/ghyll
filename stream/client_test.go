@@ -433,6 +433,62 @@ func TestStream_SSEReasoning_AlternativeFieldName(t *testing.T) {
 	}
 }
 
+// TestStream_PreemptiveBodyCapTriggersContextTooLong — when
+// ClientOptions.MaxRequestBytes is set and the marshalled body
+// exceeds it, doRequest must short-circuit to a ContextTooLong
+// StreamError BEFORE making the HTTP call. The session's reactive-
+// compaction path then handles the recovery. Without this guard,
+// every doomed request hits the wire and 413s.
+func TestStream_PreemptiveBodyCapTriggersContextTooLong(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, &ClientOptions{
+		MaxRequestBytes: 200, // anything beyond a tiny payload trips it
+	})
+	// Build a message large enough to exceed 200 bytes after JSON
+	// envelope overhead.
+	bigContent := strings.Repeat("x", 500)
+	_, err := client.Send([]map[string]any{{"role": "user", "content": bigContent}})
+	if err == nil {
+		t.Fatal("expected preemptive ContextTooLong error")
+	}
+	var sErr *StreamError
+	if !AsStreamError(err, &sErr) {
+		t.Fatalf("expected StreamError, got: %T %v", err, err)
+	}
+	if !sErr.ContextTooLong {
+		t.Errorf("ContextTooLong should be true, got: %#v", sErr)
+	}
+	if hits != 0 {
+		t.Errorf("preemptive check must NOT hit the wire, but server got %d requests", hits)
+	}
+}
+
+// TestStream_PreemptiveBodyCap_BelowThresholdPasses — sanity:
+// requests under MaxRequestBytes proceed normally.
+func TestStream_PreemptiveBodyCap_BelowThresholdPasses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, &ClientOptions{
+		MaxRequestBytes: 1_000_000, // generous; tiny request fits
+	})
+	_, err := client.Send([]map[string]any{{"role": "user", "content": "hi"}})
+	if err != nil {
+		t.Fatalf("under-threshold request must not preempt, got: %v", err)
+	}
+}
+
 // TestStream_413_HintAndBodyExcerpt — gateway returns a non-JSON
 // 413 (plain text "Request Entity Too Large"). StreamError.Message
 // must include both the operator hint AND the gateway body excerpt
