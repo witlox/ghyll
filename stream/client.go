@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -197,6 +198,17 @@ func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Respons
 		return nil, fmt.Errorf("stream: marshal request: %w", err)
 	}
 
+	// Debug-level breadcrumb: surface the request size so operators
+	// hitting gateway 413s can correlate "ghyll sent N bytes →
+	// gateway rejected". GHYLL_LOG_LEVEL=debug to see it. Cheap
+	// (no body content logged — just the size + message count).
+	slog.Debug("stream: outbound request",
+		"endpoint", c.endpoint,
+		"model", modelName,
+		"body_bytes", len(bodyBytes),
+		"message_count", len(messages),
+	)
+
 	url := strings.TrimRight(c.endpoint, "/") + "/chat/completions"
 	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -327,6 +339,40 @@ func classifyHTTPError(resp *http.Response) error {
 			sErr.ContextTooLong = true
 			sErr.Retryable = false
 		}
+	}
+
+	// Fallback: if the JSON parse produced no usable message (non-
+	// JSON body, plain text, HTML, empty), surface a sanitized
+	// excerpt of the raw body. Critical for gateway 413s, 502s,
+	// and other plain-text/HTML errors where the canonical OpenAI
+	// error envelope isn't present. Capped at 2 KiB to keep error
+	// chains bounded.
+	if sErr.Message == "" && len(body) > 0 {
+		excerpt := string(body)
+		if len(excerpt) > 2048 {
+			excerpt = excerpt[:2048] + "…(truncated)"
+		}
+		sErr.Message = sanitizeUpstreamMessage(strings.TrimSpace(excerpt))
+	}
+
+	// 413 specifically: prefix with the universal meaning. The
+	// body excerpt (above) often just says "413 Request Entity
+	// Too Large" or includes the gateway's max byte limit. Either
+	// way the operator needs to drop max_context.
+	if resp.StatusCode == 413 {
+		hint := "gateway rejected request body as too large; lower [models.*].max_context"
+		if sErr.Message != "" {
+			sErr.Message = hint + " — gateway said: " + sErr.Message
+		} else {
+			sErr.Message = hint
+		}
+		// Debug log includes response headers — gateways
+		// sometimes return X-RateLimit-Max-Body or similar that
+		// pins the exact byte limit.
+		slog.Debug("stream: 413 from gateway",
+			"body_bytes", len(body),
+			"headers", resp.Header,
+		)
 	}
 
 	return sErr

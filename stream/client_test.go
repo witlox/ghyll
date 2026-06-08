@@ -433,6 +433,80 @@ func TestStream_SSEReasoning_AlternativeFieldName(t *testing.T) {
 	}
 }
 
+// TestStream_413_HintAndBodyExcerpt — gateway returns a non-JSON
+// 413 (plain text "Request Entity Too Large"). StreamError.Message
+// must include both the operator hint AND the gateway body excerpt
+// so the operator knows (a) the cause and (b) what to lower.
+// Pre-fix, message was empty and the operator saw bare "HTTP 413".
+func TestStream_413_HintAndBodyExcerpt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(413)
+		_, _ = fmt.Fprint(w, "413 Request Entity Too Large (max 65536 bytes)")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	_, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err == nil {
+		t.Fatal("expected error from 413")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "max_context") {
+		t.Errorf("error should mention max_context hint, got: %v", err)
+	}
+	if !strings.Contains(msg, "max 65536 bytes") {
+		t.Errorf("error should include gateway body excerpt, got: %v", err)
+	}
+}
+
+// TestStream_413_JSONBodyAlsoSurfaces — same as above but with the
+// OpenAI-flavored JSON error envelope. The hint must still prefix;
+// the message field still flows through.
+func TestStream_413_JSONBodyAlsoSurfaces(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(413)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"request body exceeded 100000 bytes","type":"invalid_request_error"}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	_, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err == nil {
+		t.Fatal("expected error from 413")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "max_context") {
+		t.Errorf("error should mention max_context hint, got: %v", err)
+	}
+	if !strings.Contains(msg, "exceeded 100000 bytes") {
+		t.Errorf("error should include gateway body, got: %v", err)
+	}
+}
+
+// TestStream_NonJSON5xx_SurfacesBodyExcerpt — broader contract:
+// any non-2xx with a non-JSON body now surfaces the excerpt instead
+// of swallowing it. Gateway 502 "Bad Gateway" was previously bare
+// "HTTP 502" — now operators see what proxied the failure.
+func TestStream_NonJSON5xx_SurfacesBodyExcerpt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(502)
+		_, _ = fmt.Fprint(w, "<html><body>upstream timeout from envoy</body></html>")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, nil)
+	_, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err == nil {
+		t.Fatal("expected error from 502")
+	}
+	if !strings.Contains(err.Error(), "upstream timeout from envoy") {
+		t.Errorf("error should include body excerpt, got: %v", err)
+	}
+}
+
 // TestStream_SSEReasoning_SpecCorrectWins — when a chunk happens to
 // carry BOTH `reasoning_content` AND `reasoning`, the spec-correct
 // field wins. Future-proofs against a backend that emits the short
