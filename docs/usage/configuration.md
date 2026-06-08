@@ -167,9 +167,9 @@ drift_check_interval_turns = 5      # Check drift every N turns
 drift_threshold = 0.7               # Cosine similarity threshold
 
 [memory.embedder]
-model_url    = "https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
-model_sha256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"  # optional: verify after download
-model_path   = "~/.ghyll/models/gte-micro.onnx"
+model_url    = "https://huggingface.co/Xenova/gte-small/resolve/main/onnx/model.onnx"
+model_sha256 = "398a29991324e0b383afa13375d681ced3079c83e097fb1ebd9290d7498523b3"  # optional: verify after download
+model_path   = "~/.ghyll/models/gte-small.onnx"
 dimensions   = 384
 ```
 

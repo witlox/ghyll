@@ -65,7 +65,7 @@ ghyll memory sync
 ### `ghyll memory fetch-embedder [--force] [--help]`
 
 Download the ONNX embedding model used by drift detection to
-`[memory.embedder].model_path` (default `~/.ghyll/models/gte-micro.onnx`).
+`[memory.embedder].model_path` (default `~/.ghyll/models/gte-small.onnx`).
 Reads `[memory.embedder].model_url` from `~/.ghyll/config.toml`; falls
 back to the published GTE-micro URL when the config is absent.
 
@@ -107,9 +107,9 @@ Custom backend example (set both URL and pin):
 
 ```toml
 [memory.embedder]
-model_url    = "https://internal.cdn/models/gte-micro.onnx"
+model_url    = "https://internal.cdn/models/gte-small.onnx"
 model_sha256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"
-model_path   = "~/.ghyll/models/gte-micro.onnx"
+model_path   = "~/.ghyll/models/gte-small.onnx"
 ```
 
 The ONNX Runtime shared library is also required; the command prints

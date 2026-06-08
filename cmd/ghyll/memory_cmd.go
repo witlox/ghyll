@@ -139,17 +139,25 @@ func cmdMemoryLog(store *memory.Store, w io.Writer) error {
 	return nil
 }
 
-// defaultEmbedderURL is the canonical GTE-micro ONNX model used when
-// cfg.Memory.Embedder.ModelURL is empty. Matches the URL previously
-// hardcoded in the (now-removed) `make embedder` Makefile target so
-// existing operator muscle memory keeps working.
-const defaultEmbedderURL = "https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
+// defaultEmbedderURL is the canonical GTE ONNX model used when
+// cfg.Memory.Embedder.ModelURL is empty. We point at Xenova/gte-small
+// (HF's Transformers.js team — well-maintained mirror) rather than
+// a personal-account fork. Earlier default
+// (nicholasgasior/gte-micro-onnx) was pulled by its owner within
+// hours of being pinned here, breaking fresh installs with HTTP 401.
+// Picking a stable maintainer is the durable mitigation.
+//
+// 384-dim BERT-style hidden_state (input/output names match what
+// memory/embedder_onnx.go expects: input_ids/attention_mask/
+// token_type_ids → last_hidden_state). Vocab-free tokenizer in
+// memory/embedder.go is model-agnostic for the BERT family.
+const defaultEmbedderURL = "https://huggingface.co/Xenova/gte-small/resolve/main/onnx/model.onnx"
 
-// defaultEmbedderSHA256 pins the published GTE-micro ONNX model
-// (FE-SEC-4 remediation). When the operator does NOT override
-// model_url, the download is rejected on hash mismatch — a CDN
-// compromise or HF account takeover would have to also produce
-// matching bytes. Computed via
+// defaultEmbedderSHA256 pins the published GTE-small ONNX model
+// (FE-SEC-4). When the operator does NOT override model_url, the
+// download is rejected on hash mismatch — a CDN compromise or HF
+// account takeover would have to also produce matching bytes.
+// Computed via
 //
 //	curl -sL <defaultEmbedderURL> | sha256sum
 //
@@ -158,7 +166,7 @@ const defaultEmbedderURL = "https://huggingface.co/nicholasgasior/gte-micro-onnx
 // [memory.embedder].model_sha256 alongside it (verified the same
 // way); leaving model_sha256 empty with a custom model_url skips
 // the check (opt-out, loud comment).
-const defaultEmbedderSHA256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"
+const defaultEmbedderSHA256 = "398a29991324e0b383afa13375d681ced3079c83e097fb1ebd9290d7498523b3"
 
 // defaultEmbedderPath is the single source of truth for the
 // fallback model path. main.go consults this too (see step 5) so
@@ -170,11 +178,11 @@ func defaultEmbedderPath() string {
 	if home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".ghyll", "models", "gte-micro.onnx")
+	return filepath.Join(home, ".ghyll", "models", "gte-small.onnx")
 }
 
 // embedderMaxBytes caps a single download to 1 GiB. The published
-// gte-micro model is ~30 MB; this guards against a misconfigured
+// gte-small model is ~127 MB; this guards against a misconfigured
 // model_url pointing at something huge (an LLM weights blob would
 // fill a typical ~/.ghyll volume without a cap).
 const embedderMaxBytes int64 = 1 << 30
@@ -311,7 +319,7 @@ func printFetchEmbedderHelp(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Reads [memory.embedder] from ~/.ghyll/config.toml:")
 	_, _ = fmt.Fprintln(w, "  model_url      download source (default: GTE-micro on HuggingFace)")
-	_, _ = fmt.Fprintln(w, "  model_path     destination (default: ~/.ghyll/models/gte-micro.onnx)")
+	_, _ = fmt.Fprintln(w, "  model_path     destination (default: ~/.ghyll/models/gte-small.onnx)")
 	_, _ = fmt.Fprintln(w, "  model_sha256   optional hex SHA-256 verified after download")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Rules:")

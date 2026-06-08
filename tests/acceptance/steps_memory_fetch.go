@@ -96,7 +96,7 @@ func registerMemoryFetchSteps(ctx *godog.ScenarioContext, _ *ScenarioState) {
 	})
 
 	ctx.Step(`^the config points ModelURL at that host and ModelPath into a temp dir$`, func() error {
-		modelPath = filepath.Join(tmpDir, "models", "gte-micro.onnx")
+		modelPath = filepath.Join(tmpDir, "models", "gte-small.onnx")
 		return writeTempConfigForFetch(tmpDir, srv.URL, modelPath)
 	})
 
@@ -106,7 +106,7 @@ func registerMemoryFetchSteps(ctx *godog.ScenarioContext, _ *ScenarioState) {
 			hits.Add(1)
 			_, _ = w.Write([]byte("should-not-be-served"))
 		}))
-		modelPath = filepath.Join(tmpDir, "gte-micro.onnx")
+		modelPath = filepath.Join(tmpDir, "gte-small.onnx")
 		existing := make([]byte, n)
 		for i := range existing {
 			existing[i] = byte('X')
