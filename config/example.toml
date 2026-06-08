@@ -48,6 +48,11 @@ drift_threshold = 0.7
 
 [memory.embedder]
 model_url = "https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
+# model_sha256 is optional. When set, `ghyll memory fetch-embedder`
+# verifies the downloaded hash before installing. The default URL
+# is SHA-256 pinned in the binary; set your own hash only when you
+# override model_url.
+# model_sha256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"
 model_path = "~/.ghyll/models/gte-micro.onnx"
 dimensions = 384
 

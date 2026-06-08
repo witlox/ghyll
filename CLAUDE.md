@@ -42,8 +42,13 @@ make coverage-check   # enforce 78% threshold
 make bench            # engine + runner benchmarks (perf/baselines.md)
 make test-live        # opt-in live-endpoint tests (build tag `live`)
 make docs-serve       # preview mdbook locally
-make embedder         # download ONNX embedding model
 ```
+
+ONNX embedding model: `ghyll memory fetch-embedder` (downloads
+GTE-micro to `~/.ghyll/models/`). Binary installs don't need the
+source tree for this — the CLI honors `[memory.embedder].model_url`
+in `~/.ghyll/config.toml` and falls back to the published GTE-micro
+URL when the config is absent.
 
 Requires: Go 1.25+, ONNX Runtime (optional, for drift detection).
 
@@ -147,6 +152,7 @@ ghyll init attest --op-id alice       # emit on-the-spot init attestations
 ghyll memory search "race condition"  # search checkpoints
 ghyll memory sync                     # manual sync
 ghyll memory log                      # show checkpoint chain
+ghyll memory fetch-embedder           # download GTE-micro ONNX model (--force to re-download)
 ghyll engine status                   # show persistent engine state
 ghyll engine replay                   # replay persisted entities
 ghyll config show                     # display configuration

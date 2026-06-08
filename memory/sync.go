@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,14 +160,44 @@ func (s *Syncer) InitBranch() error {
 		return &SyncError{Op: "init", Err: fmt.Errorf("commit: %s: %w", out, err)}
 	}
 
-	// Push orphan branch to remote
-	cmd = exec.Command("git", "-C", tmpRepo, "push", "origin", s.branchName)
-	cmd.Env = cleanGitEnv()
-	_, _ = cmd.CombinedOutput() // may fail if no remote
+	// Push orphan branch to remote. May fail benignly: read-only
+	// remote, no push perms (common on shared HPC clones), or no
+	// origin at all. We capture both stdout/stderr (CORR-8) so a
+	// rare downstream failure can surface the original push error
+	// for debugging — `git push` writes its error to combined.
+	pushCmd := exec.Command("git", "-C", tmpRepo, "push", "origin", s.branchName)
+	pushCmd.Env = cleanGitEnv()
+	pushOut, pushErr := pushCmd.CombinedOutput()
 
-	// Fetch the newly created branch into main repo
-	if _, err := s.git("fetch", "origin", s.branchName+":"+s.branchName); err != nil {
-		return &SyncError{Op: "init", Err: fmt.Errorf("fetch after init: %w", err)}
+	// Fetch the newly created branch into the main repo. If the
+	// push succeeded, origin now carries the ref and we fetch from
+	// there (canonical path). If the push failed, the branch ONLY
+	// exists in tmpRepo — fetching origin would emit
+	// "couldn't find remote ref ghyll/memory" and abort, leaving
+	// every subsequent session re-running InitBranch with the same
+	// failure. Falling back to a fetch from tmpRepo guarantees the
+	// local branch lands, and the next checkpoint push (when any
+	// commits exist and the operator has perms) populates origin.
+	if pushErr == nil {
+		if _, err := s.git("fetch", "origin", s.branchName+":"+s.branchName); err != nil {
+			return &SyncError{Op: "init", Err: fmt.Errorf("fetch after init: %w", err)}
+		}
+	} else {
+		// UX-FM-6: an operator expecting team-memory sync needs a
+		// breadcrumb that the remote push silently degraded.
+		// Goes to slog (file-routed in interactive sessions per
+		// main.go redirectSlogToFile); ui.Status would interrupt
+		// the REPL prompt with stderr noise.
+		slog.Warn("memory: push to origin failed; branch only exists locally — team sync disabled until push succeeds",
+			"branch", s.branchName,
+			"err", strings.TrimSpace(string(pushOut)))
+		if _, err := s.git("fetch", tmpRepo, s.branchName+":"+s.branchName); err != nil {
+			// CORR-8: surface the original push error in the
+			// fallback failure so the operator doesn't have to
+			// re-run with debug tracing to learn WHY the push
+			// failed in the first place.
+			return &SyncError{Op: "init", Err: fmt.Errorf("fetch after init (local fallback): %w; original push error: %s", err, strings.TrimSpace(string(pushOut)))}
+		}
 	}
 
 	return s.setupWorktree()

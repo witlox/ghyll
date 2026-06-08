@@ -1,6 +1,6 @@
 .PHONY: all build build-bin test test-unit test-acceptance test-race test-live \
        bench lint fmt clean \
-       embedder vault verify-scenarios coverage coverage-check install-tools setup \
+       vault verify-scenarios coverage coverage-check install-tools setup \
        docs docs-serve
 
 VERSION ?= dev
@@ -70,18 +70,6 @@ install-tools:
 
 setup: install-tools
 	lefthook install
-
-embedder:
-	@mkdir -p ~/.ghyll/models
-	@echo "Downloading GTE-micro ONNX model..."
-	curl -L -o ~/.ghyll/models/gte-micro.onnx \
-		"https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
-	@echo "Done. Model at ~/.ghyll/models/gte-micro.onnx"
-	@echo ""
-	@echo "ONNX Runtime shared library is also required."
-	@echo "  macOS:  brew install onnxruntime"
-	@echo "  Linux:  See https://github.com/microsoft/onnxruntime/releases"
-	@echo "  Set ONNXRUNTIME_LIB_PATH if not in default search path."
 
 docs:
 	mdbook build

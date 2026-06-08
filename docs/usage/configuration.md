@@ -167,10 +167,18 @@ drift_check_interval_turns = 5      # Check drift every N turns
 drift_threshold = 0.7               # Cosine similarity threshold
 
 [memory.embedder]
-model_url = "https://huggingface.co/Xenova/gte-micro/resolve/main/model.onnx"
-model_path = "~/.ghyll/models/gte-micro.onnx"
-dimensions = 384
+model_url    = "https://huggingface.co/nicholasgasior/gte-micro-onnx/resolve/main/model.onnx"
+model_sha256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"  # optional: verify after download
+model_path   = "~/.ghyll/models/gte-micro.onnx"
+dimensions   = 384
 ```
+
+When `model_sha256` is set, `ghyll memory fetch-embedder` verifies
+the downloaded hash before installing — a CDN compromise or HF
+account takeover that doesn't reproduce the exact bytes is rejected
+and the file is removed. The default URL is SHA-256 pinned in the
+binary; setting your own `model_sha256` is only required when you
+override `model_url`.
 
 ## Tools
 

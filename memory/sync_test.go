@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,6 +83,64 @@ func TestScenario_Sync_InitMemoryBranch(t *testing.T) {
 	out = run(t, workDir, "git", "ls-remote", "origin", "ghyll/memory")
 	if out == "" {
 		t.Error("ghyll/memory not pushed to remote")
+	}
+}
+
+// TestScenario_Sync_InitBranch_ReadOnlyRemoteFallsBackToLocal —
+// regression for the CSCS startup warning: when the operator has no
+// push permission on origin (HPC shared clone, read-only remote, or
+// origin path gone), InitBranch was emitting
+// "fetch after init: couldn't find remote ref ghyll/memory" because
+// the optional push silently failed and the subsequent fetch from
+// origin had nothing to fetch.
+//
+// Fix: when push fails, fetch the branch from the tmp repo we just
+// created it in. This test simulates the failure by removing the
+// bare remote after cloning — push then errors but the local branch
+// still has to land cleanly so every subsequent session start is
+// quiet.
+func TestScenario_Sync_InitBranch_ReadOnlyRemoteFallsBackToLocal(t *testing.T) {
+	remote := initBareRepo(t)
+	workDir := initWorkRepo(t, remote)
+
+	// Simulate a read-only remote: a pre-receive hook that refuses
+	// every push. Clone/fetch still work (those are reads), but
+	// `git push origin ghyll/memory` returns non-zero. This is the
+	// production analog of "operator has no push permission" /
+	// "shared HPC clone" / "Gerrit gating intercepts the branch".
+	hookPath := filepath.Join(remote, "hooks", "pre-receive")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("install pre-receive hook: %v", err)
+	}
+
+	syncer, err := NewSyncer(workDir, "ghyll/memory", "test-device")
+	if err != nil {
+		t.Fatalf("new syncer: %v", err)
+	}
+	if err := syncer.InitBranch(); err != nil {
+		t.Fatalf("init branch must succeed even when origin is unreachable, got: %v", err)
+	}
+
+	// Verify the local orphan branch exists.
+	out := run(t, workDir, "git", "branch", "--list", "ghyll/memory")
+	if out == "" {
+		t.Errorf("ghyll/memory branch not created locally; got branch list: %q", out)
+	}
+
+	// FE-SEC-2 remediation: assert the push was actually rejected
+	// (origin ref absent). The original test only checked that the
+	// local branch landed — but BOTH the success path (fetch from
+	// origin) and the fallback path (fetch from tmpRepo) end in the
+	// local branch landing. Without this assertion, a flake in the
+	// pre-receive hook (perm flake, git version drift) lets the test
+	// pass via the canonical push-then-fetch-from-origin path and
+	// the regression — noisy first-run warning on read-only remotes
+	// — silently returns. Asserting `git ls-remote origin
+	// ghyll/memory` is empty proves the hook fired AND we exercised
+	// the local-fallback code path under test.
+	lsOut := run(t, workDir, "git", "ls-remote", "origin", "ghyll/memory")
+	if strings.TrimSpace(lsOut) != "" {
+		t.Errorf("pre-receive hook didn't reject push — origin has ghyll/memory: %q; this test no longer exercises the fallback path", lsOut)
 	}
 }
 

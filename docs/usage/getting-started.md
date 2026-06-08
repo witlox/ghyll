@@ -332,11 +332,16 @@ brew install onnxruntime
 ### Download the model
 
 ```bash
-make embedder
+ghyll memory fetch-embedder           # binary install, no source tree needed
+# or, from the source tree:
+make build-bin && ./bin/ghyll memory fetch-embedder
 ```
 
 This downloads the GTE-micro model (~60 MB) to
-`~/.ghyll/models/gte-micro.onnx`.
+`~/.ghyll/models/gte-micro.onnx`. Add `--force` to re-download an
+existing file. The URL is `[memory.embedder].model_url` in
+`~/.ghyll/config.toml`, falling back to the published GTE-micro
+URL when unset.
 
 ### Build with CGO
 

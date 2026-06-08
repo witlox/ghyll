@@ -62,6 +62,63 @@ Manually sync the checkpoint chain to/from the vault (push local checkpoints to 
 ghyll memory sync
 ```
 
+### `ghyll memory fetch-embedder [--force] [--help]`
+
+Download the ONNX embedding model used by drift detection to
+`[memory.embedder].model_path` (default `~/.ghyll/models/gte-micro.onnx`).
+Reads `[memory.embedder].model_url` from `~/.ghyll/config.toml`; falls
+back to the published GTE-micro URL when the config is absent.
+
+Security and correctness contracts:
+
+- Idempotent by default: existing files are kept. Use `--force` to
+  re-download.
+- HTTPS-only. `http://` URLs are rejected unless the host is loopback
+  (`127.0.0.1`, `localhost`, `::1`) — supply-chain guard against a
+  plaintext download of executable model weights. **Redirect hops
+  are re-validated**: an https://-to-http:// 302 is refused.
+- **SHA-256 pin** on the default URL — a CDN compromise or HF account
+  takeover that doesn't reproduce the exact bytes is rejected. When
+  you override `model_url`, set `[memory.embedder].model_sha256`
+  alongside it to opt into the same verification; leaving it empty
+  skips the check.
+- Rejects 0-byte responses and `Content-Type: text/html` (the latter
+  catches gated-repo login walls).
+- Atomic write: streams to `<base>.<rand>.tmp` then renames on
+  success. A partial download (network drop, server error, size-cap
+  hit) leaves any existing file untouched.
+- Size cap: 1 GiB. Misconfigured `model_url` pointing at a giant blob
+  fails loud instead of filling the disk.
+- Timeout: 15 minutes (covers the ~30-60 MB default on a constrained
+  HPC uplink).
+- HOME must be set (refuses to derive `.ghyll/` paths from CWD).
+- `model_path` accepts a leading `~/` (expanded to `$HOME`). Shell
+  variables (`$HOME/...`) and other-user homes (`~alice/...`) are
+  rejected with a directed error rather than silently treated as
+  literal directory names.
+
+```bash
+ghyll memory fetch-embedder           # download if missing
+ghyll memory fetch-embedder --force   # re-download
+ghyll memory fetch-embedder --help    # show full usage
+```
+
+Custom backend example (set both URL and pin):
+
+```toml
+[memory.embedder]
+model_url    = "https://internal.cdn/models/gte-micro.onnx"
+model_sha256 = "45b71fe98efe5f530b825dce6f5049d738e9c16869f10be4370ab81a9912d4a6"
+model_path   = "~/.ghyll/models/gte-micro.onnx"
+```
+
+The ONNX Runtime shared library is also required; the command prints
+a hint at the end with install pointers (macOS: `brew install
+onnxruntime`; Linux: github.com/microsoft/onnxruntime/releases). The
+hint also prints on the skip-when-exists path so an operator hitting
+"embedder unavailable" at session start after a successful download
+still sees the runtime install reminder.
+
 ### `ghyll engine status [--dir <path>]`
 
 Render a project-level summary of engine state: arrow / finding / requirement / amendment / evaluation-run / attestation counts. Reports `ghyll-engine-status: missing` when v2 was never initialized. See [Operator Guide --- `ghyll engine status`](../operator-guide.md#ghyll-engine-status---dir-path).

@@ -45,11 +45,14 @@ For faster search across repos, use the optional vault server (`ghyll-vault`).
 
 Every N turns, ghyll measures cosine similarity between the current context embedding and the most recent checkpoint. If similarity drops below the threshold (default 0.7), backfill is triggered --- injecting relevant checkpoint summaries into the context.
 
-Requires the ONNX embedding model (`make embedder`). Without it, drift detection is disabled gracefully.
+Requires the ONNX embedding model (`ghyll memory fetch-embedder`). Without it, drift detection is disabled gracefully.
 
 ## Commands
 
 ```bash
 ghyll memory log                          # show checkpoint chain
 ghyll memory search "race condition"      # search summaries
+ghyll memory fetch-embedder               # download GTE-micro ONNX model
+ghyll memory fetch-embedder --force       # re-download even if file exists
+ghyll memory sync                         # manual push/pull of the orphan branch
 ```

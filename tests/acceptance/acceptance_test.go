@@ -53,6 +53,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerRoutingSteps(ctx, state)
 	registerStreamSteps(ctx, state)
 	registerMemorySteps(ctx, state)
+	registerMemoryFetchSteps(ctx, state)
 	registerDriftSteps(ctx, state)
 	registerSyncSteps(ctx, state)
 	registerToolSteps(ctx, state)

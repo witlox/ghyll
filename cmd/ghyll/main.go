@@ -27,6 +27,7 @@ func main() {
 			"       ghyll config show",
 			"       ghyll memory search <query>",
 			"       ghyll memory log",
+			"       ghyll memory fetch-embedder [--force]",
 			"       ghyll engine status [--dir <path>]",
 			"       ghyll engine replay [--dir <path>]",
 			"       ghyll engine recover [--dry-run] [--dir <path>]",
@@ -252,10 +253,22 @@ func cmdRun(args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// 5. Initialize embedder (invariant 17: graceful if unavailable)
+	// 5. Initialize embedder (invariant 17: graceful if unavailable).
+	// CORR-5: defaultEmbedderPath is the single source of truth for
+	// the fallback location — fetch-embedder and the session loop now
+	// derive it from the same constant, so a future path change can't
+	// drift between code paths. CORR-4 / INT-1: expandUserHome runs
+	// here too, so a TOML `model_path = "~/.ghyll/..."` resolves the
+	// same way at startup as it does at fetch time. Errors degrade
+	// silently (invariant 17) — the embedder is optional, so a
+	// malformed tilde path disables drift detection rather than
+	// blocking the session.
 	embedderPath := cfg.Memory.Embedder.ModelPath
 	if embedderPath == "" {
-		embedderPath = filepath.Join(os.Getenv("HOME"), ".ghyll", "models", "gte-micro.onnx")
+		embedderPath = defaultEmbedderPath()
+	}
+	if expanded, expErr := expandUserHome(embedderPath); expErr == nil {
+		embedderPath = expanded
 	}
 	embedder, _ := memory.NewEmbedder(embedderPath, cfg.Memory.Embedder.Dimensions)
 	defer embedder.Close()

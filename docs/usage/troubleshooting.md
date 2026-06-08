@@ -20,7 +20,7 @@ Both SGLang endpoints are down. Check network connectivity to your inference clu
 
 ### "embedding model not available, drift detection disabled"
 
-This is a warning, not an error. Run `make embedder` to download the ONNX model for drift detection. ghyll works fine without it.
+This is a warning, not an error. Run `ghyll memory fetch-embedder` to download the ONNX model for drift detection. ghyll works fine without it.
 
 ### "stream interrupted after N tokens"
 
