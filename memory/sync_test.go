@@ -182,6 +182,59 @@ func TestScenario_Sync_Fetch_NoRemoteRefIsQuiet(t *testing.T) {
 	}
 }
 
+// TestScenario_Sync_SetupWorktree_PrunesStaleRegistration —
+// regression for "add worktree: ... 'ghyll/memory' is already used
+// by worktree at '<old-temp-path>'". NewSyncer picks a fresh temp
+// worktree dir each session, but git's worktree DB persists every
+// registration. After enough sessions whose temp dirs got cleaned
+// (or were on a /tmp that the kernel purged at boot), the next
+// `git worktree add` fatals because the branch is "already used"
+// by a worktree pointing at a now-empty path.
+//
+// Fix: prune stale entries before add. This test simulates the
+// failure by manually registering a worktree at a temp path, then
+// removing that path from disk so it becomes a dead DB row.
+func TestScenario_Sync_SetupWorktree_PrunesStaleRegistration(t *testing.T) {
+	remote := initBareRepo(t)
+	workDir := initWorkRepo(t, remote)
+
+	// Seed the branch (via a first syncer) so the test starts from
+	// a state where ghyll/memory exists locally.
+	first, err := NewSyncer(workDir, "ghyll/memory", "test-device-1")
+	if err != nil {
+		t.Fatalf("first syncer: %v", err)
+	}
+	if err := first.InitBranch(); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	staleWT := first.WorktreePath()
+
+	// Simulate the stale-temp-dir scenario: delete the live
+	// worktree directory but leave the git worktree DB entry
+	// alone. The next `git worktree add` for the same branch will
+	// now fail with the "already used by" fatal under the OLD
+	// code; under the fix it succeeds because prune drops the
+	// dangling entry.
+	if err := os.RemoveAll(staleWT); err != nil {
+		t.Fatalf("remove stale wt: %v", err)
+	}
+
+	// A fresh syncer (new temp wt dir) calling Fetch/InitBranch
+	// has to exercise setupWorktree.
+	second, err := NewSyncer(workDir, "ghyll/memory", "test-device-2")
+	if err != nil {
+		t.Fatalf("second syncer: %v", err)
+	}
+	// Branch exists locally → InitBranch jumps straight to setupWorktree.
+	if err := second.InitBranch(); err != nil {
+		t.Errorf("second InitBranch must succeed after pruning stale registrations, got: %v", err)
+	}
+	// Worktree should be live.
+	if _, err := os.Stat(second.WorktreePath()); err != nil {
+		t.Errorf("new worktree should exist after setup, got stat err=%v", err)
+	}
+}
+
 // TestScenario_Sync_OrphanIsolation maps to:
 // Scenario: Orphan branch isolation
 func TestScenario_Sync_OrphanIsolation(t *testing.T) {

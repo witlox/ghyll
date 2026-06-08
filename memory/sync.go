@@ -210,6 +210,17 @@ func (s *Syncer) setupWorktree() error {
 		return nil
 	}
 
+	// `git worktree prune` first. NewSyncer picks a fresh
+	// /tmp/ghyll-memory-XXXXX every session, but git's worktree DB
+	// remembers every prior registration — and `git worktree add`
+	// refuses with "'ghyll/memory' is already used by worktree at
+	// '<stale-path>'" when an old entry's directory is gone but the
+	// DB row survives. prune is idempotent and only drops entries
+	// whose paths no longer exist on disk, so a live concurrent
+	// session (ADR-006: one per repo, but defense-in-depth) is
+	// untouched.
+	_, _ = s.git("worktree", "prune")
+
 	if _, err := s.git("worktree", "add", s.worktreeDir, s.branchName); err != nil {
 		return &SyncError{Op: "init", Err: fmt.Errorf("add worktree: %w", err)}
 	}
