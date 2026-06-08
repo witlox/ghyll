@@ -223,8 +223,27 @@ func (s *Syncer) branchExists() bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-// Fetch pulls the latest memory branch from remote.
+// Fetch pulls the latest memory branch from remote. Returns nil
+// (no-op) when origin does not yet carry the branch — typically a
+// fresh install whose InitBranch push silently degraded to local-
+// only because the remote is read-only / no push perms / no origin
+// at all. The session-startup call site at cmd/ghyll/main.go would
+// otherwise emit "⚠ initial sync failed: couldn't find remote ref
+// ghyll/memory" every launch even though there is genuinely nothing
+// to fetch yet.
 func (s *Syncer) Fetch() error {
+	// ls-remote probe is cheap (single round trip, no checkout) and
+	// distinguishes "remote is unreachable" / "ref doesn't exist
+	// yet" from "fetch actually failed" cleanly. If the probe errors
+	// or returns empty, treat the remote as having nothing for us —
+	// the worktree still needs setup on first call.
+	probe, probeErr := s.git("ls-remote", "origin", s.branchName)
+	if probeErr != nil || strings.TrimSpace(probe) == "" {
+		if !s.initialized {
+			return s.setupWorktree()
+		}
+		return nil
+	}
 	if _, err := s.git("fetch", "origin", s.branchName+":"+s.branchName); err != nil {
 		return &SyncError{Op: "fetch", Err: err}
 	}

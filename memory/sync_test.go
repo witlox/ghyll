@@ -144,6 +144,44 @@ func TestScenario_Sync_InitBranch_ReadOnlyRemoteFallsBackToLocal(t *testing.T) {
 	}
 }
 
+// TestScenario_Sync_Fetch_NoRemoteRefIsQuiet — regression for the
+// "⚠ initial sync failed: couldn't find remote ref ghyll/memory"
+// warning that fired at every session startup when InitBranch's
+// optional push to origin had silently degraded to local-only
+// (read-only remote, no push perms). Fetch must now treat
+// "remote doesn't have this branch yet" as a no-op, not an error.
+func TestScenario_Sync_Fetch_NoRemoteRefIsQuiet(t *testing.T) {
+	remote := initBareRepo(t)
+	workDir := initWorkRepo(t, remote)
+
+	// Same setup as the InitBranch fallback test: a pre-receive
+	// hook that refuses pushes simulates the read-only-remote case.
+	hookPath := filepath.Join(remote, "hooks", "pre-receive")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("install pre-receive hook: %v", err)
+	}
+
+	syncer, err := NewSyncer(workDir, "ghyll/memory", "test-device")
+	if err != nil {
+		t.Fatalf("new syncer: %v", err)
+	}
+	if err := syncer.InitBranch(); err != nil {
+		t.Fatalf("init branch: %v", err)
+	}
+
+	// Origin must NOT have the ref (push was refused).
+	lsOut := run(t, workDir, "git", "ls-remote", "origin", "ghyll/memory")
+	if strings.TrimSpace(lsOut) != "" {
+		t.Fatalf("test precondition: origin should NOT carry the branch, got: %q", lsOut)
+	}
+
+	// THIS is what regressed: Fetch must not return an error just
+	// because origin has nothing for us yet.
+	if err := syncer.Fetch(); err != nil {
+		t.Errorf("Fetch must be quiet when origin lacks the branch, got: %v", err)
+	}
+}
+
 // TestScenario_Sync_OrphanIsolation maps to:
 // Scenario: Orphan branch isolation
 func TestScenario_Sync_OrphanIsolation(t *testing.T) {
