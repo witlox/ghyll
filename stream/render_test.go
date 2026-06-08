@@ -18,6 +18,54 @@ func TestRenderer_Delta(t *testing.T) {
 	}
 }
 
+// TestRenderer_Spinner_NonTTY — bytes.Buffer is not a TTY, so
+// StartSpinner must be a no-op. Verifies the isTTY guard short-
+// circuits before any goroutine starts. If this regressed, every
+// test that writes to a buffer would race the goroutine.
+func TestRenderer_Spinner_NonTTY(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.StartSpinner("kimi is thinking…")
+	r.StopSpinner() // idempotent on no-op
+	if buf.Len() != 0 {
+		t.Errorf("non-TTY spinner should not write, got %q", buf.String())
+	}
+}
+
+// TestRenderer_Spinner_StopBeforeStart — StopSpinner without a
+// prior StartSpinner is a no-op. Defensive: a future caller might
+// stop in a defer without checking start succeeded.
+func TestRenderer_Spinner_StopBeforeStart(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.StopSpinner() // must not deadlock or panic
+}
+
+// TestRenderer_Spinner_DoubleStart — StartSpinner twice in a row
+// without an intervening StopSpinner is a no-op for the second
+// call. Prevents a duplicate goroutine from leaking on a retry.
+func TestRenderer_Spinner_DoubleStart(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.StartSpinner("first")
+	r.StartSpinner("second") // no-op
+	r.StopSpinner()
+}
+
+// TestRenderer_Delta_StopsSpinner — RenderDelta calls StopSpinner
+// before writing. On a non-TTY this is degenerate but exercises
+// the centralization contract. The buffer should contain ONLY the
+// delta — no spinner clear sequence (because spinner never ran).
+func TestRenderer_Delta_StopsSpinner(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.StartSpinner("thinking…")
+	r.RenderDelta("hello")
+	if !strings.Contains(buf.String(), "hello") {
+		t.Errorf("delta missing from output: %q", buf.String())
+	}
+}
+
 func TestRenderer_ToolCall(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)

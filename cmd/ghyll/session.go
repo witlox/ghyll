@@ -948,9 +948,16 @@ func (s *Session) sendAndProcess() (string, error) {
 
 	sysPrompt := s.composedSystemPrompt()
 	messages := s.buildMessages(s.ctxManager.Messages(), sysPrompt)
+	// Progress indicator: spinner runs from request-send through the
+	// first SSE token (or tool call). RenderDelta / RenderToolCall
+	// stop it; the explicit Stop after SendStream covers the error
+	// path where no callback fires. Label shows the active model so
+	// the operator sees which backend is serving the turn.
+	s.renderer.StartSpinner(fmt.Sprintf("%s is thinking…", s.activeModel))
 	resp, err := s.streamClient.SendStream(messages, func(delta string) {
 		s.renderer.RenderDelta(delta)
 	})
+	s.renderer.StopSpinner()
 
 	if err != nil {
 		var sErr *stream.StreamError
@@ -960,9 +967,11 @@ func (s *Session) sendAndProcess() (string, error) {
 				return "", fmt.Errorf("reactive compaction failed: %w", cErr)
 			}
 			messages = s.buildMessages(s.ctxManager.Messages(), sysPrompt)
+			s.renderer.StartSpinner(fmt.Sprintf("%s is thinking… (post-compaction)", s.activeModel))
 			resp, err = s.streamClient.SendStream(messages, func(delta string) {
 				s.renderer.RenderDelta(delta)
 			})
+			s.renderer.StopSpinner()
 			if err != nil {
 				return "", err
 			}
@@ -1097,7 +1106,12 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 	}
 
 	switch tc.Function.Name {
-	case "bash":
+	case "bash", "execute_bash":
+		// `execute_bash` alias: Kimi K2.x (and other models trained on
+		// Anthropic-style tool catalogs) reach for `execute_bash` as a
+		// trained prior. Accepting the alias saves three round-trips
+		// of "unknown tool" → fallback per session. Same handler — the
+		// tool semantics are identical.
 		return tool.Bash(ctx, args.Command, bashTimeout)
 	case "read_file":
 		return tool.ReadFile(ctx, args.Path, fileTimeout)
