@@ -570,8 +570,16 @@ func isHTMLContentType(ctype string) bool {
 	return strings.EqualFold(strings.TrimSpace(mime), "text/html")
 }
 
-// cmdMemorySearch searches checkpoint summaries for matching terms.
-// Uses text matching when embedder is unavailable, cosine similarity when available.
+// cmdMemorySearch searches checkpoints by summary text OR by hash
+// prefix. Uses text matching when embedder is unavailable, cosine
+// similarity when available.
+//
+// Hash-prefix match: a single hex-looking query (e.g. "5afd615f54a5"
+// or its leading characters) is checked against cp.Hash before the
+// summary scan. Operators naturally copy a hash out of `memory log`
+// and feed it back into `memory search` to inspect that one entry;
+// the previous text-only logic always returned "no matching
+// checkpoints" because hashes never appear in summaries.
 func cmdMemorySearch(store *memory.Store, query string, w io.Writer) error {
 	checkpoints, err := store.ListAll()
 	if err != nil {
@@ -580,6 +588,19 @@ func cmdMemorySearch(store *memory.Store, query string, w io.Writer) error {
 
 	queryLower := strings.ToLower(query)
 	queryTerms := strings.Fields(queryLower)
+
+	// Hash-prefix path: single query token, all lowercase hex,
+	// at least 6 chars (avoid catching short English words like
+	// "bad" or "feed"). Match by HasPrefix against cp.Hash.
+	if len(queryTerms) == 1 && len(queryTerms[0]) >= 6 && isHexPrefix(queryTerms[0]) {
+		var matches []memory.Checkpoint
+		for _, cp := range checkpoints {
+			if strings.HasPrefix(strings.ToLower(cp.Hash), queryTerms[0]) {
+				matches = append(matches, cp)
+			}
+		}
+		return renderSearchMatches(matches, w)
+	}
 
 	var matches []memory.Checkpoint
 	for _, cp := range checkpoints {
@@ -596,11 +617,33 @@ func cmdMemorySearch(store *memory.Store, query string, w io.Writer) error {
 		}
 	}
 
+	return renderSearchMatches(matches, w)
+}
+
+// isHexPrefix reports whether s is a non-empty string of lowercase
+// hex characters. Used as a cheap gate before treating a single
+// search token as a hash prefix.
+func isHexPrefix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// renderSearchMatches writes the per-checkpoint summary line to w,
+// or "no matching checkpoints" when matches is empty. Shared by the
+// text-search and hash-prefix paths so the rendering format is
+// identical regardless of how the operator found the entry.
+func renderSearchMatches(matches []memory.Checkpoint, w io.Writer) error {
 	if len(matches) == 0 {
 		_, _ = fmt.Fprintln(w, "no matching checkpoints")
 		return nil
 	}
-
 	for _, cp := range matches {
 		ts := time.Unix(0, cp.Timestamp)
 		if cp.Timestamp < 1e12 {

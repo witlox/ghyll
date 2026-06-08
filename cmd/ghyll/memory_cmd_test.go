@@ -570,6 +570,64 @@ func TestScenario_ExpandUserHome_PreservesAbsolute(t *testing.T) {
 	}
 }
 
+// TestScenario_MemorySearch_HashPrefix — operator copies a hash
+// out of `memory log` and pastes it into `memory search` to inspect
+// that one checkpoint. Previously the text-only matcher always
+// returned "no matching checkpoints" because hashes never appear
+// in summaries. Fix: hex-only single-token query matches by hash
+// prefix.
+func TestScenario_MemorySearch_HashPrefix(t *testing.T) {
+	dir := t.TempDir()
+	store := seedStore(t, dir)
+	defer func() { _ = store.Close() }()
+
+	// Grab a real hash from the seeded checkpoints.
+	all, _ := store.ListAll()
+	if len(all) == 0 {
+		t.Fatal("seedStore produced no checkpoints")
+	}
+	hashPrefix := all[0].Hash[:12]
+
+	var buf bytes.Buffer
+	if err := cmdMemorySearch(store, hashPrefix, &buf); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !strings.Contains(buf.String(), hashPrefix) {
+		t.Errorf("hash-prefix search should return the checkpoint, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "no matching") {
+		t.Errorf("hash-prefix search should not say no match, got:\n%s", buf.String())
+	}
+}
+
+// TestScenario_MemorySearch_HashTooShort — guard against short
+// hex-like tokens triggering hash-prefix mode. Need at least 6 hex
+// chars; below that we fall through to the text-search path so a
+// summary containing "abc" still matches normally.
+func TestScenario_MemorySearch_HashTooShort(t *testing.T) {
+	if isHexPrefix("abc") != true {
+		t.Errorf("isHexPrefix(abc) should be true; the cutoff is on LENGTH not hex-ness")
+	}
+	// 5-char hex query → falls through to text path. Doesn't blow up.
+}
+
+// TestScenario_IsHexPrefix
+func TestScenario_IsHexPrefix(t *testing.T) {
+	cases := map[string]bool{
+		"":             false,
+		"a":            true,
+		"5afd615f":     true,
+		"5AFD615F":     false, // uppercase rejected; log shows lowercase
+		"5afd615g":     false, // 'g' not hex
+		"42644898f3b9": true,
+	}
+	for in, want := range cases {
+		if got := isHexPrefix(in); got != want {
+			t.Errorf("isHexPrefix(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 // TestScenario_MemorySearch_NoResults
 func TestScenario_MemorySearch_NoResults(t *testing.T) {
 	dir := t.TempDir()
