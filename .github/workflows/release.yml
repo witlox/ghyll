@@ -112,7 +112,12 @@ jobs:
         # auto-detects <binary-dir>/lib/libonnxruntime.so* via
         # memory.bundledONNXLibrary.
         env:
-          ORT_VERSION: "1.20.1"
+          # ORT_VERSION must provide C API >= 24 (the version
+          # yalue/onnxruntime_go@v1.27.0 is compiled against — see
+          # ORT_API_VERSION in onnxruntime_c_api.h). 1.20.1 only
+          # provides API 1-20; 1.24.1+ supplies API 24+. Pinning to
+          # 1.25.0 for a stable minor cushion above the floor.
+          ORT_VERSION: "1.25.0"
         run: |
           for arch_pair in "amd64:x64" "arm64:aarch64"; do
             goarch="${arch_pair%%:*}"
@@ -162,7 +167,12 @@ jobs:
 
       - name: Bundle ONNX Runtime
         env:
-          ORT_VERSION: "1.20.1"
+          # ORT_VERSION must provide C API >= 24 (the version
+          # yalue/onnxruntime_go@v1.27.0 is compiled against — see
+          # ORT_API_VERSION in onnxruntime_c_api.h). 1.20.1 only
+          # provides API 1-20; 1.24.1+ supplies API 24+. Pinning to
+          # 1.25.0 for a stable minor cushion above the floor.
+          ORT_VERSION: "1.25.0"
         run: |
           url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
           mkdir -p dist/ghyll_darwin_arm64/lib
