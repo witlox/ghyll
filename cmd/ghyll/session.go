@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,6 @@ import (
 	"github.com/witlox/ghyll/workflow"
 	"time"
 )
-
-const maxToolDepth = 50
 
 // Session is the ghyll session state machine.
 type Session struct {
@@ -871,17 +870,42 @@ func (s *Session) DrainModalPending(ctx gocontext.Context) {
 
 // Turn executes one turn: send user input, get response, execute tools.
 func (s *Session) Turn(userInput string) (string, error) {
+	turnStart := time.Now()
 	// Add user message
 	s.ctxManager.AddMessage(types.Message{Role: "user", Content: userInput})
 	s.toolDepth = 0
+	slog.Debug("session: turn start",
+		"turn", s.ctxManager.Turn(),
+		"model", s.activeModel,
+		"user_input_bytes", len(userInput),
+		"messages", len(s.ctxManager.Messages()),
+		"plan_mode", s.planMode,
+		"deep_override", s.deepOverride,
+	)
 
 	// Pre-turn check (may trigger compaction)
 	endpoint := s.cfg.Models[s.activeModel].Endpoint
 	prompt := s.compactionPrompt()
+	beforeMsgs := len(s.ctxManager.Messages())
 	result := s.ctxManager.PreTurnCheck(s.activeModel, endpoint, prompt)
 	if result.CompactionTriggered {
+		afterMsgs := len(s.ctxManager.Messages())
+		slog.Debug("session: pre-turn compaction",
+			"model", s.activeModel,
+			"messages_before", beforeMsgs,
+			"messages_after", afterMsgs,
+			"token_count", result.TokenCount,
+		)
 		s.output(fmt.Sprintf("ℹ compacted context (%d tokens)", result.TokenCount))
 	}
+	defer func() {
+		slog.Debug("session: turn end",
+			"turn", s.ctxManager.Turn(),
+			"model", s.activeModel,
+			"tool_depth", s.toolDepth,
+			"elapsed_ms", time.Since(turnStart).Milliseconds(),
+		)
+	}()
 
 	// Routing decision
 	decision := dialect.Evaluate(dialect.RouterInputs{
@@ -943,13 +967,37 @@ func attestationPendingResponse(d dialect.RoutingDecision, detail string) string
 }
 
 func (s *Session) sendAndProcess() (string, error) {
-	// Finding 1: guard against unbounded tool call recursion
-	if s.toolDepth > maxToolDepth {
-		return "", fmt.Errorf("tool call depth exceeded (%d), stopping", maxToolDepth)
+	// Finding 1: guard against unbounded tool call recursion.
+	// Cap comes from [tools] max_call_depth (default 200; see
+	// ADR-004). The operator-facing message names the exact knob so
+	// long-running build/integration sessions can raise it without
+	// hunting through docs.
+	maxDepth := s.cfg.Tools.MaxCallDepth
+	if maxDepth <= 0 {
+		maxDepth = 200
+	}
+	if s.toolDepth > maxDepth {
+		slog.Debug("session: tool depth cap hit",
+			"depth", s.toolDepth,
+			"max_call_depth", maxDepth,
+			"model", s.activeModel,
+			"turn", s.ctxManager.Turn(),
+		)
+		return "", fmt.Errorf(
+			"tool call depth exceeded (%d) — raise [tools] max_call_depth in ~/.ghyll/config.toml if this is a legitimate long chain",
+			maxDepth,
+		)
 	}
 
 	sysPrompt := s.composedSystemPrompt()
 	messages := s.buildMessages(s.ctxManager.Messages(), sysPrompt)
+	slog.Debug("session: dispatch",
+		"model", s.activeModel,
+		"turn", s.ctxManager.Turn(),
+		"tool_depth", s.toolDepth,
+		"message_count", len(messages),
+		"plan_mode", s.planMode,
+	)
 	// Progress indicator: spinner runs from request-send through the
 	// first SSE token (or tool call). RenderDelta / RenderToolCall
 	// stop it; the explicit Stop after SendStream covers the error
@@ -965,9 +1013,27 @@ func (s *Session) sendAndProcess() (string, error) {
 		var sErr *stream.StreamError
 		if stream.AsStreamError(err, &sErr) && sErr.ContextTooLong {
 			endpoint := s.cfg.Models[s.activeModel].Endpoint
+			beforeMsgs := len(s.ctxManager.Messages())
+			slog.Debug("session: reactive compaction triggered",
+				"model", s.activeModel,
+				"reason", sErr.Message,
+				"status_code", sErr.StatusCode,
+				"messages_before", beforeMsgs,
+			)
 			if cErr := s.ctxManager.ReactiveCompact(s.activeModel, endpoint, s.compactionPrompt()); cErr != nil {
+				slog.Debug("session: reactive compaction failed",
+					"model", s.activeModel,
+					"err", cErr.Error(),
+				)
 				return "", fmt.Errorf("reactive compaction failed: %w", cErr)
 			}
+			afterMsgs := len(s.ctxManager.Messages())
+			slog.Debug("session: reactive compaction complete",
+				"model", s.activeModel,
+				"messages_before", beforeMsgs,
+				"messages_after", afterMsgs,
+				"dropped", beforeMsgs-afterMsgs,
+			)
 			messages = s.buildMessages(s.ctxManager.Messages(), sysPrompt)
 			s.renderer.StartSpinner(fmt.Sprintf("%s is thinking… (post-compaction)", s.activeModel))
 			resp, err = s.streamClient.SendStream(messages, func(delta string) {
@@ -975,9 +1041,17 @@ func (s *Session) sendAndProcess() (string, error) {
 			})
 			s.renderer.StopSpinner()
 			if err != nil {
+				slog.Debug("session: post-compaction send failed",
+					"model", s.activeModel,
+					"err", err.Error(),
+				)
 				return "", err
 			}
 		} else {
+			slog.Debug("session: send failed",
+				"model", s.activeModel,
+				"err", err.Error(),
+			)
 			return "", err
 		}
 	}
@@ -1039,13 +1113,16 @@ func (s *Session) sendAndProcess() (string, error) {
 	if len(resp.ToolCalls) > 0 {
 		for _, tc := range resp.ToolCalls {
 			s.renderer.RenderToolCall(tc.Function.Name, tc.Function.Arguments)
+			toolStart := time.Now()
 			toolResult := s.executeTool(tc)
+			toolElapsed := time.Since(toolStart)
 			s.renderer.RenderToolResult(toolResult.Output, toolResult.Error, toolResult.TimedOut)
 			// Surface error to model if output is empty (finding 23)
 			content := toolResult.Output
 			if content == "" && toolResult.Error != "" {
 				content = toolResult.Error
 			}
+			rawBytes := len(content)
 			// Per-result byte cap. Without this a single `find`
 			// on a deep tree adds 50+ KB to context per turn and
 			// blows past gateway body limits within a handful of
@@ -1053,6 +1130,18 @@ func (s *Session) sendAndProcess() (string, error) {
 			// for display; this caps the SAME content as it
 			// enters the model's message history.
 			content = capToolResult(content, s.cfg.Tools.MaxResultBytes)
+			truncated := len(content) < rawBytes
+			slog.Debug("session: tool call",
+				"name", tc.Function.Name,
+				"args_bytes", len(tc.Function.Arguments),
+				"result_bytes", rawBytes,
+				"capped_bytes", len(content),
+				"truncated", truncated,
+				"timed_out", toolResult.TimedOut,
+				"had_error", toolResult.Error != "",
+				"latency_ms", toolElapsed.Milliseconds(),
+				"depth", s.toolDepth,
+			)
 			s.ctxManager.AddMessage(types.Message{
 				Role:       "tool",
 				Content:    content,
@@ -1173,6 +1262,13 @@ func (s *Session) executeTool(tc types.ToolCall) types.ToolResult {
 // Finding 2: handoff now creates checkpoint, uses HandoffSummary, preserves context
 func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 	prevModel := s.activeModel
+	slog.Debug("session: handoff requested",
+		"from", prevModel,
+		"to", decision.TargetModel,
+		"reason", string(decision.Reason),
+		"action", string(decision.Action),
+		"turn", s.ctxManager.Turn(),
+	)
 
 	// Phase-10 slice 2: commit-per-model-change. Before switching
 	// dialect, flush any staged changes with the OLD model's stamp

@@ -71,6 +71,9 @@ func testConfig(endpoint string) *config.Config {
 		Tools: config.ToolsConfig{
 			BashTimeoutSeconds: 30,
 			FileTimeoutSeconds: 5,
+			// Keep depth guard tight so the unbounded-recursion test
+			// trips fast; production default is 200 (config.applyDefaults).
+			MaxCallDepth: 50,
 		},
 	}
 }
@@ -372,8 +375,8 @@ func TestScenario_Session_ToolDepthLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from tool depth limit")
 	}
-	if sess.toolDepth < maxToolDepth {
-		t.Errorf("tool depth = %d, expected >= %d", sess.toolDepth, maxToolDepth)
+	if sess.toolDepth < cfg.Tools.MaxCallDepth {
+		t.Errorf("tool depth = %d, expected >= %d", sess.toolDepth, cfg.Tools.MaxCallDepth)
 	}
 }
 

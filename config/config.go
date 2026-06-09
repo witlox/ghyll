@@ -168,6 +168,14 @@ type ToolsConfig struct {
 	// individual results useful while bounding cumulative growth.
 	// 0 → use default; -1 → disabled (full result enters context).
 	MaxResultBytes int `toml:"max_result_bytes"`
+
+	// MaxCallDepth caps the consecutive tool-call chain length within
+	// a single operator turn. The default (200) gives long build /
+	// integration sessions room to run while still bounding runaway
+	// loops (ADR-004). 0 → use default. Set to a smaller value to
+	// catch over-eager exploration earlier; raise for sessions that
+	// genuinely need deeper chains (e.g., multi-stage native builds).
+	MaxCallDepth int `toml:"max_call_depth"`
 }
 
 type SubAgentConfig struct {
@@ -376,6 +384,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Tools.GitCommitTimeoutSeconds == 0 {
 		cfg.Tools.GitCommitTimeoutSeconds = 30
+	}
+	if cfg.Tools.MaxCallDepth == 0 {
+		cfg.Tools.MaxCallDepth = 200
 	}
 	if cfg.SubAgent.MaxTurns == 0 {
 		cfg.SubAgent.MaxTurns = 20

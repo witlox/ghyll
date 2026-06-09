@@ -119,6 +119,9 @@ max_context = 1000000
 	if cfg.Tools.BashTimeoutSeconds != 30 {
 		t.Errorf("bash_timeout = %d, want 30", cfg.Tools.BashTimeoutSeconds)
 	}
+	if cfg.Tools.MaxCallDepth != 200 {
+		t.Errorf("max_call_depth = %d, want 200", cfg.Tools.MaxCallDepth)
+	}
 }
 
 // TestScenario_Config_FileMissing maps to:
