@@ -795,6 +795,14 @@ func (s *Session) resolveDialect() error {
 		s.compactionPrompt = dialect.KimiCompactionPrompt
 		s.tokenCount = dialect.KimiTokenCount
 		s.handoffSummary = dialect.KimiHandoffSummary
+	case "kimi-code":
+		s.systemPrompt = dialect.KimiCodeSystemPrompt
+		s.planModePrompt = dialect.KimiCodePlanModePrompt
+		s.buildMessages = dialect.KimiCodeBuildMessages
+		s.parseToolCalls = dialect.KimiCodeParseToolCalls
+		s.compactionPrompt = dialect.KimiCodeCompactionPrompt
+		s.tokenCount = dialect.KimiCodeTokenCount
+		s.handoffSummary = dialect.KimiCodeHandoffSummary
 	default:
 		return fmt.Errorf("dialect family %q unsupported (post-normalization)", family)
 	}

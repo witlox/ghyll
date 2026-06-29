@@ -74,6 +74,10 @@ func RunSubAgent(parentSession *Session, task string) types.ToolResult {
 		systemPromptFn = dialect.KimiSystemPrompt
 		buildMsgFn = dialect.KimiBuildMessages
 		tokenCountFn = dialect.KimiTokenCount
+	case "kimi-code":
+		systemPromptFn = dialect.KimiCodeSystemPrompt
+		buildMsgFn = dialect.KimiCodeBuildMessages
+		tokenCountFn = dialect.KimiCodeTokenCount
 	default:
 		return types.ToolResult{Error: fmt.Sprintf("sub-agent dialect family %q unsupported", family)}
 	}

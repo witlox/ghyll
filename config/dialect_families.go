@@ -18,6 +18,7 @@ var KnownDialectFamilies = []string{
 	"deepseek",
 	"qwen",
 	"kimi",
+	"kimi-code",
 }
 
 // dialectAliases maps every accepted wire-form alias (case-folded)
@@ -66,6 +67,32 @@ var dialectAliases = map[string]string{
 	"kimi-k2.6":            "kimi",
 	"moonshotai/kimi-k2.5": "kimi",
 	"moonshotai/kimi-k2.6": "kimi",
+
+	// kimi-code family — Moonshot Cloud API models accessed via
+	// api.moonshot.cn/v1 (or api.moonshot.ai/v1). These return standard
+	// OpenAI-compatible tool-call IDs (UUIDs / opaque strings) rather
+	// than the `functions.<name>:<index>` shape emitted by self-hosted
+	// K2 (vLLM/SGLang). The kimi-code dialect does NOT enforce any ID
+	// shape. Use the kimi family for self-hosted K2 deployments.
+	//
+	// kimi-k2.7-code (kimi-k2-7-code) is a 1T-parameter MoE model
+	// optimized for coding. It is served via the Moonshot Cloud API
+	// and uses standard OpenAI-compatible tool calls.
+	"kimi-code":                            "kimi-code",
+	"kimi-for-coding":                      "kimi-code",
+	"moonshot-v1-8k":                       "kimi-code",
+	"moonshot-v1-32k":                      "kimi-code",
+	"moonshot-v1-128k":                     "kimi-code",
+	"moonshotai/kimi-for-coding":           "kimi-code",
+	"kimi-code/kimi-for-coding":            "kimi-code",
+	"kimi-k2.7-code":                       "kimi-code",
+	"kimi-k2-7-code":                       "kimi-code",
+	"kimi-k2.7-code-highspeed":             "kimi-code",
+	"kimi-k2-7-code-highspeed":             "kimi-code",
+	"moonshotai/kimi-k2.7-code":            "kimi-code",
+	"moonshot/kimi-k2-7-code":              "kimi-code",
+	"moonshot/kimi-k2-7-code-highspeed":    "kimi-code",
+	"@cf/moonshotai/kimi-k2.7-code":        "kimi-code",
 }
 
 // CanonicalDialectFamily returns the canonical family name for an
