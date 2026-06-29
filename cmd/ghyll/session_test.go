@@ -653,6 +653,43 @@ func TestKimi_NormalizeDialect_AndConfigLoadAgree(t *testing.T) {
 	}
 }
 
+// TestKimiCode_NormalizeDialect_HandlesCloudAPIAliases locks the
+// kimi-code family aliases — including kimi-k2.7-code (Moonshot Cloud
+// API, standard OpenAI UUIDs) — and verifies they resolve to
+// "kimi-code", NOT to "kimi" (self-hosted K2 with
+// `functions.<name>:<index>` enforcement).
+func TestKimiCode_NormalizeDialect_HandlesCloudAPIAliases(t *testing.T) {
+	good := []string{
+		"kimi-code",
+		"kimi-for-coding",
+		"moonshot-v1-8k",
+		"moonshot-v1-32k",
+		"moonshot-v1-128k",
+		"kimi-k2.7-code",
+		"kimi-k2-7-code",
+		"kimi-k2.7-code-highspeed",
+		"kimi-k2-7-code-highspeed",
+		"moonshotai/kimi-k2.7-code",
+		"moonshot/kimi-k2-7-code",
+		"KIMI-K2.7-CODE",            // case-folded
+		"Moonshotai/Kimi-K2.7-Code", // case-folded
+	}
+	for _, in := range good {
+		got, err := normalizeDialect(in)
+		if err != nil {
+			t.Errorf("normalizeDialect(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != "kimi-code" {
+			t.Errorf("normalizeDialect(%q) = %q, want kimi-code", in, got)
+		}
+		// Config layer must agree.
+		if fam, ok := config.CanonicalDialectFamily(in); !ok || fam != "kimi-code" {
+			t.Errorf("config.CanonicalDialectFamily(%q) = (%q,%v), want (kimi-code,true)", in, fam, ok)
+		}
+	}
+}
+
 // testKimiConfig is a Kimi-rooted test config: single [models.kimi]
 // pointing at the supplied endpoint, dialect = "kimi".
 func testKimiConfig(endpoint string) *config.Config {

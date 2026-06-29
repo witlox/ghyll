@@ -507,7 +507,7 @@ default_model = "kimi-mq"
 // drift the two error UX surfaces apart.
 func TestConfig_KnownDialectFamiliesList_StableOrdering(t *testing.T) {
 	got := KnownDialectFamiliesList()
-	want := "minimax, glm, deepseek, qwen, kimi"
+	want := "minimax, glm, deepseek, qwen, kimi, kimi-code"
 	if got != want {
 		t.Errorf("KnownDialectFamiliesList() = %q, want %q (drift between config and session error UX)", got, want)
 	}
@@ -517,7 +517,7 @@ func TestConfig_KnownDialectFamiliesList_StableOrdering(t *testing.T) {
 // an unsupported Kimi alias. The K2-Thinking model is deferred; an
 // operator who pasted dialect = "kimi-tgi-mode" or "kimi-thinking"
 // hoping for that surface MUST see a validation error naming the
-// 5 known families.
+// known families.
 func TestConfig_Validate_RejectsUnknownKimiVariant(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -542,5 +542,44 @@ default_model = "kimi-thinking"
 	}
 	if !strings.Contains(err.Error(), "kimi") {
 		t.Errorf("error must name the kimi family in known list: %v", err)
+	}
+}
+
+// TestConfig_AcceptsKimiCodeFamily — the kimi-code family (Moonshot
+// Cloud API with standard OpenAI-compatible tool-call IDs) is
+// accepted by config.Load. This covers kimi-for-coding,
+// moonshot-v1-*, and the kimi-k2.7-code coding model.
+func TestConfig_AcceptsKimiCodeFamily(t *testing.T) {
+	aliases := []string{
+		"kimi-code",
+		"kimi-for-coding",
+		"moonshot-v1-8k",
+		"moonshot-v1-32k",
+		"moonshot-v1-128k",
+		"kimi-k2.7-code",
+		"kimi-k2-7-code",
+		"kimi-k2.7-code-highspeed",
+	}
+	for _, d := range aliases {
+		d := d
+		t.Run(d, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+			content := fmt.Sprintf(`
+[models.kimi-cloud]
+endpoint = "https://api.moonshot.cn/v1"
+dialect = %q
+max_context = 262144
+
+[routing]
+default_model = "kimi-cloud"
+`, d)
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err != nil {
+				t.Errorf("dialect %q should load; got %v", d, err)
+			}
+		})
 	}
 }
