@@ -78,21 +78,21 @@ var dialectAliases = map[string]string{
 	// kimi-k2.7-code (kimi-k2-7-code) is a 1T-parameter MoE model
 	// optimized for coding. It is served via the Moonshot Cloud API
 	// and uses standard OpenAI-compatible tool calls.
-	"kimi-code":                            "kimi-code",
-	"kimi-for-coding":                      "kimi-code",
-	"moonshot-v1-8k":                       "kimi-code",
-	"moonshot-v1-32k":                      "kimi-code",
-	"moonshot-v1-128k":                     "kimi-code",
-	"moonshotai/kimi-for-coding":           "kimi-code",
-	"kimi-code/kimi-for-coding":            "kimi-code",
-	"kimi-k2.7-code":                       "kimi-code",
-	"kimi-k2-7-code":                       "kimi-code",
-	"kimi-k2.7-code-highspeed":             "kimi-code",
-	"kimi-k2-7-code-highspeed":             "kimi-code",
-	"moonshotai/kimi-k2.7-code":            "kimi-code",
-	"moonshot/kimi-k2-7-code":              "kimi-code",
-	"moonshot/kimi-k2-7-code-highspeed":    "kimi-code",
-	"@cf/moonshotai/kimi-k2.7-code":        "kimi-code",
+	"kimi-code":                         "kimi-code",
+	"kimi-for-coding":                   "kimi-code",
+	"moonshot-v1-8k":                    "kimi-code",
+	"moonshot-v1-32k":                   "kimi-code",
+	"moonshot-v1-128k":                  "kimi-code",
+	"moonshotai/kimi-for-coding":        "kimi-code",
+	"kimi-code/kimi-for-coding":         "kimi-code",
+	"kimi-k2.7-code":                    "kimi-code",
+	"kimi-k2-7-code":                    "kimi-code",
+	"kimi-k2.7-code-highspeed":          "kimi-code",
+	"kimi-k2-7-code-highspeed":          "kimi-code",
+	"moonshotai/kimi-k2.7-code":         "kimi-code",
+	"moonshot/kimi-k2-7-code":           "kimi-code",
+	"moonshot/kimi-k2-7-code-highspeed": "kimi-code",
+	"@cf/moonshotai/kimi-k2.7-code":     "kimi-code",
 }
 
 // CanonicalDialectFamily returns the canonical family name for an

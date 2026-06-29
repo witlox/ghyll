@@ -671,8 +671,8 @@ func TestKimiCode_NormalizeDialect_HandlesCloudAPIAliases(t *testing.T) {
 		"kimi-k2-7-code-highspeed",
 		"moonshotai/kimi-k2.7-code",
 		"moonshot/kimi-k2-7-code",
-		"KIMI-K2.7-CODE",               // case-folded
-		"Moonshotai/Kimi-K2.7-Code",    // case-folded
+		"KIMI-K2.7-CODE",            // case-folded
+		"Moonshotai/Kimi-K2.7-Code", // case-folded
 	}
 	for _, in := range good {
 		got, err := normalizeDialect(in)
