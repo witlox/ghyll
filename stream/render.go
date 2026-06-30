@@ -23,6 +23,11 @@ type Renderer struct {
 	spinMu   sync.Mutex
 	spinDone chan struct{}
 	spinDead chan struct{}
+
+	// heartbeatOverride lets tests substitute a short tick interval
+	// for the non-TTY heartbeat without sleeping real seconds. Zero
+	// (the production case) selects the heartbeatInterval const.
+	heartbeatOverride time.Duration
 }
 
 // spinnerInterval controls frame redraw cadence. 80ms ≈ 12 fps —
@@ -40,16 +45,21 @@ func NewRenderer(w io.Writer) *Renderer {
 	return &Renderer{w: w}
 }
 
+// heartbeatInterval is the cadence of the non-TTY proof-of-life
+// tick. 5s is long enough that a fast turn produces zero noise but
+// short enough that an operator on a slow gateway sees activity
+// before they wonder if ghyll is hung.
+const heartbeatInterval = 5 * time.Second
+
 // StartSpinner begins drawing a single-line spinner with `label`
-// (e.g. "kimi is thinking"). No-op when the writer isn't a TTY,
-// when a spinner is already running, or when called concurrently
-// with a stop. Idempotent at the start of every model turn — the
-// first output (StopSpinner via RenderDelta or RenderToolCall)
-// clears it.
+// (e.g. "kimi is thinking"). When the writer is a TTY this is an
+// animated single-line braille spinner; when the writer is NOT a
+// TTY (pipe, sandboxed wrapper that captures stdout, log redirect),
+// it falls back to a heartbeat: one initial status line, then a
+// `… {elapsed}s` tick line every heartbeatInterval until StopSpinner.
+// Either form is idempotent — start-while-running is a no-op —
+// and is cleared/halted by the next StopSpinner.
 func (r *Renderer) StartSpinner(label string) {
-	if !isTTY(r.w) {
-		return
-	}
 	r.spinMu.Lock()
 	defer r.spinMu.Unlock()
 	if r.spinDone != nil {
@@ -60,27 +70,57 @@ func (r *Renderer) StartSpinner(label string) {
 	r.spinDone = done
 	r.spinDead = dead
 
-	go func() {
-		defer close(dead)
-		ticker := time.NewTicker(spinnerInterval)
-		defer ticker.Stop()
-		i := 0
-		for {
-			select {
-			case <-done:
-				// Clear the line on exit: CR + erase-to-end-of-line.
-				// Cheap on any VT100-compatible terminal (xterm, screen,
-				// tmux, modern Windows Terminal). No-op on a non-TTY
-				// would land here only via a buggy isTTY, so worst case
-				// we leak two harmless bytes per turn.
-				_, _ = fmt.Fprint(r.w, "\r\033[K")
-				return
-			case <-ticker.C:
-				_, _ = fmt.Fprintf(r.w, "\r  %c %s", spinnerFrames[i], label)
-				i = (i + 1) % len(spinnerFrames)
-			}
+	if isTTY(r.w) {
+		go r.runTTYSpinner(label, done, dead)
+	} else {
+		go r.runHeartbeat(label, done, dead)
+	}
+}
+
+// runTTYSpinner draws the animated spinner. CR + erase-to-EOL on
+// exit clears the line so subsequent output starts clean.
+func (r *Renderer) runTTYSpinner(label string, done, dead chan struct{}) {
+	defer close(dead)
+	ticker := time.NewTicker(spinnerInterval)
+	defer ticker.Stop()
+	i := 0
+	for {
+		select {
+		case <-done:
+			_, _ = fmt.Fprint(r.w, "\r\033[K")
+			return
+		case <-ticker.C:
+			_, _ = fmt.Fprintf(r.w, "\r  %c %s", spinnerFrames[i], label)
+			i = (i + 1) % len(spinnerFrames)
 		}
-	}()
+	}
+}
+
+// runHeartbeat emits one initial status line plus periodic tick
+// lines while the model dispatch is in flight. Each tick is a new
+// line (no CR overwrite) because the non-TTY target may be a log
+// file or a wrapper that doesn't honor cursor control. Operators
+// see a growing list of `… 5s … 10s …` ticks, which is enough to
+// distinguish "ghyll is alive but waiting" from "ghyll is hung".
+func (r *Renderer) runHeartbeat(label string, done, dead chan struct{}) {
+	defer close(dead)
+	_, _ = fmt.Fprintf(r.w, "ℹ %s\n", label)
+	start := time.Now()
+	interval := r.heartbeatOverride
+	if interval <= 0 {
+		interval = heartbeatInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			elapsed := time.Since(start).Round(time.Second)
+			_, _ = fmt.Fprintf(r.w, "  … %s\n", elapsed)
+		}
+	}
 }
 
 // StopSpinner signals the spinner goroutine to exit and waits for
