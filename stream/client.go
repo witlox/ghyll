@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/witlox/ghyll/dialect"
 	"github.com/witlox/ghyll/types"
 )
 
@@ -94,6 +95,13 @@ type ClientOptions struct {
 	// summarization + retry instead of letting the gateway 413.
 	// 0 (default) disables the preemptive check.
 	MaxRequestBytes int
+
+	// DialectFamily selects the content-channel grammar segmenter
+	// invoked on every streaming delta (ADR-018). Empty string or
+	// an unknown family selects the passthrough segmenter, which
+	// preserves the pre-ADR-018 behavior byte-for-byte. Known
+	// families today: "kimi", "kimi_code", "glm5".
+	DialectFamily string
 }
 
 // Client is the SSE streaming client for OpenAI-compatible endpoints.
@@ -128,6 +136,9 @@ func NewClient(endpoint string, opts *ClientOptions) *Client {
 		}
 		if opts.MaxRequestBytes > 0 {
 			c.opts.MaxRequestBytes = opts.MaxRequestBytes
+		}
+		if opts.DialectFamily != "" {
+			c.opts.DialectFamily = opts.DialectFamily
 		}
 	}
 	return c
@@ -271,7 +282,7 @@ func (c *Client) doRequest(messages []map[string]any, onDelta OnDelta) (*Respons
 		return nil, classifyHTTPError(resp)
 	}
 
-	return parseSSEStream(resp.Body, onDelta)
+	return parseSSEStream(resp.Body, onDelta, c.opts.DialectFamily)
 }
 
 // bearerEchoPattern matches any substring that LOOKS like a Bearer
@@ -473,12 +484,58 @@ const (
 // response exceeds the configured byte budget.
 var ErrStreamSizeCap = errors.New("stream: response exceeds size cap")
 
-func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
+// routeSegment dispatches a dialect.Segment to the correct
+// accumulator. Per ADR-018: SegmentContent reaches the operator
+// (builder + onDelta) sentinel-free; SegmentReasoning is buffered
+// for the envelope-vs-segmenter merge at end-of-stream;
+// SegmentToolCall is queued likewise. onDelta is intentionally NOT
+// called for reasoning — the terminal renderer surfaces model
+// OUTPUT, not chain-of-thought (consistent with the existing
+// reasoning_content envelope path).
+func routeSegment(
+	seg dialect.Segment,
+	contentBuilder *strings.Builder,
+	segReasoningBuilder *strings.Builder,
+	segToolCalls *[]types.ToolCall,
+	onDelta OnDelta,
+) {
+	switch seg.Kind {
+	case dialect.SegmentContent:
+		if seg.Text == "" {
+			return
+		}
+		contentBuilder.WriteString(seg.Text)
+		if onDelta != nil {
+			onDelta(seg.Text)
+		}
+	case dialect.SegmentReasoning:
+		if seg.Text == "" {
+			return
+		}
+		segReasoningBuilder.WriteString(seg.Text)
+	case dialect.SegmentToolCall:
+		if seg.ToolCall == nil {
+			return
+		}
+		*segToolCalls = append(*segToolCalls, *seg.ToolCall)
+	}
+}
+
+func parseSSEStream(body io.Reader, onDelta OnDelta, dialectFamily string) (*Response, error) {
 	result := &Response{}
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	toolCallMap := map[int]*types.ToolCall{}
 	gotDone := false
+
+	// ADR-018: per-dialect content-channel segmenter. Parses native
+	// grammar (Kimi sentinels, GLM <think>) out of delta.content
+	// into typed events; unknown families fall through to a
+	// passthrough segmenter that preserves pre-ADR-018 behavior.
+	segmenter := dialect.NewSegmenter(dialectFamily)
+	var segReasoningBuilder strings.Builder
+	var segToolCalls []types.ToolCall
+	rawContentBytes := 0
 
 	scanner := bufio.NewScanner(body)
 	// Tier 3 / SR C-5: bigger buffer for fat SSE frames.
@@ -509,18 +566,22 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 		choice := event.Choices[0]
 
 		// Accumulate content and stream delta. Tier 3 / SR C-5:
-		// abort if total exceeds budget.
+		// abort if total exceeds budget. The cap is enforced on the
+		// RAW bytes received (pre-segmenter) so a malicious stream
+		// of nothing-but-sentinels still trips the OOM guard.
+		// ADR-018: route content through the dialect segmenter; only
+		// SegmentContent reaches the operator-visible builder + onDelta.
 		if choice.Delta.Content != "" {
-			if contentBuilder.Len()+len(choice.Delta.Content) > maxStreamContentBytes {
+			if rawContentBytes+len(choice.Delta.Content) > maxStreamContentBytes {
 				return nil, &StreamError{
 					Retryable: false,
 					Message:   "stream content exceeds cap",
 					Err:       ErrStreamSizeCap,
 				}
 			}
-			contentBuilder.WriteString(choice.Delta.Content)
-			if onDelta != nil {
-				onDelta(choice.Delta.Content)
+			rawContentBytes += len(choice.Delta.Content)
+			for _, seg := range segmenter.Feed(choice.Delta.Content) {
+				routeSegment(seg, &contentBuilder, &segReasoningBuilder, &segToolCalls, onDelta)
 			}
 		}
 
@@ -633,14 +694,34 @@ func parseSSEStream(body io.Reader, onDelta OnDelta) (*Response, error) {
 		}
 	}
 
-	result.Content = contentBuilder.String()
-	result.ReasoningContent = reasoningBuilder.String()
+	// ADR-018: flush any tail buffered by the segmenter.
+	for _, seg := range segmenter.Flush() {
+		routeSegment(seg, &contentBuilder, &segReasoningBuilder, &segToolCalls, onDelta)
+	}
 
-	// Collect tool calls in order
+	result.Content = contentBuilder.String()
+
+	// ADR-018 merge rule: envelope reasoning_content wins when
+	// non-empty; otherwise segmenter-extracted reasoning fills in.
+	if reasoningBuilder.Len() > 0 {
+		result.ReasoningContent = reasoningBuilder.String()
+	} else {
+		result.ReasoningContent = segReasoningBuilder.String()
+	}
+
+	// Collect envelope tool calls in order.
 	for i := 0; i < len(toolCallMap); i++ {
 		if tc, ok := toolCallMap[i]; ok {
 			result.ToolCalls = append(result.ToolCalls, *tc)
 		}
+	}
+	// ADR-018 merge rule: if the envelope provided no tool calls,
+	// the segmenter's content-channel extractions become
+	// authoritative. If the envelope DID provide tool calls, the
+	// segmenter's are discarded — a correctly-configured gateway
+	// is the source of truth.
+	if len(result.ToolCalls) == 0 && len(segToolCalls) > 0 {
+		result.ToolCalls = append(result.ToolCalls, segToolCalls...)
 	}
 
 	// If we didn't get [DONE], this is a partial response (invariant 20)

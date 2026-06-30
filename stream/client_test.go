@@ -587,3 +587,95 @@ func TestStream_SSEReasoning_SpecCorrectWins(t *testing.T) {
 		t.Errorf("ReasoningContent = %q, want %q (spec-correct name must win)", resp.ReasoningContent, "spec")
 	}
 }
+
+// TestScenario_Stream_KimiContentSentinelsExtractToolCalls
+// (ADR-018) — when the gateway leaks Kimi's native tool-call
+// sentinels into delta.content (vLLM started without
+// --tool-call-parser kimi_k2), the dialect segmenter must
+// reconstruct structured tool calls and strip the sentinels from
+// the user-visible content.
+func TestScenario_Stream_KimiContentSentinelsExtractToolCalls(t *testing.T) {
+	leaked := "Looking now.\n" +
+		"<|tool_calls_section_begin|>" +
+		"<|tool_call_begin|> functions.memory_search:0 " +
+		"<|tool_call_argument_begin|> {\"query\":\"arrow\"} " +
+		"<|tool_call_end|>" +
+		"<|tool_calls_section_end|>"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chatDelta(leaked)))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, &ClientOptions{DialectFamily: "kimi"})
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "Looking now.\n" {
+		t.Errorf("Content = %q, want %q (sentinels must be stripped)", resp.Content, "Looking now.\n")
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Function.Name != "memory_search" {
+		t.Errorf("tool name = %q", resp.ToolCalls[0].Function.Name)
+	}
+	if strings.TrimSpace(resp.ToolCalls[0].Function.Arguments) != `{"query":"arrow"}` {
+		t.Errorf("args = %q", resp.ToolCalls[0].Function.Arguments)
+	}
+}
+
+// TestScenario_Stream_GLMThinkBlocksRouteToReasoning (ADR-018) —
+// when GLM-5 leaks <think>...</think> into delta.content, the
+// segmenter must route the inner text to ReasoningContent and the
+// outer text to Content.
+func TestScenario_Stream_GLMThinkBlocksRouteToReasoning(t *testing.T) {
+	leaked := "<think>chain of thought</think>visible answer"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chatDelta(leaked)))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("stop")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, &ClientOptions{DialectFamily: "glm"})
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "visible answer" {
+		t.Errorf("Content = %q, want %q", resp.Content, "visible answer")
+	}
+	if resp.ReasoningContent != "chain of thought" {
+		t.Errorf("ReasoningContent = %q, want %q", resp.ReasoningContent, "chain of thought")
+	}
+}
+
+// TestScenario_Stream_EnvelopeWinsOverSegmenter (ADR-018) — when
+// the gateway IS correctly configured and emits structured
+// tool_calls in the envelope, segmenter output for the same turn
+// must be discarded (envelope is authoritative).
+func TestScenario_Stream_EnvelopeWinsOverSegmenter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, sseChunk(chatToolCall("envelope_id_0", "memory_search", `{"query":"x"}`)))
+		_, _ = fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+		_, _ = fmt.Fprint(w, sseDone())
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, &ClientOptions{DialectFamily: "kimi"})
+	resp, err := client.Send([]map[string]any{{"role": "user", "content": "go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "envelope_id_0" {
+		t.Fatalf("tool calls = %+v, want exactly 1 with envelope id", resp.ToolCalls)
+	}
+}

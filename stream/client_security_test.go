@@ -21,7 +21,7 @@ func TestScenario_parseSSEStream_RefusesOversizedContent(t *testing.T) {
 		b.WriteString(`"}}]}` + "\n")
 	}
 	b.WriteString("data: [DONE]\n")
-	_, err := parseSSEStream(strings.NewReader(b.String()), nil)
+	_, err := parseSSEStream(strings.NewReader(b.String()), nil, "")
 	if !errors.Is(err, ErrStreamSizeCap) {
 		t.Errorf("err = %v; want ErrStreamSizeCap", err)
 	}
@@ -36,7 +36,7 @@ func TestScenario_parseSSEStream_ScannerErrSurfaced(t *testing.T) {
 	huge := strings.Repeat("a", int(maxSSELineBytes)+1024)
 	body := strings.NewReader(huge)
 
-	_, err := parseSSEStream(body, nil)
+	_, err := parseSSEStream(body, nil, "")
 	if err == nil {
 		t.Error("oversized line accepted; want scanner error")
 	}

@@ -223,6 +223,12 @@ func NewSession(sc SessionConfig) (*Session, error) {
 		ExtraHeaders: buildAuthHeader(sc.Cfg, s.activeModel),
 		// Gateway body-cap hint; 0 disables the preemptive check.
 		MaxRequestBytes: modelCfg.MaxRequestBytes,
+		// ADR-018: dialect family selects the content-channel
+		// segmenter that parses model-native sentinels (Kimi
+		// <|tool_call_begin|>, GLM <think>) out of streaming
+		// content when the upstream gateway doesn't normalize them
+		// into the OpenAI envelope.
+		DialectFamily: modelCfg.Dialect,
 	})
 
 	// Create context manager with callbacks
@@ -1360,6 +1366,7 @@ func (s *Session) handleHandoff(decision dialect.RoutingDecision) error {
 		ModelName:       wireModelName(modelCfg),
 		ExtraHeaders:    buildAuthHeader(s.cfg, s.activeModel),
 		MaxRequestBytes: modelCfg.MaxRequestBytes,
+		DialectFamily:   modelCfg.Dialect,
 	})
 
 	// Create new context manager with handoff messages
