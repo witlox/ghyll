@@ -47,7 +47,7 @@ func TestRenderer_Spinner_NonTTY(t *testing.T) {
 func TestRenderer_Heartbeat_Ticks(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
-	r.heartbeatOverride = 20 * time.Millisecond
+	r.SetHeartbeatInterval(20 * time.Millisecond)
 	r.StartSpinner("waiting on gateway")
 	time.Sleep(80 * time.Millisecond) // ≥ 3 ticks expected
 	r.StopSpinner()
@@ -68,7 +68,7 @@ func TestRenderer_Heartbeat_Ticks(t *testing.T) {
 func TestRenderer_Heartbeat_StopHaltsTicks(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
-	r.heartbeatOverride = 10 * time.Millisecond
+	r.SetHeartbeatInterval(10 * time.Millisecond)
 	r.StartSpinner("thinking")
 	time.Sleep(15 * time.Millisecond)
 	r.StopSpinner()

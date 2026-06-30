@@ -12,8 +12,8 @@ now lives alongside the long-standing surface features in one tree.
 
 | Layer | Scenarios | Notes |
 |---|---|---|
-| Total scenarios in `specs/features/` | 295 | Single suite, BDD via godog |
-| Passing | 290 | THOROUGH or MODERATE bindings to real production code |
+| Total scenarios in `specs/features/` | 299 | Single suite, BDD via godog |
+| Passing | 294 | THOROUGH or MODERATE bindings to real production code |
 | Pending | 5 | `godog.ErrPending` for known-deferred outline rows |
 | Skipped via tag filter `~@deferred` | ~65 | Scenarios that depend on code surface not yet shipped (attestation flow, ProjectStatus aggregator, crash recovery) |
 
@@ -54,7 +54,7 @@ post-v1.0.0 cleanup.
 | `engine/` (sqlite store + journal + replay) | 23 | 0 | 23 | 0 | 0 | HIGH |
 | `memory/` | 22 | 14 | 8 | 0 | 0 | HIGH |
 | `runner/` (state machine, observers, routing, runner) | 80+ | 30 | 45 | 5 | 0 | HIGH |
-| `stream/` | 11 | 8 | 1 | 0 | 2 | HIGH |
+| `stream/` | 15 | 8 | 5 | 0 | 2 | HIGH |
 | `tool/` | 30+ | 24 | 6 | 0 | 0 | HIGH |
 | `ui/` | 6 | 6 | 0 | 0 | 0 | HIGH |
 | `vault/` | 14 | 6 | 8 | 0 | 0 | HIGH |

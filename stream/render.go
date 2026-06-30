@@ -45,6 +45,17 @@ func NewRenderer(w io.Writer) *Renderer {
 	return &Renderer{w: w}
 }
 
+// SetHeartbeatInterval overrides the non-TTY heartbeat tick cadence.
+// Production code does not call this — the heartbeatInterval const
+// is the operator-facing default. Acceptance / unit tests use it to
+// avoid sleeping real production seconds while asserting on tick
+// output. A zero or negative duration restores the default.
+func (r *Renderer) SetHeartbeatInterval(d time.Duration) {
+	r.spinMu.Lock()
+	r.heartbeatOverride = d
+	r.spinMu.Unlock()
+}
+
 // heartbeatInterval is the cadence of the non-TTY proof-of-life
 // tick. 5s is long enough that a fast turn produces zero noise but
 // short enough that an operator on a slow gateway sees activity
@@ -73,7 +84,16 @@ func (r *Renderer) StartSpinner(label string) {
 	if isTTY(r.w) {
 		go r.runTTYSpinner(label, done, dead)
 	} else {
-		go r.runHeartbeat(label, done, dead)
+		// Resolve the heartbeat interval under the lock so the
+		// goroutine sees a stable value even if SetHeartbeatInterval
+		// runs concurrently (defensive: production callers set the
+		// override only before StartSpinner, but the race detector
+		// still flags unsynchronized field reads from a goroutine).
+		interval := r.heartbeatOverride
+		if interval <= 0 {
+			interval = heartbeatInterval
+		}
+		go r.runHeartbeat(label, interval, done, dead)
 	}
 }
 
@@ -102,14 +122,10 @@ func (r *Renderer) runTTYSpinner(label string, done, dead chan struct{}) {
 // file or a wrapper that doesn't honor cursor control. Operators
 // see a growing list of `… 5s … 10s …` ticks, which is enough to
 // distinguish "ghyll is alive but waiting" from "ghyll is hung".
-func (r *Renderer) runHeartbeat(label string, done, dead chan struct{}) {
+func (r *Renderer) runHeartbeat(label string, interval time.Duration, done, dead chan struct{}) {
 	defer close(dead)
 	_, _ = fmt.Fprintf(r.w, "ℹ %s\n", label)
 	start := time.Now()
-	interval := r.heartbeatOverride
-	if interval <= 0 {
-		interval = heartbeatInterval
-	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

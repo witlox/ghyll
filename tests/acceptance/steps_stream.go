@@ -1,16 +1,43 @@
 package acceptance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/witlox/ghyll/stream"
 )
+
+// syncBuf is a goroutine-safe byte buffer used by the non-TTY
+// heartbeat scenario. The heartbeat goroutine writes from another
+// goroutine concurrently with the step's String() reads; without
+// the mutex the race detector fails the suite.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newSyncBuf() *syncBuf { return &syncBuf{} }
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 func registerStreamSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	var (
@@ -90,6 +117,12 @@ func registerStreamSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 		client = stream.NewClient(server.URL, &stream.ClientOptions{
 			MaxRetries:    3,
 			BaseBackoffMs: 10, // fast for tests
+			// ADR-018: pick up the dialect chosen by the Background or
+			// per-scenario step so the content-channel segmenter
+			// engages. Empty / unknown families fall through to the
+			// passthrough segmenter (no behavioral change for the
+			// pre-ADR-018 scenarios that bound "minimax").
+			DialectFamily: state.StreamDialect,
 		})
 	}
 
@@ -497,6 +530,173 @@ func registerStreamSteps(ctx *godog.ScenarioContext, state *ScenarioState) {
 	})
 
 	ctx.Step(`^a warning is logged$`, func() error {
+		return nil
+	})
+
+	// ADR-018: dialect content-channel grammar.
+
+	ctx.Step(`^the SSE stream emits Kimi tool-call sentinels in delta\.content$`, func() error {
+		leaked := "Looking now.\n" +
+			"<|tool_calls_section_begin|>" +
+			"<|tool_call_begin|> functions.memory_search:0 " +
+			"<|tool_call_argument_begin|> {\"query\":\"arrow\"} " +
+			"<|tool_call_end|>" +
+			"<|tool_calls_section_end|>"
+		startServer(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			fmt.Fprint(w, sseChunk(chatDelta(leaked)))
+			fmt.Fprint(w, sseChunk(chatFinish("stop")))
+			fmt.Fprint(w, sseDone())
+		})
+		lastResp, lastErr = client.Send(userMessages)
+		return nil
+	})
+
+	ctx.Step(`^the user-visible Content has the sentinels stripped$`, func() error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if lastResp.Content != "Looking now.\n" {
+			return fmt.Errorf("content = %q, want %q", lastResp.Content, "Looking now.\n")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the structured ToolCalls contains the extracted call with name "([^"]*)"$`, func(name string) error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if len(lastResp.ToolCalls) != 1 || lastResp.ToolCalls[0].Function.Name != name {
+			return fmt.Errorf("tool calls = %+v, want exactly one named %q", lastResp.ToolCalls, name)
+		}
+		return nil
+	})
+
+	ctx.Step(`^no SegmentReasoning content is produced$`, func() error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if lastResp.ReasoningContent != "" {
+			return fmt.Errorf("reasoning content = %q, want empty (no <think> in Kimi sentinel scenario)", lastResp.ReasoningContent)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the SSE stream emits a <think>([^<]+)</think> block in delta\.content$`, func(inner string) error {
+		leaked := "<think>" + inner + "</think>visible answer"
+		startServer(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			fmt.Fprint(w, sseChunk(chatDelta(leaked)))
+			fmt.Fprint(w, sseChunk(chatFinish("stop")))
+			fmt.Fprint(w, sseDone())
+		})
+		lastResp, lastErr = client.Send(userMessages)
+		return nil
+	})
+
+	ctx.Step(`^the user-visible Content excludes the think block$`, func() error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if lastResp.Content != "visible answer" {
+			return fmt.Errorf("content = %q, want %q", lastResp.Content, "visible answer")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the ReasoningContent equals "([^"]*)"$`, func(want string) error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if lastResp.ReasoningContent != want {
+			return fmt.Errorf("reasoning content = %q, want %q", lastResp.ReasoningContent, want)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the SSE stream emits structured delta\.tool_calls \(correctly-configured gateway\)$`, func() error {
+		// Server is set up by the AND step below so both envelope and
+		// content sentinels are part of the same response.
+		return nil
+	})
+
+	ctx.Step(`^the SSE stream also emits raw Kimi sentinels in delta\.content$`, func() error {
+		leaked := "<|tool_calls_section_begin|>" +
+			"<|tool_call_begin|> functions.SEGMENTER_DUPLICATE:0 " +
+			"<|tool_call_argument_begin|> {\"query\":\"dup\"} " +
+			"<|tool_call_end|>" +
+			"<|tool_calls_section_end|>"
+		startServer(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			fmt.Fprint(w, sseChunk(chatToolCall("envelope_id_0", "memory_search", `{"query":"x"}`)))
+			fmt.Fprint(w, sseChunk(chatDelta(leaked)))
+			fmt.Fprint(w, sseChunk(chatFinish("tool_calls")))
+			fmt.Fprint(w, sseDone())
+		})
+		lastResp, lastErr = client.Send(userMessages)
+		return nil
+	})
+
+	ctx.Step(`^the ToolCalls match the envelope-provided ids$`, func() error {
+		if lastErr != nil {
+			return lastErr
+		}
+		if len(lastResp.ToolCalls) != 1 || lastResp.ToolCalls[0].ID != "envelope_id_0" {
+			return fmt.Errorf("tool calls = %+v, want exactly one with id envelope_id_0", lastResp.ToolCalls)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the segmenter-extracted tool calls are discarded$`, func() error {
+		if lastErr != nil {
+			return lastErr
+		}
+		for _, tc := range lastResp.ToolCalls {
+			if tc.Function.Name == "SEGMENTER_DUPLICATE" || tc.ID == "functions.SEGMENTER_DUPLICATE:0" {
+				return fmt.Errorf("segmenter-extracted tool call leaked through: %+v", tc)
+			}
+		}
+		return nil
+	})
+
+	// Non-TTY heartbeat (commit 12bca40).
+
+	var (
+		heartbeatBuf      *syncBuf
+		heartbeatRenderer *stream.Renderer
+	)
+
+	ctx.Step(`^the renderer writes to a non-TTY sink \(pipe / log capture\)$`, func() error {
+		heartbeatBuf = newSyncBuf()
+		heartbeatRenderer = stream.NewRenderer(heartbeatBuf)
+		heartbeatRenderer.SetHeartbeatInterval(20 * time.Millisecond)
+		return nil
+	})
+
+	ctx.Step(`^the session starts the thinking spinner$`, func() error {
+		heartbeatRenderer.StartSpinner("kimi is thinking…")
+		// 80ms ≥ 3 ticks at 20ms.
+		time.Sleep(80 * time.Millisecond)
+		heartbeatRenderer.StopSpinner()
+		return nil
+	})
+
+	ctx.Step(`^an initial "ℹ ([^"]+) is thinking…" line is emitted$`, func(model string) error {
+		want := "ℹ " + model + " is thinking…"
+		if !strings.Contains(heartbeatBuf.String(), want) {
+			return fmt.Errorf("missing initial heartbeat line %q in %q", want, heartbeatBuf.String())
+		}
+		return nil
+	})
+
+	ctx.Step(`^periodic "  … \{elapsed\}s" tick lines follow until StopSpinner$`, func() error {
+		got := heartbeatBuf.String()
+		if c := strings.Count(got, "  … "); c < 2 {
+			return fmt.Errorf("expected ≥2 tick lines, got %d in %q", c, got)
+		}
 		return nil
 	})
 

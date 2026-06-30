@@ -86,3 +86,37 @@ Feature: Streaming LLM client
     Then the malformed frame is skipped
     And parsing continues with subsequent frames
     And a warning is logged
+
+  # ADR-018: dialect content-channel grammar. When the upstream
+  # gateway forwards model-native sentinels in delta.content instead
+  # of normalizing them into the OpenAI envelope, the per-dialect
+  # segmenter reconstructs structured tool calls / reasoning.
+
+  Scenario: Kimi tool-call sentinels in content extract to tool_calls
+    Given the active dialect is "kimi"
+    And the SSE stream emits Kimi tool-call sentinels in delta.content
+    When the stream client finishes receiving
+    Then the user-visible Content has the sentinels stripped
+    And the structured ToolCalls contains the extracted call with name "memory_search"
+    And no SegmentReasoning content is produced
+
+  Scenario: GLM think blocks in content route to reasoning_content
+    Given the active dialect is "glm"
+    And the SSE stream emits a <think>chain of thought</think> block in delta.content
+    When the stream client finishes receiving
+    Then the user-visible Content excludes the think block
+    And the ReasoningContent equals "chain of thought"
+
+  Scenario: Envelope tool_calls win over segmenter extraction
+    Given the active dialect is "kimi"
+    And the SSE stream emits structured delta.tool_calls (correctly-configured gateway)
+    And the SSE stream also emits raw Kimi sentinels in delta.content
+    When the stream client finishes receiving
+    Then the ToolCalls match the envelope-provided ids
+    And the segmenter-extracted tool calls are discarded
+
+  Scenario: Non-TTY heartbeat surfaces proof-of-life
+    Given the renderer writes to a non-TTY sink (pipe / log capture)
+    When the session starts the thinking spinner
+    Then an initial "ℹ kimi is thinking…" line is emitted
+    And periodic "  … {elapsed}s" tick lines follow until StopSpinner

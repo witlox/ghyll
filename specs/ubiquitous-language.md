@@ -132,6 +132,23 @@ data-shape vocabulary (entities, value objects) is in
 | **Checkpoint log** | The Merkle DAG chain of pass-finalization records. Reused from v1 infrastructure. Source of truth for completed-pass state. |
 | **Path encoding (`__`)** | The double-underscore separator used between role-ids in the `<role-pair>` path component (e.g., `analyst__architect`, `analyst__adversary__architect`, `init__analyst`). Filesystem-portable; no Unicode glyphs; no path separators. |
 
+## I. Dialect output grammar
+
+Terms for ADR-018's per-dialect content-channel parsing. A dialect
+(`kimi`, `glm`, `deepseek`, `qwen`, `minimax`, `kimi-code`) owns
+both the OpenAI-compatible envelope path AND its native
+content-channel grammar — gateways frequently leak the latter when
+upstream parser flags aren't set.
+
+| Term | Definition |
+|---|---|
+| **Envelope** | The OpenAI-compatible side-channel fields on a streaming delta: `delta.tool_calls`, `delta.reasoning_content`, `delta.reasoning`. A correctly-configured gateway populates these; ghyll's stream client reads them directly. |
+| **Content-channel grammar** | The model family's native text-channel syntax for structured output (Kimi's `<|tool_call_begin|>…<|tool_call_end|>` sentinels, GLM's `<think>…</think>` blocks). Surfaces when the gateway doesn't normalize them into the envelope. |
+| **Segmenter** | A per-dialect parser that consumes streaming content deltas and emits typed events. `dialect.NewSegmenter(family)` returns the family's implementation; unknown families get the passthrough segmenter. |
+| **Segment** | One typed event from a Segmenter: `SegmentContent` (user-visible text, sentinels stripped), `SegmentReasoning` (chain-of-thought), or `SegmentToolCall` (a complete structured dispatch). |
+| **Envelope-wins merge rule** | When both the envelope and the segmenter produce values for the same field on a single turn, the envelope wins. Rationale: a correctly-configured gateway is authoritative; the segmenter is the defense-in-depth fallback. |
+| **Non-TTY heartbeat** | The fallback proof-of-life output the renderer emits when its writer is not a terminal (sandboxed wrapper, log capture, pipe). One initial `ℹ {label}` line plus periodic `… {elapsed}s` ticks until StopSpinner. Replaces the silent no-op of the animated spinner. |
+
 ---
 
 ## Disambiguation: confusable pairs

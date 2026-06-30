@@ -133,6 +133,8 @@ scripts/              scenario verification tooling
 
 - [ADR-017: ProjectStatus aggregator](docs/decisions/017-project-status-aggregator.md) — read-only aggregator over runner stores, no cache
 
+- [ADR-018: Dialect content-channel grammar](docs/decisions/018-dialect-content-channel-grammar.md) — per-dialect Segmenter parses model-native sentinels (Kimi `<|tool_call_begin|>`, GLM `<think>`) out of streaming content when gateways don't normalize them
+
 Architectural reference (current code, not aspirational):
 
 - [v2 design](specs/architecture/v2-design.md) — gate-and-arrow rationale
