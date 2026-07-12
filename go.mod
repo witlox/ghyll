@@ -13,7 +13,7 @@ require (
 	github.com/chzyer/readline v1.5.1
 	github.com/cucumber/godog v0.15.1
 	github.com/yalue/onnxruntime_go v1.27.0
-	golang.org/x/text v0.37.0
+	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.2
 )
